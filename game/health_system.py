@@ -1,0 +1,135 @@
+import random
+import sys
+import os
+
+# Fix path to find utils.py in root
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils import PLAYER_ID
+
+# --- CONDITIONING STATES ---
+COND_POOR_THRESH = 30
+COND_GOOD_THRESH = 70
+
+def get_conditioning_state(value):
+    if value <= COND_POOR_THRESH: return "POOR"
+    if value >= COND_GOOD_THRESH: return "GOOD"
+    return "NORMAL"
+
+def get_performance_modifiers(conditioning):
+    state = get_conditioning_state(conditioning)
+    if state == "POOR":
+        return {"injury_risk_mult": 1.5, "training_gain": 0.8, "match_perf": 0.9}
+    elif state == "GOOD":
+        return {"injury_risk_mult": 0.8, "training_gain": 1.2, "match_perf": 1.1}
+    return {"injury_risk_mult": 1.0, "training_gain": 1.0, "match_perf": 1.0}
+
+def get_conditioning_feedback(value):
+    state = get_conditioning_state(value)
+    if state == "GOOD":
+        return random.choice([
+            "Your body feels light today.",
+            "Coach: 'You're moving well lately.'",
+            "You feel sharp and energised."
+        ])
+    elif state == "POOR":
+        return random.choice([
+            "You feel unusually stiff.",
+            "Coach: 'Your reactions have slowed.'",
+            "Your body feels heavy and sluggish."
+        ])
+    return "" # Normal state has no feedback (invisible baseline)
+
+def check_injury_risk(fatigue, intensity, conditioning):
+    mods = get_performance_modifiers(conditioning)
+    risk_chance = 0.01 * mods['injury_risk_mult']
+    
+    if fatigue > 80: risk_chance += (0.20 * mods['injury_risk_mult'])
+    elif fatigue > 50: risk_chance += (0.05 * mods['injury_risk_mult'])
+    
+    risk_chance *= intensity
+    
+    if random.random() < risk_chance:
+        roll = random.random()
+        severity = "Minor"
+        if roll < 0.85: severity = "Minor"
+        elif roll < 0.95: severity = "Moderate"
+        else: severity = "Severe"
+        return True, severity
+    return False, None
+
+def apply_injury(conn, severity):
+    cursor = conn.cursor()
+    # Logic to set injury_days would go here (e.g., UPDATE players SET injury_days = X)
+    desc = {"Minor": "Muscle Strain", "Moderate": "Sprain", "Severe": "Fracture"}
+    days = {"Minor": 3, "Moderate": 14, "Severe": 60}
+    
+    d = days.get(severity, 3)
+    
+    # Update DB
+    try:
+        cursor.execute("UPDATE players SET injury_days = ? WHERE id = ?", (d, PLAYER_ID))
+        conn.commit()
+    except Exception as e:
+        print(f"Error applying injury: {e}")
+
+    return f"(!) INJURY: {desc.get(severity, 'Unknown')} ({severity}). Out for {d} days."
+
+def calculate_weekly_conditioning_update(conn, schedule_grid, avg_fatigue):
+    """
+    Analyzes the week's behaviour to adjust the invisible Conditioning stat.
+    Called at the end of the week in main_loop (or weekly_scheduler).
+    """
+    cursor = conn.cursor()
+    cursor.execute("SELECT conditioning FROM players WHERE id = ?", (PLAYER_ID,))
+    row = cursor.fetchone()
+    # Handle cases where conditioning might be missing or None
+    current_cond = row[0] if row and row[0] is not None else 50
+    
+    change = 0
+    
+    # --- ANALYSIS COUNTERS ---
+    heavy_train_count = 0
+    rest_count = 0
+    mind_social_count = 0
+    
+    for day in schedule_grid:
+        for slot in day:
+            if not slot: continue
+            if 'power' in slot or 'speed' in slot or 'stamina' in slot or 'match' in slot:
+                heavy_train_count += 1
+            elif slot == 'rest':
+                rest_count += 1
+            elif slot in ['mind', 'social']:
+                mind_social_count += 1
+
+    # --- RULE 1: Overtraining Penalty ---
+    # More than 10 heavy sessions a week is pushing it
+    if heavy_train_count > 12:
+        change -= 5
+    elif heavy_train_count > 15:
+        change -= 10 # Severe penalty for grinding without breaks
+
+    # --- RULE 2: Recovery Bonus ---
+    if rest_count >= 3: # Reasonable rest
+        change += 2
+    if rest_count >= 5: # Well rested
+        change += 3
+        
+    # --- RULE 3: Mental/Social Balance ---
+    if mind_social_count >= 2:
+        change += 2 # Stress reduction helps physical health
+
+    # --- RULE 4: Fatigue Management ---
+    # If player spent the week exhausted (avg_fatigue > 70), body breaks down
+    if avg_fatigue > 80:
+        change -= 5
+    elif avg_fatigue < 40:
+        change += 2
+
+    # Apply Update
+    new_cond = max(0, min(100, current_cond + change))
+    
+    cursor.execute("UPDATE players SET conditioning = ? WHERE id = ?", (new_cond, PLAYER_ID))
+    conn.commit()
+    
+    return change, get_conditioning_state(new_cond)
