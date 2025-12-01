@@ -1,49 +1,53 @@
 import json
 import os
 import random
-from ui.ui_display import Colour, clear_screen
+from pathlib import Path
+from typing import Dict, List
 
-# Example Database of Dialogues (Ideally this would be a JSON file)
-# Structure: Event ID -> List of possible dialogue branches
-DIALOGUE_DB = {
-    "coach_meeting_strategy": {
-        "speaker": "Coach",
-        "text": "We have a tough match coming up. I need you focused. What's your mindset?",
-        "options": [
-            {
-                "text": "I'll strike everyone out.",
-                "effects": {"morale": 5, "coach_trust": 2},
-                "response": "Good energy. Keep that fire."
-            },
-            {
-                "text": "I'll follow your lead, Coach.",
-                "effects": {"coach_trust": 5, "morale": 0},
-                "response": "That's what I like to hear. Discipline wins games."
-            },
-            {
-                "text": "Honestly? I'm terrified.",
-                "effects": {"morale": -5, "coach_trust": -2},
-                "response": "Fear is natural. Use it. Don't let it control you."
-            }
-        ]
-    },
-    "teammate_practice_extra": {
-        "speaker": "Teammate",
-        "text": "Hey! A few of us are staying late for batting practice. Want to join?",
-        "options": [
-            {
-                "text": "Yeah, let's grind!",
-                "effects": {"stamina": -5, "contact": 0.5, "friendship": 5},
-                "response": "Awesome! Let's get to work."
-            },
-            {
-                "text": "Sorry, I need to rest.",
-                "effects": {"stamina": 5, "friendship": -2},
-                "response": "Ah, okay. Rest up for the game."
-            }
-        ]
-    }
-}
+from ui.ui_display import Colour, clear_screen
+from game.archetypes import archetype_persona_blurb
+
+DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "dialogues.json"
+
+
+def _load_dialogues() -> Dict[str, dict]:
+    try:
+        with open(DATA_PATH, "r", encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except FileNotFoundError:
+        return {}
+
+    dialogue_map: Dict[str, dict] = {}
+    for entry in entries:
+        entry_id = entry.get("id")
+        if entry_id:
+            dialogue_map[entry_id] = entry
+    return dialogue_map
+
+
+DIALOGUE_DB = _load_dialogues()
+
+
+def _coach_tone_lines(coach) -> List[str]:
+    if not coach:
+        return []
+    drive = getattr(coach, 'drive', 50) or 50
+    loyalty = getattr(coach, 'loyalty', 50) or 50
+    volatility = getattr(coach, 'volatility', 50) or 50
+    tone = []
+    if drive >= 70:
+        tone.append("His eyes stay on the scoreboard—results first, feelings later.")
+    elif drive <= 35:
+        tone.append("He focuses on growth over glory, urging patience.")
+    if loyalty <= 40:
+        tone.append("One misstep might cost you playing time; he makes that clear.")
+    elif loyalty >= 70:
+        tone.append("He reminds you the staff backs you as long as you fight for the team.")
+    if volatility >= 65:
+        tone.append("There's a sharp edge in his voice, like an ejection is one comment away.")
+    elif volatility <= 35:
+        tone.append("Even under pressure his tone stays even, inviting honest answers.")
+    return tone
 
 def run_dialogue_event(event_id, player, school):
     """
@@ -57,8 +61,21 @@ def run_dialogue_event(event_id, player, school):
     
     # 1. Display Interface (Godot would render a textbox here)
     clear_screen()
-    print(f"\n{Colour.CYAN}--- CONVERSATION: {data['speaker']} ---{Colour.RESET}")
+    speaker_label = data['speaker']
+    coach = getattr(school, 'coach', None)
+    if data['speaker'].lower() == 'coach' and coach:
+        speaker_label = getattr(coach, 'name', data['speaker'])
+
+    print(f"\n{Colour.CYAN}--- CONVERSATION: {speaker_label} ---{Colour.RESET}")
     print(f"\n\"{data['text']}\"\n")
+
+    persona_line = archetype_persona_blurb(player)
+    if persona_line:
+        print(f"{Colour.MAGENTA}{persona_line}{Colour.RESET}")
+
+    if data['speaker'].lower() == 'coach' and coach:
+        for line in _coach_tone_lines(coach):
+            print(f"{Colour.YELLOW}{line}{Colour.RESET}")
     
     # 2. Display Options
     for i, opt in enumerate(data['options']):

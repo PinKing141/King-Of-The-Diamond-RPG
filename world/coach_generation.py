@@ -6,8 +6,9 @@ import sys
 
 # Add root to path to find setup_db
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from database.setup_db import Coach, session
+from database.setup_db import Coach
 from config import NAME_DB_PATH
+from game.personality import roll_coach_personality
 
 # Initialize converter
 kks = pykakasi.kakasi()
@@ -51,6 +52,8 @@ def generate_coach_for_school(school):
     # 3. Create Coach Object
     coach_name_str = generate_coach_name_from_db()
 
+    traits = roll_coach_personality(school)
+
     new_coach = Coach(
         school_id=school.id,
         name=coach_name_str,
@@ -61,7 +64,10 @@ def generate_coach_for_school(school):
         seniority_weight=round(derived_seniority, 2),
         trust_weight=round(derived_trust, 2),
         stats_weight=round(derived_stats, 2),
-        fatigue_penalty_weight=round(derived_fatigue_penalty, 2)
+        fatigue_penalty_weight=round(derived_fatigue_penalty, 2),
+        drive=traits['drive'],
+        loyalty=traits['loyalty'],
+        volatility=traits['volatility'],
     )
     
     return new_coach

@@ -3,13 +3,20 @@ import os
 import random
 import time
 import sqlite3
+from typing import Optional
+
+from sqlalchemy.orm import Session
 
 # Add root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.setup_db import School, Player, engine, session
+from database.setup_db import School, Player
 from config import CITIES_DB_PATH
 from ui.ui_display import Colour, clear_screen
+from player_roles.two_way import roll_two_way_profile
+from game.academic_system import roll_academic_profile
+from game.relationship_manager import seed_relationships
+from game.personality import roll_player_personality
 
 # --- GROWTH STYLE DEFINITIONS ---
 GROWTH_STYLE_INFO = {
@@ -24,6 +31,7 @@ GROWTH_STYLE_INFO = {
     "Defensive Specialist": {"desc": "Vacuum cleaner in the field.", "pros": "+Fld, +Reaction", "cons": "-Batting"},
     "Balanced": {"desc": "Jack of all trades.", "pros": "No weakness", "cons": "No specialty"}
 }
+
 
 # ------------------------------------------------------
 #  ROLL STATS  — now includes HEIGHT SYSTEM (A + B)
@@ -64,14 +72,19 @@ def roll_stats(position, is_monster=False):
         base_h = 180; base_w = 80
 
     # starting height/weight
-    stats['height'] = int(random.normalvariate(base_h, 5))
-    stats['weight'] = int(random.normalvariate(base_w, 8))
+    stats['height_cm'] = int(random.normalvariate(base_h, 5))
+    stats['weight_kg'] = int(random.normalvariate(base_w, 8))
 
     # height potential (5–20 cm above start)
-    stats['height_potential'] = stats['height'] + random.randint(5, 20)
+    stats['height_potential'] = stats['height_cm'] + random.randint(5, 20)
 
     # how many years they still grow (1–3)
     stats['height_growth_years'] = random.choice([1, 2, 3])
+
+    # Two-way profile (rare)
+    is_two_way, secondary = roll_two_way_profile(position, rng=random)
+    stats['is_two_way'] = is_two_way
+    stats['secondary_position'] = secondary if secondary else None
 
     # ---------------------------
     #  Player Skill Stats
@@ -139,18 +152,23 @@ def get_city_matches(search_term):
 # ------------------------------------------------------
 # SAVE PLAYER TO DB (now includes height fields)
 # ------------------------------------------------------
-def commit_player_to_db(data):
-
-    session.query(Player).filter_by(id=1).delete()
-
+def commit_player_to_db(session: Session, data) -> int:
     s = data['stats']
     valid_cols = [c.key for c in Player.__table__.columns]
     clean_stats = {k: v for k, v in s.items() if k in valid_cols}
 
+    if 'academic_skill' not in clean_stats or 'test_score' not in clean_stats:
+        academic_skill, test_score = roll_academic_profile(data.get('hometown'), data.get('school'))
+        clean_stats['academic_skill'] = academic_skill
+        clean_stats['test_score'] = test_score
+
     growth_tag = clean_stats.pop("growth_tag", None)
+    traits = roll_player_personality(data.get('school'))
+    clean_stats.setdefault('drive', traits['drive'])
+    clean_stats.setdefault('loyalty', traits['loyalty'])
+    clean_stats.setdefault('volatility', traits['volatility'])
 
     p = Player(
-        id=1,
         first_name=data['first_name'],
         last_name=data['last_name'],
         name=f"{data['first_name']} {data['last_name']}",
@@ -169,14 +187,16 @@ def commit_player_to_db(data):
 
     session.add(p)
     session.commit()
-    return True
+    session.refresh(p)
+    seed_relationships(session, p)
+    return p.id
 
 
 
 # ------------------------------------------------------
 # CHARACTER CREATION MENU (unchanged logic)
 # ------------------------------------------------------
-def create_hero():
+def create_hero(session: Session) -> Optional[int]:
     step = 0
     data = {
         "first_name": "Taro", "last_name": "Yamada",
@@ -229,10 +249,10 @@ def create_hero():
             s = data['stats']
             print(f"\n{Colour.HEADER}--- BASE STATS (Rerolls left: {data['rerolls_left']}) ---{Colour.RESET}")
 
-            if s.get('growth_tag') == "Limitless":
-                print(f"{Colour.gold}*** LEGENDARY POTENTIAL DETECTED ***{Colour.RESET}")
-
-            print(f"HEIGHT: {s['height']} cm  (Max {s['height_potential']} / {s['height_growth_years']} yrs)")
+            print(f"HEIGHT: {s['height_cm']} cm")
+            print(f"WEIGHT: {s['weight_kg']} kg")
+            if s.get('is_two_way') and s.get('secondary_position'):
+                print(f"{Colour.gold}TWO-WAY POTENTIAL: {s['position']} / {s['secondary_position']}{Colour.RESET}")
 
             if data['position'] == "Pitcher":
                 print(f"VEL: {s['velocity']} km/h   STA: {s['stamina']}   CTRL: {s['control']}   MOV: {s['movement']}")
@@ -335,6 +355,10 @@ def create_hero():
                 idx = int(sel) - 1
                 if 0 <= idx < len(offers):
                     data['school'] = offers[idx]
+                    acad_skill, last_score = roll_academic_profile(data.get('hometown'), data['school'])
+                    data.setdefault('stats', {})
+                    data['stats']['academic_skill'] = acad_skill
+                    data['stats']['test_score'] = last_score
                     step += 1
             except: pass
 
@@ -346,6 +370,9 @@ def create_hero():
             print(f"Style:  {data['growth_style']}")
             print(f"Hometown: {data['hometown']}")
             print(f"School: {Colour.gold}{data['school'].name}{Colour.RESET}")
+            acad_skill = data['stats'].get('academic_skill', '??')
+            last_score = data['stats'].get('test_score', '??')
+            print(f"Academics: Skill {acad_skill} / Latest Test {last_score}")
             print("=======================")
             
             print("1. Start Game")
@@ -354,10 +381,19 @@ def create_hero():
             sel = input("Choice: ")
             if sel == '0': step -= 1; continue
             elif sel == '1':
-                commit_player_to_db(data)
+                player_id = commit_player_to_db(session, data)
                 print(f"{Colour.GREEN}Character Saved! Good Luck!{Colour.RESET}")
                 time.sleep(2)
-                break
+                return player_id
+
+    return None
+
 
 if __name__ == "__main__":
-    create_hero()
+    from database.setup_db import get_session
+
+    temp_session = get_session()
+    try:
+        create_hero(temp_session)
+    finally:
+        temp_session.close()

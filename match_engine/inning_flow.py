@@ -1,5 +1,6 @@
 # match_engine/inning_flow.py
 from .batter_logic import start_at_bat
+from .commentary import commentary_enabled
 from .scoreboard import Scoreboard
 
 def rotate_lineup(lineup):
@@ -17,7 +18,8 @@ def play_inning(state, scoreboard):
     state.clear_bases()
     start_runs_away = state.away_score
     
-    print(f"\n--- TOP OF INNING {state.inning} ---")
+    if commentary_enabled():
+        print(f"\n--- TOP OF INNING {state.inning} ---")
     while state.outs < 3:
         start_at_bat(state)
         # Rotate Away Lineup
@@ -38,7 +40,8 @@ def play_inning(state, scoreboard):
     state.clear_bases()
     start_runs_home = state.home_score
     
-    print(f"\n--- BOTTOM OF INNING {state.inning} ---")
+    if commentary_enabled():
+        print(f"\n--- BOTTOM OF INNING {state.inning} ---")
     while state.outs < 3:
         start_at_bat(state)
         # Rotate Home Lineup
@@ -46,7 +49,8 @@ def play_inning(state, scoreboard):
         
         # Walk-off check
         if state.inning >= 9 and state.home_score > state.away_score:
-            print(f"\n   >>> WALK-OFF WIN FOR {state.home_team.school_name}! <<<")
+            if commentary_enabled():
+                print(f"\n   >>> WALK-OFF WIN FOR {state.home_team.school_name}! <<<")
             state.outs = 3 # Break loop
             break
 

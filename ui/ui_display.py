@@ -22,8 +22,7 @@ def clear_screen():
 
 def render_screen(conn, player_data):
     """
-    Renders the main game HUD.
-    Expects 'player_data' to be a dictionary returned by utils.fetch_player_status()
+    Renders the main game HUD for the provided player snapshot.
     """
     clear_screen()
     

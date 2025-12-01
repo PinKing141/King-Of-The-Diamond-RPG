@@ -2,6 +2,16 @@
 from database.setup_db import Player, Coach, PlayerGameStats, BatteryTrust
 from sqlalchemy import desc
 
+
+def _trait(coach, name, default=50):
+    value = getattr(coach, name, None)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
 def calculate_player_utility(player, coach, team_avg_overall, session):
     """
     The Universal Utility Formula:
@@ -43,6 +53,37 @@ def calculate_player_utility(player, coach, team_avg_overall, session):
                   (seniority_score * w_seniority) + \
                   (form_score * 0.2) - \
                   (fatigue_score * w_fatigue)
+
+    # Personality nudges
+    coach_drive = _trait(coach, 'drive')
+    coach_loyalty = _trait(coach, 'loyalty')
+    coach_volatility = _trait(coach, 'volatility')
+
+    # Driven coaches demand excellence and add pressure for high performers
+    drive_delta = (coach_drive - 50) * 0.2
+    if stats_score >= team_avg_overall and drive_delta > 0:
+        raw_utility += drive_delta
+    elif stats_score < team_avg_overall and drive_delta > 0:
+        raw_utility += drive_delta * 0.3
+
+    # Low loyalty = faster disciplinary swings for bad form / mistakes
+    if coach_loyalty < 55:
+        impatience = (55 - coach_loyalty) / 55.0
+        sloppy_play = max(0, 55 - form_score)
+        raw_utility -= sloppy_play * impatience * 0.6
+        # fatigue complaints are treated harshly as well
+        extra_fatigue_penalty = max(0, fatigue_score - 40) * impatience * 0.25
+        raw_utility -= extra_fatigue_penalty
+    else:
+        # Loyal coaches cushion the blow for small slumps
+        forgiveness = (coach_loyalty - 55) / 45.0
+        raw_utility += max(0, 55 - form_score) * forgiveness * 0.3
+
+    # Volatile coaches are erratic: they overreact to both hot streaks and mistakes
+    volatility_scalar = (coach_volatility - 50) / 50.0
+    if volatility_scalar > 0:
+        raw_utility += (form_score - 50) * 0.2 * volatility_scalar
+        raw_utility -= max(0, fatigue_score - 50) * 0.3 * volatility_scalar
 
     # --- FAIRNESS RULES OVERRIDES ---
     

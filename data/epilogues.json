@@ -1,0 +1,698 @@
+[
+  {
+    "id": "two_way_icon",
+    "priority": 210,
+    "title": "DUAL LEGEND",
+    "summary": "A two-way comet who owned the tournament spotlight.",
+    "color": "gold",
+    "conditions": {
+      "requires_two_way": true,
+      "min_titles": 1,
+      "max_era": 2.8,
+      "min_hr": 12,
+      "min_innings": 60
+    },
+    "story": [
+      "{player_last} finished as one of the rare two-way heroes of Koshien.",
+      "He posted an ERA of {era_text} over {innings_text} innings while launching {hr_text} home runs.",
+      "That balance carried {school_name} to {titles_text} championship banner(s) and a place in tournament folklore."
+    ]
+  },
+  {
+    "id": "ace_champion",
+    "priority": 206,
+    "title": "IRONCLAD ACE",
+    "summary": "A prestige program's trusted big-game starter.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "max_era": 2.3,
+      "min_innings": 90,
+      "min_prestige": 70
+    },
+    "story": [
+      "Every elimination game seemed to end with {player_last} on the mound, carving lineups with surgical poise.",
+      "His career ERA settled at {era_text}, matching the reputation of {school_name}'s powerhouse program.",
+      "Scouts wrote that his next chapter would start in the draft room, not in an office."
+    ]
+  },
+  {
+    "id": "slugger_icon",
+    "priority": 204,
+    "title": "LIGHT-TOWER BAT",
+    "summary": "Middle-of-the-order thunder that never cooled off.",
+    "color": "green",
+    "conditions": {
+      "positions": ["Catcher", "Infielder", "Outfielder"],
+      "min_hr": 18,
+      "min_batting_avg": 0.32,
+      "min_prestige": 55
+    },
+    "story": [
+      "Pitchers whispered whenever {player_last} stepped to the plate.",
+      "{player_first} slugged {hr_text} homers with a {avg_text} average, forcing opposing coaches to rewrite every scouting report.",
+      "College recruiters lined up even before the season ended."
+    ]
+  },
+  {
+    "id": "legend_pitcher",
+    "priority": 202,
+    "title": "GENERATIONAL ACE",
+    "summary": "A once-in-a-century pitcher.",
+    "color": "gold",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "min_total_score": 95,
+      "min_velocity": 151
+    },
+    "story": [
+      "After graduating from {school_name}, {player_last} was selected in the first round of the NPB Draft.",
+      "He dominated the Japanese league for 5 years, winning the Sawamura Award three times.",
+      "At age 24, he signed a massive contract with an MLB team.",
+      "He played 12 seasons in the majors, winning 3 World Series titles and an MVP award.",
+      "Baseball historians now regard him as the greatest Japanese export in history...",
+      "{color_gold}With the sole exception of Shohei Ohtani, of course.{color_reset}"
+    ]
+  },
+  {
+    "id": "tragic_hero",
+    "priority": 200,
+    "title": "TRAGIC HERO",
+    "summary": "A star that burned too bright, too fast.",
+    "color": "red",
+    "conditions": {
+      "requires_injured": true,
+      "min_total_score": 80,
+      "min_prestige": 75
+    },
+    "story": [
+      "{player_last} was undeniable when healthy. He led {school_name} to glory while pitching through pain.",
+      "But the cost was high. His shoulder was a ticking time bomb.",
+      "He was drafted in the second round, but his pro career was a series of surgeries and rehab.",
+      "Fans still argue he had the highest ceiling of his generation, if only his body held up.",
+      "He retired at 25, a legend of Koshien, but a 'what if' of the pros."
+    ]
+  },
+  {
+    "id": "broken_prospect",
+    "priority": 196,
+    "title": "RETIRED (INJURY)",
+    "summary": "Defeated by his own body.",
+    "color": "fail",
+    "conditions": {
+      "requires_injured": true,
+      "max_prestige": 44
+    },
+    "story": [
+      "Injuries robbed {player_last} of his high school career.",
+      "He spent more time in the trainer's room than on the field.",
+      "Scouts saw the potential, but the medical reports were too risky.",
+      "He went undrafted and quietly hung up his cleats.",
+      "Sometimes he watches games and wonders how good he could have been."
+    ]
+  },
+  {
+    "id": "unfulfilled_summer",
+    "priority": 192,
+    "title": "RETIRED (NO KOSHIEN)",
+    "summary": "The summer ended at the district stadium.",
+    "color": "reset",
+    "conditions": {
+      "max_prestige": 44,
+      "max_total_score": 69
+    },
+    "story": [
+      "For three years, {player_last} chased the dream of the Sacred Stadium.",
+      "But the wall of the district qualifiers was too high.",
+      "He graduated without ever stepping foot on Koshien soil.",
+      "He played recreationally in college, but the regret of that final summer loss never fully faded.",
+      "He is now a salaryman who avidly watches the tournament every August."
+    ]
+  },
+  {
+    "id": "drafted_pitcher_high",
+    "priority": 182,
+    "title": "DRAFTED (HIGH)",
+    "summary": "Dominant pro pitcher.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "min_total_score": 80,
+      "min_velocity": 145,
+      "min_control": 60
+    },
+    "story": [
+      "{player_last} was a furnace on the mound — drafted into the NPB and unleashed as a strikeout ace.",
+      "Long seasons, multiple awards, and a lasting legacy followed."
+    ]
+  },
+  {
+    "id": "drafted_pitcher_starter",
+    "priority": 181,
+    "title": "DRAFTED (STARTER)",
+    "summary": "A dependable pro.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "min_total_score": 80
+    },
+    "story": [
+      "{player_last} heard his name on draft night and grew into a reliable rotation anchor.",
+      "Not always flashy, but the clubhouse swore by him."
+    ]
+  },
+  {
+    "id": "drafted_catcher",
+    "priority": 180,
+    "title": "DRAFTED (CATCHER)",
+    "summary": "Defensive leader in pro ranks.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Catcher"],
+      "min_total_score": 80
+    },
+    "story": [
+      "Teams coveted {player_last}'s defense and leadership.",
+      "He guided pitching staffs like a veteran from day one and became a coach-in-waiting."
+    ]
+  },
+  {
+    "id": "drafted_generic",
+    "priority": 179,
+    "title": "DRAFTED PRO",
+    "summary": "The start of a long professional career.",
+    "color": "cyan",
+    "conditions": {
+      "min_total_score": 80
+    },
+    "story": [
+      "{player_last} made the jump to professional baseball.",
+      "A long career was ahead: not always a superstar, but a respected name everyone trusted."
+    ]
+  },
+  {
+    "id": "prestige_captain",
+    "priority": 176,
+    "title": "CAPTAIN OF THE DYNASTY",
+    "summary": "Led a blue-blood program to silverware.",
+    "color": "blue",
+    "conditions": {
+      "min_titles": 1,
+      "min_prestige": 75
+    },
+    "story": [
+      "{school_name} expects banners, and {player_last} delivered exactly that.",
+      "Whether it was a timely hit or a diving stop, the captain supplied whatever the moment demanded.",
+      "He graduates as the face of a program that measures seasons in trophies."
+    ]
+  },
+  {
+    "id": "two_way_future",
+    "priority": 174,
+    "title": "LIMITLESS HYBRID",
+    "summary": "A raw two-way talent scouts want to polish.",
+    "color": "yellow",
+    "conditions": {
+      "requires_two_way": true,
+      "min_hr": 6,
+      "max_era": 3.6,
+      "min_innings": 40
+    },
+    "story": [
+      "{player_last} never quite won it all, but every region remembered the kid who refused to pick a lane.",
+      "He logged {innings_text} innings with a {era_text} ERA and still muscled {hr_text} balls over the fence.",
+      "Player development directors circled his name as their favorite project."
+    ]
+  },
+  {
+    "id": "two_way_phenom",
+    "priority": 172,
+    "title": "TWO-WAY PHENOM",
+    "summary": "A rare two-way pro.",
+    "color": "gold",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "min_velocity": 141,
+      "min_power": 66,
+      "min_contact": 56
+    },
+    "story": [
+      "{player_last} surprised everyone by dominating on the mound and in the heart of the order.",
+      "He split time between roles, produced highlight reels, and convinced pro scouts he could do both."
+    ]
+  },
+  {
+    "id": "workhorse_pitcher",
+    "priority": 170,
+    "title": "WORKHORSE STARTER",
+    "summary": "Durable, fearless, and beloved by teammates.",
+    "color": "magenta",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "max_era": 3.5,
+      "min_innings": 80
+    },
+    "story": [
+      "No rainout, no doubleheader, no extra innings scared {player_last}.",
+      "He logged {innings_text} varsity innings with a {era_text} ERA and the kind of grit every coach trusts.",
+      "Corporate and university teams have already offered him a locker."
+    ]
+  },
+  {
+    "id": "elite_closer",
+    "priority": 168,
+    "title": "ELITE CLOSER",
+    "summary": "The ninth-inning terror.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "min_velocity": 146,
+      "max_control": 54
+    },
+    "story": [
+      "{player_last} found his calling as a late-inning power arm.",
+      "A smaller frame but electric heat, he slammed the door whenever the anthem faded."
+    ]
+  },
+  {
+    "id": "crafty_ace",
+    "priority": 166,
+    "title": "CRAFTY ACE",
+    "summary": "Pitching intelligence wins games.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "max_velocity": 134,
+      "min_control": 75
+    },
+    "story": [
+      "{player_last} owed his success to guile and command.",
+      "Rather than blow hitters away, he outsmarted them into weak swings.",
+      "A long pro career as a crafty starter followed."
+    ]
+  },
+  {
+    "id": "late_bloomer",
+    "priority": 164,
+    "title": "LATE BLOOMER",
+    "summary": "Growth unlocked late; scouts noticed.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "min_total_score": 60,
+      "growth_tags": ["Limitless", "Sleeping Giant"]
+    },
+    "story": [
+      "{player_last}'s development arc was cinematic — from anonymous freshman to pro-caliber ace by senior summer.",
+      "Scouts fell in love at the perfect time."
+    ]
+  },
+  {
+    "id": "folk_hero_ace",
+    "priority": 162,
+    "title": "FOLK HERO ACE",
+    "summary": "Beloved by fans despite physical limits.",
+    "color": "reset",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "requires_injured": true,
+      "min_total_score": 55
+    },
+    "story": [
+      "{player_last} pitched through pain for {school_name} and earned a prefecture's admiration.",
+      "Pro longevity never materialized, but local legend status was secured forever."
+    ]
+  },
+  {
+    "id": "future_manager",
+    "priority": 160,
+    "title": "FUTURE MANAGER",
+    "summary": "A catcher who becomes the dugout's brain.",
+    "color": "green",
+    "conditions": {
+      "positions": ["Catcher"],
+      "min_catcher_leadership": 80,
+      "min_mental": 70
+    },
+    "story": [
+      "{player_last}'s mind for the game was unrivaled.",
+      "After a modest pro run he transitioned seamlessly into coaching, then managing, shaping future generations."
+    ]
+  },
+  {
+    "id": "gold_glove_catcher",
+    "priority": 158,
+    "title": "GOLD GLOVE CATCHER",
+    "summary": "A defensive cornerstone.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Catcher"],
+      "min_catcher_leadership": 65,
+      "min_command": 70
+    },
+    "story": [
+      "{player_last} commanded the diamond as a defensive rock.",
+      "Pro teams prized his framing and game-calling; he enjoyed a long career behind the plate."
+    ]
+  },
+  {
+    "id": "power_catcher",
+    "priority": 156,
+    "title": "POWER CATCHER",
+    "summary": "A rare offensive threat at the position.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Catcher"],
+      "min_power": 76,
+      "min_contact": 60
+    },
+    "story": [
+      "{player_last} became a feared bat as well as a steady receiver.",
+      "He launched big home runs and handled pitching staffs with total authority."
+    ]
+  },
+  {
+    "id": "coach_mentor",
+    "priority": 154,
+    "title": "COACH / MENTOR",
+    "summary": "Teaching the next generation.",
+    "color": "reset",
+    "conditions": {
+      "positions": ["Catcher"],
+      "max_prestige": 44,
+      "min_overall": 61
+    },
+    "story": [
+      "{player_last} never made the big lights as a pro, but his knowledge turned him into an exceptional college coach.",
+      "Pitch-calling gurus still reference his notebooks."
+    ]
+  },
+  {
+    "id": "catching_career",
+    "priority": 152,
+    "title": "CATCHING CAREER",
+    "summary": "A balanced catcher life.",
+    "color": "blue",
+    "conditions": {
+      "positions": ["Catcher"],
+      "min_total_score": 55
+    },
+    "story": [
+      "{player_last} enjoyed a fulfilling baseball life — some pro seasons, some coaching, lots of respect.",
+      "Catchers like him keep the sport healthy."
+    ]
+  },
+  {
+    "id": "gold_glove_infielder",
+    "priority": 150,
+    "title": "GOLD GLOVE INFIELDER",
+    "summary": "A defensive wizard.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Infielder"],
+      "min_fielding": 80,
+      "min_throwing": 70
+    },
+    "story": [
+      "{player_last} patrolled the infield like a vacuum.",
+      "Professional teams loved his glove work; awards and highlight reels followed."
+    ]
+  },
+  {
+    "id": "cleanup_corner",
+    "priority": 148,
+    "title": "CLEANUP CORNER",
+    "summary": "Powerful corner infielder.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Infielder"],
+      "min_power": 75,
+      "min_contact": 55
+    },
+    "story": [
+      "{player_last} terrorized pitching from the hot corner.",
+      "He became the cleanup hitter wherever he played and a feared slugger for life."
+    ]
+  },
+  {
+    "id": "clutch_shortstop",
+    "priority": 146,
+    "title": "CLUTCH SHORTSTOP",
+    "summary": "Leadership in the infield.",
+    "color": "green",
+    "conditions": {
+      "positions": ["Infielder"],
+      "min_fielding": 70,
+      "min_clutch": 65
+    },
+    "story": [
+      "{player_last} anchored the defense and led the team with clutch plays.",
+      "Fans still tell stories about the diving stops and laser throws."
+    ]
+  },
+  {
+    "id": "university_ace",
+    "priority": 144,
+    "title": "UNIVERSITY ACE",
+    "summary": "Refined in college, pro later.",
+    "color": "green",
+    "conditions": {
+      "positions": ["Pitcher"],
+      "min_total_score": 66
+    },
+    "story": [
+      "{player_last} accepted a scholarship to a top university and refined his craft.",
+      "He developed into a mature pro weapon by the time the draft came back around."
+    ]
+  },
+  {
+    "id": "university_catcher",
+    "priority": 142,
+    "title": "UNIVERSITY CATCHER",
+    "summary": "Study and baseball combined.",
+    "color": "green",
+    "conditions": {
+      "positions": ["Catcher"],
+      "min_total_score": 66
+    },
+    "story": [
+      "{player_last} used university ball to become a tactician behind the plate.",
+      "His intelligence and leadership led to a pro opportunity after graduation."
+    ]
+  },
+  {
+    "id": "university_star",
+    "priority": 140,
+    "title": "UNIVERSITY STAR",
+    "summary": "Taking the scholarly path to the pros.",
+    "color": "green",
+    "conditions": {
+      "min_total_score": 66,
+      "min_prestige": 60
+    },
+    "story": [
+      "{player_last} won a scholarship to a top university.",
+      "He matured physically and mentally there, setting up a future pro opportunity."
+    ]
+  },
+  {
+    "id": "corporate_league",
+    "priority": 138,
+    "title": "CORPORATE LEAGUE",
+    "summary": "The working man's baseball life.",
+    "color": "blue",
+    "conditions": {
+      "min_total_score": 66,
+      "max_prestige": 59
+    },
+    "story": [
+      "{player_last} joined a Corporate League powerhouse — a respected career balancing company life and baseball.",
+      "He became a fan favorite in industrial tournaments."
+    ]
+  },
+  {
+    "id": "university_infielder",
+    "priority": 136,
+    "title": "UNIVERSITY INFIELDER",
+    "summary": "Polished in college.",
+    "color": "green",
+    "conditions": {
+      "positions": ["Infielder"],
+      "min_total_score": 50,
+      "min_prestige": 60
+    },
+    "story": [
+      "{player_last} used university ball to improve and later play professionally.",
+      "A steady career followed."
+    ]
+  },
+  {
+    "id": "corporate_infielder",
+    "priority": 134,
+    "title": "CORPORATE INFIELDER",
+    "summary": "A pillar of company baseball.",
+    "color": "blue",
+    "conditions": {
+      "positions": ["Infielder"],
+      "min_total_score": 50,
+      "max_prestige": 59
+    },
+    "story": [
+      "{player_last} joined the corporate leagues and became a dependable star in industrial tournaments.",
+      "Respected by teammates and fans alike."
+    ]
+  },
+  {
+    "id": "elite_outfielder",
+    "priority": 132,
+    "title": "ELITE OUTFIELDER",
+    "summary": "A defensive and speed juggernaut.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Outfielder"],
+      "min_speed": 80,
+      "min_throwing": 70,
+      "min_fielding": 70
+    },
+    "story": [
+      "{player_last} covered acres of grass with effortless athleticism.",
+      "He made highlight reels and enjoyed an illustrious pro career as an elite defender."
+    ]
+  },
+  {
+    "id": "franchise_slugger",
+    "priority": 130,
+    "title": "FRANCHISE SLUGGER",
+    "summary": "A feared offensive force.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Outfielder"],
+      "min_power": 80,
+      "min_contact": 60
+    },
+    "story": [
+      "{player_last} launched balls into the stands with frightening regularity.",
+      "He became a franchise slugger in pro ball with a legendary swing."
+    ]
+  },
+  {
+    "id": "speed_phenom",
+    "priority": 128,
+    "title": "SPEED PHENOM",
+    "summary": "A base-stealing dynamo.",
+    "color": "cyan",
+    "conditions": {
+      "positions": ["Outfielder"],
+      "min_speed": 85,
+      "min_contact": 60
+    },
+    "story": [
+      "{player_last} became a blur on the bases and a spark atop lineups.",
+      "His track-like speed led to college offers or pro attention as a table-setter."
+    ]
+  },
+  {
+    "id": "outfield_career",
+    "priority": 126,
+    "title": "OUTFIELD CAREER",
+    "summary": "Solid professional or semi-pro life.",
+    "color": "blue",
+    "conditions": {
+      "positions": ["Outfielder"],
+      "min_total_score": 50
+    },
+    "story": [
+      "{player_last} carved out a professional or semi-pro life as an outfielder.",
+      "Not always the headline act, but a necessary presence on winning teams."
+    ]
+  },
+  {
+    "id": "two_way_legacy",
+    "priority": 124,
+    "title": "TWO-WAY LEGACY",
+    "summary": "A memorable two-way talent.",
+    "color": "cyan",
+    "conditions": {
+      "min_power": 70,
+      "min_velocity": 140,
+      "min_total_score": 60
+    },
+    "story": [
+      "{player_last} managed a rare two-way role in college and early pro years.",
+      "Although specialization followed, fans remember the days he did both at a high level."
+    ]
+  },
+  {
+    "id": "folk_slugger",
+    "priority": 122,
+    "title": "DISTRICT FOLK HERO",
+    "summary": "Carried a modest program with raw power.",
+    "color": "yellow",
+    "conditions": {
+      "max_prestige": 60,
+      "min_hr": 10
+    },
+    "story": [
+      "Every small-town broadcast mentioned {player_last}'s moonshots.",
+      "He cranked {hr_text} homers despite facing ace-level pitching every week.",
+      "Scouts loved his chip-on-the-shoulder energy as much as the exit velocity."
+    ]
+  },
+  {
+    "id": "baseball_for_life",
+    "priority": 121,
+    "title": "BASEBALL FOR LIFE",
+    "summary": "Keeps playing, coaching, and giving back.",
+    "color": "blue",
+    "conditions": {
+      "min_total_score": 50
+    },
+    "story": [
+      "{player_last} went on to play baseball at a competitive adult level.",
+      "Not a superstar, but he found a life in the game — coaching, playing, and giving back."
+    ]
+  },
+  {
+    "id": "university_path",
+    "priority": 120,
+    "title": "UNIVERSITY PATH",
+    "summary": "Opportunity through university ball.",
+    "color": "green",
+    "conditions": {
+      "min_total_score": 46,
+      "min_prestige": 60
+    },
+    "story": [
+      "{player_last} walked into university ball and worked extremely hard.",
+      "It wasn't always a straight path, but he found a role and occasional pro chances."
+    ]
+  },
+  {
+    "id": "work_and_baseball",
+    "priority": 118,
+    "title": "WORK & BASEBALL",
+    "summary": "A balanced life with baseball on the side.",
+    "color": "blue",
+    "conditions": {
+      "min_total_score": 46,
+      "max_prestige": 59
+    },
+    "story": [
+      "{player_last} continued baseball at a lower tier — corporate leagues or coaching.",
+      "He remained close to the game and found meaning there."
+    ]
+  },
+  {
+    "id": "ordinary_path",
+    "priority": 110,
+    "title": "RETIRED",
+    "summary": "A fond memory of youth.",
+    "color": "reset",
+    "conditions": {},
+    "story": [
+      "With the final out of summer, {player_last} left his glove on the field.",
+      "He went on to university, studied economics, and became a salaryman.",
+      "Sometimes, when drinking with colleagues, he talks about that one hot summer when he chased a dream at Koshien."
+    ]
+  }
+]

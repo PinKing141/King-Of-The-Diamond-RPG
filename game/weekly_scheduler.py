@@ -1,24 +1,29 @@
 import time
 import sys
-import os
-from sqlalchemy.orm import sessionmaker
-from database.setup_db import engine, Game, Team, GameState, Player
+from collections import defaultdict
+from typing import Optional
+
+from database.setup_db import Player
 from world.roster_manager import run_roster_logic
 # Import the bridge function from the new match engine location
-from match_engine import sim_match 
-from utils import fetch_player_status
 from ui.ui_display import Colour, clear_screen
-# Import the robust training logic which handles stats, fatigue, and injury
-from game.training_logic import apply_scheduled_action
 # Import the new Event Manager
 from game.event_manager import trigger_random_event
-
-Session = sessionmaker(bind=engine)
+from game.game_context import GameContext
+from game.relationship_manager import seed_relationships
+from game.academic_system import (
+    maybe_run_academic_exam,
+    is_academically_eligible,
+    required_score_for_school,
+)
+from game.dialogue_manager import run_dialogue_event
+from game.weekly_scheduler_core import (
+    DAYS_OF_WEEK,
+    SLOTS,
+    execute_schedule_core,
+)
 
 # --- CONSTANTS ---
-DAYS_OF_WEEK = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']
-SLOTS = ['Morning', 'Afternoon', 'Evening']
-
 # Costs are used for UI forecasting only; actual costs are in training_logic.py
 COSTS = {
     'rest': -15, 
@@ -36,6 +41,12 @@ MANDATORY_SCHEDULE = {
     (5, 0): 'practice_match', # SAT Morning
     (5, 1): 'practice_match', # SAT Afternoon
 }
+
+
+def _get_active_player(context: GameContext) -> Optional[Player]:
+    if context.player_id is None:
+        return None
+    return context.session.get(Player, context.player_id)
 
 # --- HELPER FUNCTIONS ---
 
@@ -144,15 +155,13 @@ def get_slot_choice():
         
     return None
 
-def plan_week_ui(conn):
+def plan_week_ui(start_fatigue: int):
     """
     Runs the interactive UI for the user to plan their week.
     Returns the completed schedule grid.
     """
-    # Fetch user's player data
-    p_data = fetch_player_status(conn)
     # Default to 0 if no fatigue found
-    start_fatigue = p_data.get('fatigue', 0) if p_data else 0
+    start_fatigue = start_fatigue or 0
     
     # Initialize Grid with Mandatory Events
     schedule_grid = [[None for _ in range(3)] for _ in range(7)]
@@ -227,76 +236,59 @@ def plan_week_ui(conn):
     
     return schedule_grid
 
-def execute_schedule(schedule_grid, current_week):
-    """
-    Iterates through the planned week and executes actions.
-    - Updates DB stats via training_logic
-    - Runs matches via match_engine
-    """
+def execute_schedule(context: GameContext, schedule_grid, current_week):
+    """Call the core executor then render its structured output."""
     print(f"\n=== EXECUTING WEEK {current_week} SCHEDULE ===")
-    session = Session()
-    conn = engine.raw_connection() # For legacy functions if needed
-    
-    try:
-        # Identify User's Team (Assume ID 1 for now or fetch via utils)
-        my_team = session.query(Team).get(1)
-        
-        for d_idx, day_slots in enumerate(schedule_grid):
-            day_name = DAYS_OF_WEEK[d_idx]
-            print(f"\n>> {day_name}")
-            
-            for s_idx, action in enumerate(day_slots):
-                if not action: continue
-                
-                slot_name = SLOTS[s_idx]
-                
-                print(f"   [{slot_name}] {action.replace('_', ' ').title()}...", end="")
-                sys.stdout.flush()
-                time.sleep(0.3)
-                
-                # 1. APPLY ACTION (Stats, Fatigue, Injury)
-                # This function now lives in game/training_logic.py
-                result_msg = apply_scheduled_action(conn, action)
-                print(f" {result_msg}")
-                
-                # 2. MATCH EXECUTION
-                # We only run the full match engine for "practice_match" (A-Team)
-                # "b_team_match" gives XP (handled above) but does NOT run the sim engine
-                if 'match' in action and 'b_team' not in action:
-                    # Find opponent
-                    opponents = session.query(Team).filter(Team.id != 1).all()
-                    if opponents:
-                        import random
-                        opponent = random.choice(opponents)
-                        print(f"   ⚾ GAME START: vs {opponent.name}")
-                        
-                        # CALL NEW MATCH ENGINE
-                        # Note: sim_match returns (winner_obj, score_str)
-                        winner, score = sim_match(my_team, opponent, "Practice Match", silent=False)
-                        
-                        # Handle Result
-                        if winner:
-                            outcome = "WON" if winner.id == my_team.id else "LOST"
-                            color = Colour.GREEN if outcome == "WON" else Colour.FAIL
-                            print(f"   🏁 RESULT: {color}{my_team.name} {outcome} ({score}){Colour.RESET}")
-                    else:
-                        print("   (No opponents available for match)")
 
-    except Exception as e:
-        print(f"\nError executing schedule: {e}")
-        # import traceback; traceback.print_exc() # Uncomment for deep debugging
-    finally:
-        session.close()
-        conn.close()
+    try:
+        execution = execute_schedule_core(context, schedule_grid, current_week)
+    except ValueError as err:
+        print(f"Execution aborted: {err}")
+        return
+
+    grouped = defaultdict(list)
+    for result in execution.results:
+        grouped[result.day_index].append(result)
+
+    for day_idx in sorted(grouped.keys()):
+        print(f"\n>> {DAYS_OF_WEEK[day_idx]}")
+        for slot_result in sorted(grouped[day_idx], key=lambda r: r.slot_index):
+            action_label = slot_result.action.replace('_', ' ').title()
+            print(f"   [{SLOTS[slot_result.slot_index]}] {action_label}...", end="")
+            sys.stdout.flush()
+            time.sleep(0.2)
+            print(f" {slot_result.training_summary}")
+
+            details = slot_result.training_details or {}
+            if details.get("stat_changes"):
+                stat_fragment = ", ".join(
+                    f"{k}+{round(v,2)}" for k, v in details["stat_changes"].items()
+                )
+                print(f"      Stats: {stat_fragment}")
+
+            if slot_result.opponent_name:
+                print(f"      ⚾ GAME START: vs {slot_result.opponent_name}")
+                if slot_result.match_result:
+                    color = Colour.GREEN if slot_result.match_result == 'WON' else Colour.FAIL
+                    score_text = slot_result.match_score or "N/A"
+                    print(
+                        f"      🏁 RESULT: {color}{slot_result.match_result}{Colour.RESET} ({score_text})"
+                    )
+            if slot_result.error:
+                print(f"      {Colour.WARNING}{slot_result.error}{Colour.RESET}")
+
+    if execution.warnings:
+        print("\nWarnings:")
+        for warn in execution.warnings:
+            print(f" - {warn}")
 
 # --- MAIN ENTRY POINT ---
 
-def start_week(current_week):
+def start_week(context: GameContext, current_week):
     """
     Orchestrates the activities for a single week of the game.
     """
     print(f"\n=== WEEK {current_week} BEGINS ===")
-    conn = engine.raw_connection()
     
     # 1. RUN ROSTER AI (The New Brain)
     # Before any user input, coaches across Japan analyze their teams.
@@ -305,15 +297,41 @@ def start_week(current_week):
     
     # 2. TRIGGER RANDOM EVENTS (The "Living World" update)
     # Happen before user plans their week so they can react to morale changes etc.
-    trigger_random_event()
+    trigger_random_event(context, current_week=current_week)
     
     # 3. USER PLANNING
     # User decides what to do this week
-    final_schedule = plan_week_ui(conn)
-    conn.close()
+    player = _get_active_player(context)
+    if not player:
+        print(f"{Colour.FAIL}Active player missing. Skipping scheduling.{Colour.RESET}")
+        return
+
+    seed_relationships(context.session, player)
+
+    exam_result = maybe_run_academic_exam(player, current_week)
+    if exam_result:
+        context.session.commit()
+        print(f"\n{Colour.BLUE}ACADEMICS: {exam_result['exam_name']}{Colour.RESET}")
+        print(f" Score {exam_result['score']} ({exam_result['grade']}) — {exam_result['comment']}")
+        if exam_result.get('grade') in {'D', 'F'}:
+            run_dialogue_event("coach_academic_suspension", player, player.school)
+
+    passing_score = required_score_for_school(player.school)
+
+    if not is_academically_eligible(player, player.school):
+        current_score = int(round(player.test_score or player.academic_skill or 0))
+        print(
+            f"{Colour.WARNING}Academic Suspension: Score {current_score}. Need {passing_score}+ to dress for games.{Colour.RESET}"
+        )
+
+    start_fatigue = player.fatigue if player.fatigue is not None else 0
+
+    final_schedule = plan_week_ui(start_fatigue)
     
     # 4. EXECUTE WEEK
     # Run the days, update stats, play the matches
-    execute_schedule(final_schedule, current_week)
+    execute_schedule(context, final_schedule, current_week)
+
+    context.clear_all_temp_effects()
     
     print(f"=== WEEK {current_week} COMPLETE ===\n")

@@ -1,6 +1,8 @@
 import sqlalchemy
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Boolean, Text, text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, synonym
+from sqlalchemy import inspect
+from contextlib import contextmanager
 import sys
 import os
 
@@ -16,9 +18,172 @@ if not os.path.exists(db_dir):
 engine = create_engine(f"sqlite:///{DB_PATH}")
 Base = declarative_base()
 
-# GLOBAL SESSION
-Session = sessionmaker(bind=engine)
-session = Session()
+SessionLocal = sessionmaker(bind=engine)
+
+
+def get_session():
+    """Return a brand-new SQLAlchemy session."""
+    return SessionLocal()
+
+
+@contextmanager
+def session_scope():
+    """Provide a transactional scope around a series of operations."""
+    session = get_session()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def close_all_sessions():
+    """Ensure every live session created via SessionLocal is closed."""
+    SessionLocal.close_all()
+
+
+def ensure_gamestate_schema():
+    """Add new columns to gamestate table when upgrading existing saves."""
+    inspector = inspect(engine)
+    if not inspector.has_table('gamestate'):
+        return
+
+    columns = {col['name'] for col in inspector.get_columns('gamestate')}
+    if 'active_player_id' not in columns:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE gamestate ADD COLUMN active_player_id INTEGER"))
+
+
+def ensure_player_schema():
+    """Add newly introduced player columns when upgrading existing saves."""
+    inspector = inspect(engine)
+    if not inspector.has_table('players'):
+        return
+
+    columns = {col['name'] for col in inspector.get_columns('players')}
+    statements = []
+
+    if 'height_cm' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN height_cm INTEGER DEFAULT 165")
+    if 'height_potential' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN height_potential INTEGER DEFAULT 180")
+    if 'growth_tag' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN growth_tag VARCHAR DEFAULT 'Normal'")
+    if 'weight_kg' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN weight_kg INTEGER DEFAULT 72")
+    if 'is_two_way' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN is_two_way BOOLEAN DEFAULT 0")
+    if 'secondary_position' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN secondary_position VARCHAR")
+
+    if 'academic_skill' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN academic_skill INTEGER DEFAULT 55")
+    if 'test_score' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN test_score INTEGER DEFAULT 55")
+    if 'drive' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN drive INTEGER DEFAULT 50")
+    if 'loyalty' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN loyalty INTEGER DEFAULT 50")
+    if 'volatility' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN volatility INTEGER DEFAULT 50")
+    if 'morale' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN morale INTEGER DEFAULT 60")
+    if 'slump_timer' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN slump_timer INTEGER DEFAULT 0")
+    if 'archetype' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN archetype VARCHAR DEFAULT 'steady'")
+
+    if not statements:
+        return
+
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+        # Normalize nulls on existing rows
+        conn.execute(text("UPDATE players SET height_cm = COALESCE(height_cm, 165)"))
+        conn.execute(text("UPDATE players SET height_potential = COALESCE(height_potential, 180)"))
+        conn.execute(text("UPDATE players SET growth_tag = COALESCE(growth_tag, 'Normal')"))
+        conn.execute(text("UPDATE players SET weight_kg = COALESCE(weight_kg, 72)"))
+        conn.execute(text("UPDATE players SET is_two_way = COALESCE(is_two_way, 0)"))
+        conn.execute(text("UPDATE players SET secondary_position = NULLIF(secondary_position, '')"))
+        conn.execute(text("UPDATE players SET academic_skill = COALESCE(academic_skill, 55)"))
+        conn.execute(text("UPDATE players SET test_score = COALESCE(test_score, 55)"))
+        conn.execute(text("UPDATE players SET drive = COALESCE(drive, 50)"))
+        conn.execute(text("UPDATE players SET loyalty = COALESCE(loyalty, 50)"))
+        conn.execute(text("UPDATE players SET volatility = COALESCE(volatility, 50)"))
+        conn.execute(text("UPDATE players SET morale = COALESCE(morale, 60)"))
+        conn.execute(text("UPDATE players SET slump_timer = COALESCE(slump_timer, 0)"))
+        conn.execute(text("UPDATE players SET archetype = COALESCE(archetype, 'steady')"))
+
+
+def ensure_coach_schema():
+    inspector = inspect(engine)
+    if not inspector.has_table('coaches'):
+        return
+
+    columns = {col['name'] for col in inspector.get_columns('coaches')}
+    statements = []
+    if 'drive' not in columns:
+        statements.append("ALTER TABLE coaches ADD COLUMN drive INTEGER DEFAULT 50")
+    if 'loyalty' not in columns:
+        statements.append("ALTER TABLE coaches ADD COLUMN loyalty INTEGER DEFAULT 50")
+    if 'volatility' not in columns:
+        statements.append("ALTER TABLE coaches ADD COLUMN volatility INTEGER DEFAULT 50")
+
+    if not statements:
+        return
+
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+        conn.execute(text("UPDATE coaches SET drive = COALESCE(drive, 50)"))
+        conn.execute(text("UPDATE coaches SET loyalty = COALESCE(loyalty, 50)"))
+        conn.execute(text("UPDATE coaches SET volatility = COALESCE(volatility, 50)"))
+
+
+def ensure_game_stats_schema():
+    inspector = inspect(engine)
+    if not inspector.has_table('player_game_stats'):
+        return
+
+    columns = {col['name'] for col in inspector.get_columns('player_game_stats')}
+    statements = []
+    if 'confidence' not in columns:
+        statements.append("ALTER TABLE player_game_stats ADD COLUMN confidence INTEGER DEFAULT 0")
+
+    if not statements:
+        return
+
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+
+
+def ensure_game_schema():
+    inspector = inspect(engine)
+    if not inspector.has_table('games'):
+        return
+
+    columns = {col['name'] for col in inspector.get_columns('games')}
+    statements = []
+
+    def _add(col_name, definition):
+        if col_name not in columns:
+            statements.append(f"ALTER TABLE games ADD COLUMN {col_name} {definition}")
+
+    _add('weather_label', 'VARCHAR')
+    _add('weather_condition', 'VARCHAR')
+    _add('weather_precip', 'VARCHAR')
+    _add('weather_temperature_f', 'INTEGER')
+    _add('weather_wind_speed', 'FLOAT')
+    _add('weather_wind_direction', 'VARCHAR')
+    _add('weather_summary', 'TEXT')
+
+    if not statements:
+        return
+
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
 
 
 # ============================================================
@@ -71,6 +236,10 @@ class Coach(Base):
     stats_weight = Column(Float, default=0.5)
     fatigue_penalty_weight = Column(Float, default=0.5)
 
+    drive = Column(Integer, default=50)
+    loyalty = Column(Integer, default=50)
+    volatility = Column(Integer, default=50)
+
     school = relationship("School", back_populates="coach")
 
 
@@ -107,10 +276,21 @@ class Player(Base):
     mental = Column(Integer, default=50)
     discipline = Column(Integer, default=50)
     clutch = Column(Integer, default=50)
+    academic_skill = Column(Integer, default=55)
+    test_score = Column(Integer, default=55)
+    drive = Column(Integer, default=50)
+    loyalty = Column(Integer, default=50)
+    volatility = Column(Integer, default=50)
+    morale = Column(Integer, default=60)
+    slump_timer = Column(Integer, default=0)
+    archetype = Column(String, default="steady")
 
     # ---------- NEW PHYSICAL GROWTH ----------
-    height_cm = Column(Integer, default=165)           # Starting height
+    height_cm = Column(Integer, default=165)           # Current height (cm)
     height_potential = Column(Integer, default=180)    # Max possible height
+    weight_kg = Column(Integer, default=72)            # Body mass for growth tuning
+    is_two_way = Column(Boolean, default=False)
+    secondary_position = Column(String, nullable=True)
 
     # Attributes (batting + pitching)
     stamina = Column(Integer, default=50)
@@ -133,6 +313,12 @@ class Player(Base):
 
     school = relationship("School", back_populates="players")
     pitch_repertoire = relationship("PitchRepertoire", back_populates="player")
+    relationship_profile = relationship(
+        "PlayerRelationship",
+        back_populates="player",
+        uselist=False,
+        foreign_keys="PlayerRelationship.player_id",
+    )
 
 
 # ============================================================
@@ -174,6 +360,13 @@ class Game(Base):
     season_year = Column(Integer, default=1)
     tournament = Column(String, nullable=True)
     is_completed = Column(Boolean, default=False)
+    weather_label = Column(String, nullable=True)
+    weather_condition = Column(String, nullable=True)
+    weather_precip = Column(String, nullable=True)
+    weather_temperature_f = Column(Integer, nullable=True)
+    weather_wind_speed = Column(Float, nullable=True)
+    weather_wind_direction = Column(String, nullable=True)
+    weather_summary = Column(Text, nullable=True)
 
     home_school = relationship("School", foreign_keys=[home_school_id], back_populates="games_home")
     away_school = relationship("School", foreign_keys=[away_school_id], back_populates="games_away")
@@ -207,6 +400,7 @@ class PlayerGameStats(Base):
     
     strikeouts_pitched = Column(Integer, default=0)
     runs_allowed = Column(Integer, default=0)
+    confidence = Column(Integer, default=0)
 
     game = relationship("Game", back_populates="stats")
     player = relationship("Player")
@@ -225,6 +419,48 @@ class ScoutingData(Base):
     last_scouted_week = Column(Integer, default=0)
 
     school = relationship("School", back_populates="scouting_data")
+
+
+# ============================================================
+# 9. PLAYER RELATIONSHIP TABLE
+# ============================================================
+class PlayerRelationship(Base):
+    __tablename__ = 'player_relationships'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey('players.id'), unique=True)
+    captain_id = Column(Integer, ForeignKey('players.id'), nullable=True)
+    battery_partner_id = Column(Integer, ForeignKey('players.id'), nullable=True)
+    rival_id = Column(Integer, ForeignKey('players.id'), nullable=True)
+
+    captain_rel = Column(Integer, default=60)
+    battery_rel = Column(Integer, default=55)
+    rivalry_score = Column(Integer, default=45)
+
+    last_captain_event_week = Column(Integer, default=0)
+    last_rival_event_week = Column(Integer, default=0)
+
+    player = relationship("Player", foreign_keys=[player_id], back_populates="relationship_profile")
+    captain = relationship("Player", foreign_keys=[captain_id], post_update=True)
+    battery_partner = relationship("Player", foreign_keys=[battery_partner_id], post_update=True)
+    rival = relationship("Player", foreign_keys=[rival_id], post_update=True)
+
+
+# ============================================================
+# 10. COACH STRATEGY MODIFIERS
+# ============================================================
+class CoachStrategyMod(Base):
+    __tablename__ = 'coach_strategy_mods'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    school_id = Column(Integer, ForeignKey('schools.id'))
+    effect_type = Column(String)
+    games_remaining = Column(Integer, default=1)
+    target_player_id = Column(Integer, ForeignKey('players.id'), nullable=True)
+    payload = Column(Text, nullable=True)
+
+    school = relationship("School")
+    target_player = relationship("Player")
 
 
 # ============================================================
@@ -249,6 +485,7 @@ class GameState(Base):
     current_week = Column(Integer)
     current_month = Column(Integer)
     current_year = Column(Integer)
+    active_player_id = Column(Integer, nullable=True)
 
 
 # Aliases
@@ -261,17 +498,26 @@ Performance = PlayerGameStats
 # ============================================================
 def create_database():
     Base.metadata.create_all(engine)
-    
-    if not session.query(GameState).first():
-        print("Initialising Game State...")
-        initial_state = GameState(
-            current_day='MON',
-            current_week=1,
-            current_month=4,
-            current_year=2024
-        )
-        session.add(initial_state)
-        session.commit()
+    ensure_gamestate_schema()
+    ensure_player_schema()
+    ensure_coach_schema()
+    ensure_game_schema()
+    ensure_game_stats_schema()
+    ensure_game_schema()
+
+    with session_scope() as session:
+        if not session.query(GameState).first():
+            print("Initialising Game State...")
+            initial_state = GameState(
+                current_day='MON',
+                current_week=1,
+                current_month=4,
+                current_year=2024,
+                active_player_id=None,
+            )
+            session.add(initial_state)
+
+            session.commit()
 
 
 if __name__ == "__main__":

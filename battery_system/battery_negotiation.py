@@ -1,11 +1,14 @@
 # battery_system/battery_negotiation.py
 import time
-from database.setup_db import session, Player
 from ui.ui_display import Colour
 from match_engine.pitch_logic import get_arsenal
 from .battery_trust import get_trust
 from .pitcher_personality import does_pitcher_accept
 from .catcher_ai import suggest_pitch_logic
+
+
+def _player_team_id(player):
+    return getattr(player, 'team_id', getattr(player, 'school_id', None))
 
 def run_battery_negotiation(pitcher, catcher, batter, state):
     """
@@ -15,8 +18,8 @@ def run_battery_negotiation(pitcher, catcher, batter, state):
     """
     
     # 1. Identify Roles
-    user_is_pitcher = (pitcher.team_id == 1) # User controls Pitcher
-    user_is_catcher = (catcher.team_id == 1) # User controls Catcher (Future feature)
+    user_is_pitcher = (_player_team_id(pitcher) == 1) # User controls Pitcher
+    user_is_catcher = (_player_team_id(catcher) == 1) # User controls Catcher (Future feature)
     
     # For now, we assume User is Pitcher OR User watches AI vs AI.
     # If User is Catcher (Phase 5), we'd swap the logic.

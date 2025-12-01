@@ -1,5 +1,3 @@
-import sqlalchemy
-from sqlalchemy.orm import sessionmaker
 import random
 import sys
 import os
@@ -9,16 +7,25 @@ import traceback
 
 # Fix Imports for subfolder location
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DB_PATH, NAME_DB_PATH, CITIES_DB_PATH
+from config import NAME_DB_PATH, CITIES_DB_PATH
 from match_engine.pitch_definitions import PITCH_TYPES
-from database.setup_db import School, Player, PitchRepertoire, engine, create_database, Coach, ScoutingData
-from world.school_philosophy import PHILOSOPHY_MATRIX 
+from database.setup_db import (
+    School,
+    Player,
+    PitchRepertoire,
+    create_database,
+    Coach,
+    ScoutingData,
+    session_scope,
+)
+from world.school_philosophy import PHILOSOPHY_MATRIX
+from game.archetypes import assign_player_archetype
 from world.coach_generation import generate_coach_for_school
+from player_roles.two_way import roll_two_way_profile
+from game.personality import roll_player_personality
 
 # Initialize DB
 create_database()
-Session = sessionmaker(bind=engine)
-session = Session()
 
 # --- CONFIGURATION ---
 SCALE_FACTOR = 1.0 
@@ -155,7 +162,22 @@ def generate_stats(position, specific_pos, focus):
 
     stats['fatigue'] = 0
     stats['overall'] = 40
+
+    # Physical profile
+    base_h = 175
+    base_w = 72
+    if position == "Pitcher":
+        base_h = 178
+        base_w = 75
+    elif specific_pos in ("1B", "3B"):
+        base_h = 180
+        base_w = 80
+
+    stats['height_cm'] = int(random.normalvariate(base_h, 5))
+    stats['weight_kg'] = int(random.normalvariate(base_w, 8))
+    stats['height_potential'] = stats['height_cm'] + random.randint(5, 20)
     
+    two_way, secondary = roll_two_way_profile(position, rng=random)
     stats['stamina'] = get_val()
     
     # Pitching vs Fielding
@@ -185,6 +207,9 @@ def generate_stats(position, specific_pos, focus):
         if specific_pos == "C": stats['fielding'] += 15; stats['speed'] -= 10
         elif specific_pos == "SS": stats['fielding'] += 10; stats['speed'] += 5
         elif specific_pos == "1B": stats['power'] += 10
+
+    stats['is_two_way'] = two_way
+    stats['secondary_position'] = secondary if secondary else None
     
     return stats
 
@@ -248,157 +273,163 @@ def generate_school_name(prefecture, city):
             return name
 
 def populate_world():
-    print("--- SYSTEM: WIPING OLD DATA ---")
-    try:
-        session.query(PitchRepertoire).delete()
-        session.query(Player).delete()
-        session.query(ScoutingData).delete() # New table
-        session.query(School).delete()
-        session.query(Coach).delete()
-        session.commit()
-    except Exception as e:
-        print(f"Error wiping data: {e}")
-        session.rollback()
+    with session_scope() as session:
+        print("--- SYSTEM: WIPING OLD DATA ---")
+        try:
+            session.query(PitchRepertoire).delete()
+            session.query(Player).delete()
+            session.query(ScoutingData).delete() # New table
+            session.query(School).delete()
+            session.query(Coach).delete()
+            session.commit()
+        except Exception as e:
+            print(f"Error wiping data: {e}")
+            session.rollback()
 
-    print(f"--- SYSTEM: GENERATING JAPAN (Scale: {SCALE_FACTOR}) ---")
-    total_schools = 0
-    archetype_keys = list(PHILOSOPHY_MATRIX.keys())
-    weights = [PHILOSOPHY_MATRIX[k].get('weight', 1) for k in archetype_keys]
+        print(f"--- SYSTEM: GENERATING JAPAN (Scale: {SCALE_FACTOR}) ---")
+        total_schools = 0
+        archetype_keys = list(PHILOSOPHY_MATRIX.keys())
+        weights = [PHILOSOPHY_MATRIX[k].get('weight', 1) for k in archetype_keys]
 
-    for pref, count in prefecture_counts.items():
-        print(f"Processing: {pref}...", end=" ")
-        num_schools = max(6, int(count * SCALE_FACTOR))
-        
-        # Districts logic (Used for count, but not stored in DB)
-        districts = [pref]
-        if pref in ["Tokyo", "Hokkaido"]:
-            num_schools = int(num_schools / 2)
-            if pref == "Tokyo": districts = ["East Tokyo", "West Tokyo"]
-            else: districts = ["North Hokkaido", "South Hokkaido"]
+        for pref, count in prefecture_counts.items():
+            print(f"Processing: {pref}...", end=" ")
+            num_schools = max(6, int(count * SCALE_FACTOR))
+            
+            # Districts logic (Used for count, but not stored in DB)
+            districts = [pref]
+            if pref in ["Tokyo", "Hokkaido"]:
+                num_schools = int(num_schools / 2)
+                if pref == "Tokyo": districts = ["East Tokyo", "West Tokyo"]
+                else: districts = ["North Hokkaido", "South Hokkaido"]
 
-        schools_in_pref = 0
-        for current_district in districts:
-            for _ in range(num_schools):
-                try:
-                    phil_name = random.choices(archetype_keys, weights=weights, k=1)[0]
-                    data = PHILOSOPHY_MATRIX[phil_name]
-                    
-                    city = get_random_city(pref)
-                    s_name = generate_school_name(pref, city)
-                    
-                    # REVAMPED BUDGET: Multiplier for realism (e.g. Budget 100 -> 10,000,000 Yen)
-                    # Base is roughly 1-5 million yen for equipment/travel
-                    # Rich schools get 20-50m
-                    base_budget_yen = data.get('budget', 50000) * 100 
-                    # Add variance
-                    final_budget = int(base_budget_yen * random.uniform(0.8, 1.2))
-                    
-                    school = School(
-                        name=s_name,
-                        prefecture=pref,
-                        prestige=random.randint(20, 80),
-                        budget=final_budget,
-                        philosophy=phil_name,
-                        focus=data.get('focus', 'Balanced'),
-                        training_style=data.get('training_style', 'Modern')
-                    )
-                    session.add(school)
-                    session.flush() # Get ID
-                    schools_in_pref += 1
-                    total_schools += 1
-                    
-                    # Generate Coach (V2)
-                    coach = generate_coach_for_school(school)
-                    session.add(coach)
+            schools_in_pref = 0
+            for current_district in districts:
+                for _ in range(num_schools):
+                    try:
+                        phil_name = random.choices(archetype_keys, weights=weights, k=1)[0]
+                        data = PHILOSOPHY_MATRIX[phil_name]
+                        
+                        city = get_random_city(pref)
+                        s_name = generate_school_name(pref, city)
+                        
+                        # REVAMPED BUDGET: Multiplier for realism (e.g. Budget 100 -> 10,000,000 Yen)
+                        # Base is roughly 1-5 million yen for equipment/travel
+                        # Rich schools get 20-50m
+                        base_budget_yen = data.get('budget', 50000) * 100 
+                        # Add variance
+                        final_budget = int(base_budget_yen * random.uniform(0.8, 1.2))
+                        
+                        school = School(
+                            name=s_name,
+                            prefecture=pref,
+                            prestige=random.randint(20, 80),
+                            budget=final_budget,
+                            philosophy=phil_name,
+                            focus=data.get('focus', 'Balanced'),
+                            training_style=data.get('training_style', 'Modern')
+                        )
+                        session.add(school)
+                        session.flush() # Get ID
+                        schools_in_pref += 1
+                        total_schools += 1
+                        
+                        # Generate Coach (V2)
+                        coach = generate_coach_for_school(school)
+                        session.add(coach)
 
-                    # Generate Players
-                    roster_players = []
+                        # Generate Players
+                        roster_players = []
+                        
+                        positions_needed = [
+                            "Pitcher", "Pitcher", "Pitcher", "Pitcher",
+                            "Catcher", "Catcher",
+                            "1B", "2B", "3B", "SS",
+                            "LF", "CF", "RF",
+                            "Infielder", "Outfielder", "Infielder", "Outfielder", "Utility"
+                        ]
+                        
+                        for spec_pos in positions_needed:
+                            broad_pos = spec_pos
+                            if spec_pos in ["1B", "2B", "3B", "SS", "Utility"]: broad_pos = "Infielder"
+                            if spec_pos in ["LF", "CF", "RF"]: broad_pos = "Outfielder"
+                            
+                            stats = generate_stats(broad_pos, spec_pos, data.get('focus', 'Balanced'))
+                            l_name, f_name = get_random_english_name('M')
+                            
+                            # SAFETY FILTER: Only pass stats that exist as columns
+                            valid_cols = {c.key for c in Player.__table__.columns}
+                            
+                            p_data = {
+                                "school_id": school.id,
+                                "name": f"{l_name} {f_name}",
+                                "first_name": f_name, 
+                                "last_name": l_name,
+                                "year": random.choices([1, 2, 3], weights=[30, 40, 30])[0],
+                                "position": broad_pos,
+                                "role": "BENCH",
+                                **{k: v for k, v in stats.items() if k in valid_cols}
+                            }
+                            traits = roll_player_personality(school)
+                            p_data['drive'] = traits['drive']
+                            p_data['loyalty'] = traits['loyalty']
+                            p_data['volatility'] = traits['volatility']
+                            
+                            player = Player(**p_data)
+                            assign_player_archetype(player, school, position=spec_pos)
+                            
+                            # Arsenal Generation (Pitchers only)
+                            class PseudoPlayer:
+                                def __init__(self, s):
+                                    self.control = s.get('control', 50)
+                                    self.movement = s.get('movement', 50)
+                            
+                            if broad_pos == "Pitcher":
+                                arsenal = generate_pitch_arsenal(PseudoPlayer(stats), data.get('focus'), "Overhand")
+                                player.pitch_repertoire = arsenal
+                            
+                            roster_players.append(player)
+                        
+                        # Assign Roles
+                        pitchers = [p for p in roster_players if p.position == "Pitcher"]
+                        fielders = [p for p in roster_players if p.position != "Pitcher"]
+                        
+                        pitchers.sort(key=lambda x: x.velocity + x.control, reverse=True)
+                        fielders.sort(key=lambda x: x.contact + x.power + x.fielding, reverse=True)
+                        
+                        if pitchers:
+                            pitchers[0].jersey_number = 1
+                            pitchers[0].role = "ACE"
+                            pitchers[0].is_starter = True
+                            
+                        used_nums = {1}
+                        for i, f in enumerate(fielders[:8]):
+                            num = i + 2
+                            f.jersey_number = num
+                            f.is_starter = True
+                            f.role = "STARTER"
+                            used_nums.add(num)
+                            
+                        bench = pitchers[1:] + fielders[8:]
+                        next_num = 10
+                        for b in bench:
+                            b.jersey_number = next_num
+                            b.role = "BENCH"
+                            if b.position == "Pitcher": b.role = "RELIEVER"
+                            next_num += 1
+                        
+                        session.add_all(roster_players)
+                        
+                        # Visual progress
+                        if schools_in_pref % 10 == 0:
+                            print(".", end="", flush=True)
                     
-                    positions_needed = [
-                        "Pitcher", "Pitcher", "Pitcher", "Pitcher",
-                        "Catcher", "Catcher",
-                        "1B", "2B", "3B", "SS",
-                        "LF", "CF", "RF",
-                        "Infielder", "Outfielder", "Infielder", "Outfielder", "Utility"
-                    ]
-                    
-                    for spec_pos in positions_needed:
-                        broad_pos = spec_pos
-                        if spec_pos in ["1B", "2B", "3B", "SS", "Utility"]: broad_pos = "Infielder"
-                        if spec_pos in ["LF", "CF", "RF"]: broad_pos = "Outfielder"
-                        
-                        stats = generate_stats(broad_pos, spec_pos, data.get('focus', 'Balanced'))
-                        l_name, f_name = get_random_english_name('M')
-                        
-                        # SAFETY FILTER: Only pass stats that exist as columns
-                        valid_cols = {c.key for c in Player.__table__.columns}
-                        
-                        p_data = {
-                            "school_id": school.id,
-                            "name": f"{l_name} {f_name}",
-                            "first_name": f_name, 
-                            "last_name": l_name,
-                            "year": random.choices([1, 2, 3], weights=[30, 40, 30])[0],
-                            "position": broad_pos,
-                            "role": "BENCH",
-                            **{k: v for k, v in stats.items() if k in valid_cols}
-                        }
-                        
-                        player = Player(**p_data)
-                        
-                        # Arsenal Generation (Pitchers only)
-                        class PseudoPlayer:
-                            def __init__(self, s):
-                                self.control = s.get('control', 50)
-                                self.movement = s.get('movement', 50)
-                        
-                        if broad_pos == "Pitcher":
-                            arsenal = generate_pitch_arsenal(PseudoPlayer(stats), data.get('focus'), "Overhand")
-                            player.pitch_repertoire = arsenal
-                        
-                        roster_players.append(player)
-                    
-                    # Assign Roles
-                    pitchers = [p for p in roster_players if p.position == "Pitcher"]
-                    fielders = [p for p in roster_players if p.position != "Pitcher"]
-                    
-                    pitchers.sort(key=lambda x: x.velocity + x.control, reverse=True)
-                    fielders.sort(key=lambda x: x.contact + x.power + x.fielding, reverse=True)
-                    
-                    if pitchers:
-                        pitchers[0].jersey_number = 1
-                        pitchers[0].role = "ACE"
-                        pitchers[0].is_starter = True
-                        
-                    used_nums = {1}
-                    for i, f in enumerate(fielders[:8]):
-                        num = i + 2
-                        f.jersey_number = num
-                        f.is_starter = True
-                        f.role = "STARTER"
-                        used_nums.add(num)
-                        
-                    bench = pitchers[1:] + fielders[8:]
-                    next_num = 10
-                    for b in bench:
-                        b.jersey_number = next_num
-                        b.role = "BENCH"
-                        if b.position == "Pitcher": b.role = "RELIEVER"
-                        next_num += 1
-                    
-                    session.add_all(roster_players)
-                    
-                    # Visual progress
-                    if schools_in_pref % 10 == 0:
-                        print(".", end="", flush=True)
-                
-                except Exception as e:
-                    # Log error but don't crash the loop
-                    # print(f"Error generating school: {e}")
-                    continue
+                    except Exception as e:
+                        # Log error but don't crash the loop
+                        # print(f"Error generating school: {e}")
+                        continue
 
-        session.commit()
-        print(f" Done. ({schools_in_pref} Schools)")
+            session.commit()
+            print(f" Done. ({schools_in_pref} Schools)")
 
     if name_db_conn: name_db_conn.close()
     if cities_db_conn: cities_db_conn.close()

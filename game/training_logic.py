@@ -1,37 +1,53 @@
 import random
-import sys
-import os
+from typing import Optional
 
-# Fix path to find utils.py in root
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils import PLAYER_ID
 from .health_system import check_injury_risk, apply_injury, get_performance_modifiers
-from database.setup_db import engine, Player, School 
+from database.setup_db import Player
+from game.academic_system import resolve_study_session, clamp, is_academically_eligible
+from game.game_context import GameContext
+from game.personality_effects import adjust_player_morale, decay_slump
+from game.relationship_manager import register_morale_rebound
 
-def apply_scheduled_action(conn, action_type):
-    """
-    Executes a single action from the schedule.
-    Updates stats, fatigue, and checks for injuries.
-    Returns a summary string of what happened.
-    """
-    cursor = conn.cursor()
+
+def _get_player(context: GameContext) -> Optional[Player]:
+    if context.player_id is None:
+        return None
+    return context.session.get(Player, context.player_id)
+
+
+def _apply_temp_training_bonuses(context: GameContext, stat_gains: dict):
+    if not context or not stat_gains:
+        return
+    bonus = context.get_temp_effect('mentor_training')
+    if not bonus:
+        return
+    multiplier = 1 + bonus.get('multiplier', 0.0)
+    for stat in stat_gains:
+        stat_gains[stat] *= multiplier
+
+
+def apply_scheduled_action(context: GameContext, action_type: str) -> dict:
+    """Execute a scheduled action and return a structured result dict."""
+    player = _get_player(context)
+    if not player:
+        return {"status": "error", "message": "Player not found."}
     
-    # 1. Fetch Player + Role info
-    cursor.execute("SELECT fatigue, growth_tag, conditioning, injury_days, jersey_number, position FROM players WHERE id = ?", (PLAYER_ID,))
-    p_data = cursor.fetchone()
-    
-    if not p_data: return "Error: Player not found."
-    
-    fatigue = p_data[0]
-    style = p_data[1]
-    conditioning = p_data[2] if p_data[2] is not None else 50
-    injury_days = p_data[3]
-    jersey_num = p_data[4]
-    position = p_data[5]
+    fatigue = player.fatigue or 0
+    style = player.growth_tag or "Normal"
+    conditioning = player.conditioning if player.conditioning is not None else 50
+    injury_days = player.injury_days or 0
+    jersey_num = player.jersey_number
+    position = player.position
+    is_academic_ok = is_academically_eligible(player, player.school)
     
     # If injured, force rest (or specific rehab if implemented)
     if injury_days > 0:
-        return f"Injured ({injury_days} days left). Cannot train."
+        return {
+            "status": "skipped",
+            "message": f"Injured ({injury_days} days left). Cannot train.",
+            "fatigue_change": 0,
+            "stat_changes": {},
+        }
 
     # 2. Get Global Modifiers (Good conditioning = better gains)
     mods = get_performance_modifiers(conditioning)
@@ -50,8 +66,23 @@ def apply_scheduled_action(conn, action_type):
         is_injured, severity = check_injury_risk(fatigue, intensity, conditioning)
         
         if is_injured:
-            msg = apply_injury(conn, severity)
-            return f"INJURY! {msg}"
+            msg = apply_injury(context, severity)
+            return {
+                "status": "injured",
+                "message": f"INJURY! {msg}",
+                "fatigue_change": 0,
+                "stat_changes": {},
+            }
+
+    # Academic suspension blocks competitive matches entirely
+    match_actions = {'practice_match', 'b_team_match'}
+    if action_type in match_actions and not is_academic_ok:
+        return {
+            "status": "skipped",
+            "message": "Academic suspension: Coaches won't let you suit up.",
+            "fatigue_change": 0,
+            "stat_changes": {},
+        }
 
     # --- ACTION HANDLERS ---
     
@@ -102,9 +133,13 @@ def apply_scheduled_action(conn, action_type):
 
     # 5. STUDY
     elif action_type == 'study':
-        fatigue_change = 5
-        # Academic stats if you had them, otherwise just time pass
-        summary = "Study Session: Maintained academic standing."
+        outcome = resolve_study_session(player, fatigue)
+        fatigue_change = outcome.fatigue_cost
+        stat_gains = {
+            'academic_skill': outcome.academic_gain,
+            'test_score': outcome.test_gain,
+        }
+        summary = outcome.summary
         
     # 6. SOCIAL
     elif action_type == 'social':
@@ -164,36 +199,52 @@ def apply_scheduled_action(conn, action_type):
         drill_name = drill.title()
         summary = f"Drill ({drill_name}): Session complete.{cond_note}"
 
+    # Slump dampening / recovery
+    slump_timer = getattr(player, 'slump_timer', 0) or 0
+    if slump_timer > 0:
+        if action_type == 'rest':
+            stat_gains = {k: v * 0.8 for k, v in stat_gains.items()}
+            fatigue_change -= 3
+        else:
+            stat_gains = {k: v * 0.6 for k, v in stat_gains.items()}
+            summary += " Confidence slump slows your rhythm."
+
     # --- DB UPDATE ---
+    _apply_temp_training_bonuses(context, stat_gains)
     # 1. Update Fatigue
     new_fatigue = max(0, min(100, fatigue + fatigue_change))
-    
-    sql_parts = ["fatigue = ?"]
-    sql_values = [new_fatigue]
-    
-    # 2. Update Stats
+    player.fatigue = new_fatigue
+
     for stat, value in stat_gains.items():
-        # Add small randomness variance (0.9 - 1.1)
         variance = random.uniform(0.9, 1.1)
         final_value = value * variance
-        
-        # Check if stat column exists in DB logic (simplified here, assumes valid keys)
-        sql_parts.append(f"{stat} = {stat} + ?")
-        sql_values.append(final_value)
-    
-    sql_values.append(PLAYER_ID)
-    
-    if len(sql_parts) > 1 or fatigue_change != 0:
-        sql_query = f"UPDATE players SET {', '.join(sql_parts)} WHERE id = ?"
-        try:
-            cursor.execute(sql_query, sql_values)
-            conn.commit()
-        except Exception as e:
-            return f"Error updating stats: {e}"
-    
-    return summary
+        current = getattr(player, stat, 0) or 0
+        setattr(player, stat, current + final_value)
 
-def run_training_camp_event(conn):
+    if 'academic_skill' in stat_gains:
+        player.academic_skill = int(round(clamp(player.academic_skill or 0, 25, 110)))
+    if 'test_score' in stat_gains:
+        player.test_score = int(round(clamp(player.test_score or 0, 0, 100)))
+
+    if slump_timer > 0:
+        resolved = decay_slump(player)
+        if resolved:
+            adjust_player_morale(player, 4)
+            register_morale_rebound(context.session, player, reason="slump_cleared")
+            summary += " (You finally shake the slump.)"
+
+    context.session.add(player)
+    context.session.commit()
+
+    return {
+        "status": "ok",
+        "message": summary,
+        "fatigue_change": fatigue_change,
+        "stat_changes": stat_gains,
+        "new_fatigue": new_fatigue,
+    }
+
+def run_training_camp_event(context: GameContext):
     # This is a stub or full function depending on if you want it in this file
     # Ideally, keep the implementation I gave in the previous turn here if you want it.
     pass

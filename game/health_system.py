@@ -1,10 +1,10 @@
 import random
-import sys
-import os
+from typing import Optional, Union
 
-# Fix path to find utils.py in root
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils import PLAYER_ID
+from sqlalchemy.orm import Session
+
+from database.setup_db import Player
+from game.game_context import GameContext
 
 # --- CONDITIONING STATES ---
 COND_POOR_THRESH = 30
@@ -57,33 +57,48 @@ def check_injury_risk(fatigue, intensity, conditioning):
         return True, severity
     return False, None
 
-def apply_injury(conn, severity):
-    cursor = conn.cursor()
-    # Logic to set injury_days would go here (e.g., UPDATE players SET injury_days = X)
+
+def _get_player(context: GameContext) -> Optional[Player]:
+    if context.player_id is None:
+        return None
+    return context.session.get(Player, context.player_id)
+
+
+def apply_injury(context_or_session: Union[GameContext, Session], severity, player: Optional[Player] = None):
+    """Apply an injury to either the context player or a provided Player object."""
+    if isinstance(context_or_session, GameContext):
+        session = context_or_session.session
+        target_player = player or _get_player(context_or_session)
+    elif isinstance(context_or_session, Session):
+        session = context_or_session
+        target_player = player
+    else:
+        raise ValueError("apply_injury requires a GameContext or Session.")
+
+    if not target_player:
+        return "Error: player not found."
+
     desc = {"Minor": "Muscle Strain", "Moderate": "Sprain", "Severe": "Fracture"}
     days = {"Minor": 3, "Moderate": 14, "Severe": 60}
-    
+
     d = days.get(severity, 3)
-    
-    # Update DB
-    try:
-        cursor.execute("UPDATE players SET injury_days = ? WHERE id = ?", (d, PLAYER_ID))
-        conn.commit()
-    except Exception as e:
-        print(f"Error applying injury: {e}")
+
+    target_player.injury_days = d
+    session.add(target_player)
+    session.commit()
 
     return f"(!) INJURY: {desc.get(severity, 'Unknown')} ({severity}). Out for {d} days."
 
-def calculate_weekly_conditioning_update(conn, schedule_grid, avg_fatigue):
+def calculate_weekly_conditioning_update(context: GameContext, schedule_grid, avg_fatigue):
     """
     Analyzes the week's behaviour to adjust the invisible Conditioning stat.
     Called at the end of the week in main_loop (or weekly_scheduler).
     """
-    cursor = conn.cursor()
-    cursor.execute("SELECT conditioning FROM players WHERE id = ?", (PLAYER_ID,))
-    row = cursor.fetchone()
-    # Handle cases where conditioning might be missing or None
-    current_cond = row[0] if row and row[0] is not None else 50
+    player = _get_player(context)
+    if not player:
+        return 0, "UNKNOWN"
+
+    current_cond = player.conditioning if player.conditioning is not None else 50
     
     change = 0
     
@@ -128,8 +143,8 @@ def calculate_weekly_conditioning_update(conn, schedule_grid, avg_fatigue):
 
     # Apply Update
     new_cond = max(0, min(100, current_cond + change))
-    
-    cursor.execute("UPDATE players SET conditioning = ? WHERE id = ?", (new_cond, PLAYER_ID))
-    conn.commit()
+    player.conditioning = new_cond
+    context.session.add(player)
+    context.session.commit()
     
     return change, get_conditioning_state(new_cond)

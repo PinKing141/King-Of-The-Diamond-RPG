@@ -1,9 +1,38 @@
 import os
-import shutil
 import glob
+import sqlite3
 from datetime import datetime
 from config import USER_DATA_DIR, DB_PATH
 from ui.ui_display import Colour, clear_screen
+from database.setup_db import (
+    close_all_sessions,
+    create_database,
+    get_session,
+    GameState,
+)
+
+
+def _backup_database(source_path, target_path):
+    if not os.path.exists(source_path):
+        raise FileNotFoundError(f"Source database not found: {source_path}")
+
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
+    src = sqlite3.connect(source_path)
+    dst = sqlite3.connect(target_path)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+
+
+def _gamestate_present():
+    session = get_session()
+    try:
+        return session.query(GameState).first() is not None
+    finally:
+        session.close()
 
 def get_save_slots():
     """
@@ -38,37 +67,37 @@ def get_save_slots():
     return slots
 
 def save_game(slot_num):
-    """
-    Copies the active DB to a save slot file.
-    """
+    """Snapshot the active database into the requested save slot."""
     if not os.path.exists(DB_PATH):
         return False, "No active game to save."
-        
+
     target_path = os.path.join(USER_DATA_DIR, f"save_slot_{slot_num}.db")
-    
+
     try:
-        # Force close any connections? usually SQLite file copy works if WAL mode is okay
-        # Ideally, ensure session is closed before calling this.
-        shutil.copy2(DB_PATH, target_path)
+        close_all_sessions()
+        _backup_database(DB_PATH, target_path)
         return True, f"Game saved to Slot {slot_num}."
     except Exception as e:
         return False, f"Error saving game: {e}"
 
 def load_game(slot_num):
-    """
-    Copies a save slot file to the active DB path.
-    """
+    """Restore the active database from a save slot, verifying GameState afterward."""
     source_path = os.path.join(USER_DATA_DIR, f"save_slot_{slot_num}.db")
-    
+
     if not os.path.exists(source_path):
         return False, "Save slot not found."
-        
+
     try:
-        # Overwrite active DB
+        close_all_sessions()
         if os.path.exists(DB_PATH):
             os.remove(DB_PATH)
-            
-        shutil.copy2(source_path, DB_PATH)
+
+        _backup_database(source_path, DB_PATH)
+        create_database()  # ensures schema + GameState row
+
+        if not _gamestate_present():
+            return False, "Save loaded but GameState data is missing."
+
         return True, f"Loaded Slot {slot_num}."
     except Exception as e:
         return False, f"Error loading save: {e}"

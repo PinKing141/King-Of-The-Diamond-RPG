@@ -1,0 +1,126 @@
+[
+  {
+    "id": "coach_meeting_strategy",
+    "speaker": "Coach",
+    "text": "We have a tough match coming up. I need you focused. What's your mindset?",
+    "options": [
+      {
+        "text": "I'll strike everyone out.",
+        "effects": {"morale": 5, "coach_trust": 2},
+        "response": "Good energy. Keep that fire."
+      },
+      {
+        "text": "I'll follow your lead, Coach.",
+        "effects": {"coach_trust": 5, "morale": 0},
+        "response": "That's what I like to hear. Discipline wins games."
+      },
+      {
+        "text": "Honestly? I'm terrified.",
+        "effects": {"morale": -5, "coach_trust": -2},
+        "response": "Fear is natural. Use it. Don't let it control you."
+      }
+    ]
+  },
+  {
+    "id": "teammate_practice_extra",
+    "speaker": "Teammate",
+    "text": "Hey! A few of us are staying late for batting practice. Want to join?",
+    "options": [
+      {
+        "text": "Yeah, let's grind!",
+        "effects": {"stamina": -5, "contact": 0.5, "friendship": 5},
+        "response": "Awesome! Let's get to work."
+      },
+      {
+        "text": "Sorry, I need to rest.",
+        "effects": {"stamina": 5, "friendship": -2},
+        "response": "Ah, okay. Rest up for the game."
+      }
+    ]
+  },
+  {
+    "id": "coach_academic_suspension",
+    "speaker": "Coach",
+    "text": "Your grades dipped below the school standard. Until you fix this, you're off the field.",
+    "options": [
+      {
+        "text": "Understood. I'll raise them.",
+        "effects": {"discipline": 3, "morale": -4},
+        "response": "Good. Show me you're as serious in the classroom as you are on the mound."
+      },
+      {
+        "text": "Baseball is all I have!",
+        "effects": {"coach_trust": -5, "morale": -2},
+        "response": "Then prove it by earning the right to wear the jersey again."
+      }
+    ]
+  },
+  {
+    "id": "captain_advice_high",
+    "speaker": "Captain",
+    "text": "You've been carrying the team lately. Still, the next opponent lives on mistakes.",
+    "options": [
+      {
+        "text": "I won't let you down.",
+        "effects": {"morale": 6, "discipline": 2},
+        "response": "That's our ace. Keep your head clear and trust your stuff."
+      },
+      {
+        "text": "Any specific hitters to watch?",
+        "effects": {"mental": 3},
+        "response": "Middle of their order feasts on fastballs. Mix it up."
+      }
+    ]
+  },
+  {
+    "id": "captain_advice_low",
+    "speaker": "Captain",
+    "text": "You're pressing too hard. We need you steady, not perfect.",
+    "options": [
+      {
+        "text": "I'll focus on the basics.",
+        "effects": {"mental": 2},
+        "response": "Good. Execute the simple plays and confidence follows."
+      },
+      {
+        "text": "Maybe someone else should take the spotlight...",
+        "effects": {"morale": -3},
+        "response": "Not happening. You're here for a reason. Rise to it."
+      }
+    ]
+  },
+  {
+    "id": "rival_head_to_head",
+    "speaker": "Rival",
+    "text": "Heard you're starting again. Hope your nerves can handle nine innings against me.",
+    "options": [
+      {
+        "text": "I'll shut you down, like always.",
+        "effects": {"clutch": 2},
+        "response": "Then come prove it. I brought extra strikeout celebrations."
+      },
+      {
+        "text": "We'll see who blinks first.",
+        "effects": {"mental": 2},
+        "response": "Fine by me. I like when the crowd holds its breath."
+      }
+    ]
+  },
+  {
+    "id": "rival_mind_games",
+    "speaker": "Rival",
+    "text": "Look tired already. Maybe the bench is more your speed tonight.",
+    "options": [
+      {
+        "text": "Keep talking. I'll do the hitting.",
+        "effects": {"morale": 4},
+        "response": "Big words. Make sure the bat leaves your shoulder."
+      },
+      {
+        "text": "I'm saving my energy for the clutch.",
+        "effects": {"discipline": 2},
+        "response": "We'll see how calm you are with runners on."
+      }
+    ]
+  }
+]

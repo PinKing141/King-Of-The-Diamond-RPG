@@ -1,15 +1,17 @@
 # world_sim/tournament_sim.py
-import random
-import time
-from database.setup_db import session, School
-from match_engine import sim_match
+from database.setup_db import session_scope, School
+from match_engine import sim_match, sim_match_fast
 from ui.ui_display import Colour, clear_screen
+from game.rng import get_rng
+
+rng = get_rng()
 
 def run_koshien_tournament(user_school_id, participants=None):
     """
     Summer Koshien: 49 Teams (Qualifiers Winners).
     """
-    _run_generic_tournament("SUMMER KOSHIEN", user_school_id, participants)
+    with session_scope() as session:
+        _run_generic_tournament("SUMMER KOSHIEN", user_school_id, participants, session)
 
 def run_spring_koshien(user_school_id):
     """
@@ -18,49 +20,49 @@ def run_spring_koshien(user_school_id):
     """
     clear_screen()
     print(f"{Colour.HEADER}=== SPRING SENBATSU (INVITATIONAL) SELECTION ==={Colour.RESET}\n")
-    time.sleep(1)
     
-    # 1. Select Top 32 Schools by Prestige
-    # We exclude the user school initially to see if they make the cut naturally
-    all_schools = session.query(School).order_by(School.prestige.desc()).all()
-    
-    # The cut-off line
-    participants = all_schools[:32]
-    
-    # Check if user made it
-    user_school = session.query(School).get(user_school_id)
-    user_qualified = user_school in participants
-    
-    if user_qualified:
-        print(f"{Colour.gold}INVITATION RECEIVED!{Colour.RESET}")
-        print(f"The committee has selected {user_school.name} for the Spring Tournament.")
-    else:
-        print(f"{Colour.FAIL}No invitation received.{Colour.RESET}")
-        print(f"Your prestige ({user_school.prestige}) was not high enough to impress the committee.")
-        print("You watch the Spring tournament from home...")
-    
-    input("Press Enter to continue...")
-    
-    # Run the bracket
-    _run_generic_tournament("SPRING SENBATSU", user_school_id, participants)
+    with session_scope() as session:
+        # 1. Select Top 32 Schools by Prestige
+        # We exclude the user school initially to see if they make the cut naturally
+        all_schools = session.query(School).order_by(School.prestige.desc()).all()
+        
+        # The cut-off line
+        participants = all_schools[:32]
+        
+        # Check if user made it
+        user_school = session.get(School, user_school_id)
+        user_qualified = user_school in participants
+        
+        if user_qualified:
+            print(f"{Colour.gold}INVITATION RECEIVED!{Colour.RESET}")
+            print(f"The committee has selected {user_school.name} for the Spring Tournament.")
+        else:
+            print(f"{Colour.FAIL}No invitation received.{Colour.RESET}")
+            print(f"Your prestige ({user_school.prestige}) was not high enough to impress the committee.")
+            print("You watch the Spring tournament from home...")
+        
+        input("Press Enter to continue...")
+        
+        # Run the bracket
+        _run_generic_tournament("SPRING SENBATSU", user_school_id, participants, session)
 
-def _run_generic_tournament(title, user_school_id, participants):
+def _run_generic_tournament(title, user_school_id, participants, session):
     """
     Shared logic for running any bracket.
     """
     clear_screen()
     print(f"{Colour.HEADER}=== {title} BEGINS ==={Colour.RESET}\n")
     
-    user_school = session.query(School).get(user_school_id)
+    user_school = session.get(School, user_school_id)
     
     if not participants:
         # Fallback if None passed
         npcs = session.query(School).filter(School.id != user_school_id).all()
-        participants = random.sample(npcs, 15)
+        participants = rng.sample(npcs, 15)
         participants.append(user_school)
         
     current_bracket = list(participants) # Copy
-    random.shuffle(current_bracket)
+    rng.shuffle(current_bracket)
     
     # Trim to power of 2
     if len(current_bracket) > 32: current_bracket = current_bracket[:32]
@@ -71,7 +73,6 @@ def _run_generic_tournament(title, user_school_id, participants):
     while len(current_bracket) > 1:
         next_round = []
         print(f"\n{Colour.CYAN}--- ROUND {round_num} ({len(current_bracket)} Teams) ---{Colour.RESET}")
-        time.sleep(1)
         
         matchups = []
         for i in range(0, len(current_bracket), 2):
@@ -91,9 +92,8 @@ def _run_generic_tournament(title, user_school_id, participants):
                 input("   Press Enter to take the field...")
                 winner, score = sim_match(home, away, f"{title} Round {round_num}", silent=False)
             else:
-                winner, score = sim_match(home, away, f"{title} Round {round_num}", silent=True)
+                winner, score = sim_match_fast(home, away, f"{title} Round {round_num}")
                 print(f"   Result: {winner.name} wins! ({score})")
-                time.sleep(0.1)
             
             next_round.append(winner)
             

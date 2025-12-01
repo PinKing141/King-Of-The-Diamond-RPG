@@ -1,10 +1,14 @@
 # match_engine/scoreboard.py
+from .commentary import commentary_enabled
+from .confidence import get_confidence_trends
+
 
 class Scoreboard:
     def __init__(self):
         # List of tuples (away_runs, home_runs) for each inning
         # e.g. [(0, 0), (1, 0), (0, 2)]
         self.innings = [] 
+        self._weather_banner_done = False
 
     def record_inning(self, inning_num, away_runs, home_runs):
         """
@@ -21,6 +25,15 @@ class Scoreboard:
         """
         Prints the ASCII scoreboard to the console.
         """
+        if not commentary_enabled():
+            return
+        weather = getattr(state, 'weather', None)
+        if weather and not self._weather_banner_done:
+            summary = weather.describe()
+            wind = f"Wind {weather.wind_speed_mph:.1f} mph {weather.wind_direction}" if weather.wind_speed_mph is not None else "Wind calm"
+            precip = weather.precipitation.title() if weather.precipitation != "none" else "Dry"
+            print(f"\n{summary} | {precip} | {wind}")
+            self._weather_banner_done = True
         print("\nSCOREBOARD")
         # Header: INN | 1 2 3 ... | R | H | E
         header_inn = "  ".join(f"{i+1}" for i in range(len(self.innings)))
@@ -39,4 +52,15 @@ class Scoreboard:
         # Home Row
         home_scores = "  ".join(f"{inn[1]}" if inn[1] is not None else " " for inn in self.innings)
         print(f"{state.home_team.name[:3]} | {home_scores} | {total_home:<2} | -- | --")
+        trends = get_confidence_trends(state)
+        if trends:
+            rising = trends.get("rising")
+            falling = trends.get("falling")
+            parts = []
+            if rising:
+                parts.append(f"UP {rising['name']} {rising['value']:+.0f}")
+            if falling:
+                parts.append(f"DN {falling['name']} {falling['value']:+.0f}")
+            if parts:
+                print(f"Confidence trends: {' | '.join(parts)}")
         print("")

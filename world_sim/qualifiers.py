@@ -1,13 +1,11 @@
-import random
 import math
-import time
-from sqlalchemy.orm import sessionmaker
-from database.setup_db import School, engine
-from match_engine import sim_match
-from ui.ui_display import Colour
 
-Session = sessionmaker(bind=engine)
-session = Session()
+from database.setup_db import School, session_scope
+from match_engine import sim_match, sim_match_fast
+from ui.ui_display import Colour
+from game.rng import get_rng
+
+rng = get_rng()
 
 def generate_balanced_bracket(schools):
     """
@@ -29,11 +27,11 @@ def generate_balanced_bracket(schools):
     first_round_schools = sorted_schools[byes:]
     
     # Shuffle first round matchups for randomness
-    random.shuffle(first_round_schools)
+    rng.shuffle(first_round_schools)
     
     return first_round_schools, advanced_schools
 
-def run_district_tournament(district_name, user_school_id):
+def run_district_tournament(session, district_name, user_school_id):
     """
     Runs a full qualifier tournament for a specific district.
     Returns the Winning School.
@@ -56,7 +54,7 @@ def run_district_tournament(district_name, user_school_id):
         # Merge byes back in for Round 2+
         if round_num == 2:
             current_round.extend(bye_teams)
-            random.shuffle(current_round)
+            rng.shuffle(current_round)
             bye_teams = []
             
         next_round = []
@@ -92,7 +90,7 @@ def run_district_tournament(district_name, user_school_id):
                     print(f"{Colour.gold}   VICTORY! Score: {score}{Colour.RESET}")
             else:
                 # Background Sim
-                winner, score = sim_match(home, away, f"{district_name} Round {round_num}", silent=True)
+                winner, score = sim_match_fast(home, away, f"{district_name} Round {round_num}")
             
             next_round.append(winner)
             
@@ -110,31 +108,24 @@ def run_season_qualifiers(user_school_id):
     """
     # 1. Distinct Districts
     # V2 schema uses 'prefecture' column. 
-    prefectures = [r[0] for r in session.query(School.prefecture).distinct()]
-    
-    koshien_reps = []
-    
-    print(f"\n{Colour.HEADER}=== SUMMER KOSHIEN QUALIFIERS BEGIN ==={Colour.RESET}")
-    print(f"Districts to simulate: {len(prefectures)}")
-    time.sleep(1)
-    
-    for pref in prefectures:
-        # Check if User is in this prefecture
-        user_school = session.query(School).get(user_school_id)
-        is_user_pref = (user_school.prefecture == pref)
+    with session_scope() as session:
+        prefectures = [r[0] for r in session.query(School.prefecture).distinct()]
+        user_school = session.get(School, user_school_id) if user_school_id != -1 else None
+
+        koshien_reps = []
         
-        if is_user_pref:
-            # Run Detailed Simulation
-            champ = run_district_tournament(pref, user_school_id)
-        else:
-            # Run Fast Simulation (Silent)
-            # Optimization: Just pick a random winner weighted by prestige?
-            # Or run actual sim if CPU power allows. 
-            # For 49 districts x 20 teams, full sim might take 10-20 seconds.
-            # Let's run full sim for realism but silent.
-            champ = run_district_tournament(pref, -1) # -1 ID ensures silent
+        print(f"\n{Colour.HEADER}=== SUMMER KOSHIEN QUALIFIERS BEGIN ==={Colour.RESET}")
+        print(f"Districts to simulate: {len(prefectures)}")
+        
+        for pref in prefectures:
+            is_user_pref = user_school and (user_school.prefecture == pref)
             
-        koshien_reps.append(champ)
-        
-    print(f"\n{Colour.gold}QUALIFIERS COMPLETE. 49 SCHOOLS ADVANCE.{Colour.RESET}")
-    return koshien_reps
+            if is_user_pref:
+                champ = run_district_tournament(session, pref, user_school_id)
+            else:
+                champ = run_district_tournament(session, pref, -1)
+                
+            koshien_reps.append(champ)
+            
+        print(f"\n{Colour.gold}QUALIFIERS COMPLETE. 49 SCHOOLS ADVANCE.{Colour.RESET}")
+        return koshien_reps

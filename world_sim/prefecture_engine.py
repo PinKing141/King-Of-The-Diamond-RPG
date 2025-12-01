@@ -1,8 +1,10 @@
-import random
-from database.setup_db import session, School, Game
+from database.setup_db import session_scope, School
 # --- PATCH START ---
-from match_engine import sim_match
+from match_engine import sim_match_fast
 # --- PATCH END ---
+from game.rng import get_rng
+
+rng = get_rng()
 
 def simulate_background_matches(user_school_id):
     """
@@ -10,12 +12,13 @@ def simulate_background_matches(user_school_id):
     This keeps the world alive and generates stats.
     """
     # Get all schools except user
-    npcs = session.query(School).filter(School.id != user_school_id).all()
+    with session_scope() as session:
+        npcs = session.query(School).filter(School.id != user_school_id).all()
     
     if len(npcs) < 2: return
 
     # Shuffle and pair up
-    random.shuffle(npcs)
+    rng.shuffle(npcs)
     
     # Limit number of sim games per week to avoid lag (e.g., 5 games)
     num_games = min(5, len(npcs) // 2)
@@ -26,8 +29,7 @@ def simulate_background_matches(user_school_id):
         home = npcs[i*2]
         away = npcs[i*2 + 1]
         
-        # Run SILENT match
-        # Utilizing the Legacy Bridge 'sim_match' which handles silent mode
-        winner, score = sim_match(home, away, "Practice Match", silent=True)
+        # Run fast background match with no commentary
+        winner, score = sim_match_fast(home, away, "Practice Match")
         
         # print(f"     [Sim] {home.school_name} vs {away.school_name} -> {winner.school_name} ({score})")
