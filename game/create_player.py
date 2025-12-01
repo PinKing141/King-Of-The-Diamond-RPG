@@ -17,6 +17,8 @@ from player_roles.two_way import roll_two_way_profile
 from game.academic_system import roll_academic_profile
 from game.relationship_manager import seed_relationships
 from game.personality import roll_player_personality
+from game.player_generation import maybe_assign_bad_trait
+from game.trait_logic import grant_user_creation_trait_rolls
 
 # --- GROWTH STYLE DEFINITIONS ---
 GROWTH_STYLE_INFO = {
@@ -189,6 +191,8 @@ def commit_player_to_db(session: Session, data) -> int:
     session.commit()
     session.refresh(p)
     seed_relationships(session, p)
+    grant_user_creation_trait_rolls(session, p, rolls=3)
+    maybe_assign_bad_trait(session, p)
     return p.id
 
 

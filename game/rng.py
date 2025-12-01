@@ -37,6 +37,16 @@ class DeterministicRNG:
     def shuffle(self, seq: MutableSequence[_T]) -> None:
         self._random.shuffle(seq)
 
+    def choices(
+        self,
+        population: Sequence[_T],
+        *,
+        weights: Optional[Sequence[float]] = None,
+        cum_weights: Optional[Sequence[float]] = None,
+        k: int = 1,
+    ) -> list[_T]:
+        return self._random.choices(population, weights=weights, cum_weights=cum_weights, k=k)
+
 
 _global_rng = DeterministicRNG()
 

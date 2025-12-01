@@ -14,6 +14,8 @@ from database.setup_db import Player, School
 from game.rng import get_rng
 from world.school_philosophy import get_philosophy
 from game.personality import roll_player_personality
+from game.player_generation import seed_negative_traits
+from game.trait_logic import seed_initial_traits
 
 rng = get_rng()
 BASE_ATTRIBUTES = [
@@ -52,6 +54,7 @@ def recruit_freshmen(session: Session, target_roster: int = 18) -> int:
     schools = session.query(School).all()
     total_new_players = 0
 
+    new_recruits: list[Player] = []
     for school in schools:
         current_roster = len(school.players)
         needed = max(5, target_roster - current_roster)
@@ -102,10 +105,14 @@ def recruit_freshmen(session: Session, target_roster: int = 18) -> int:
                 except Exception:
                     pass
 
-            session.add(player)
+                session.add(player)
+                new_recruits.append(player)
             total_new_players += 1
 
-    session.commit()
+            session.flush()
+            seed_initial_traits(session, new_recruits)
+            seed_negative_traits(session, new_recruits)
+            session.commit()
     return total_new_players
 
 

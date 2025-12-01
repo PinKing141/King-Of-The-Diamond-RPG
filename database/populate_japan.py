@@ -23,6 +23,8 @@ from game.archetypes import assign_player_archetype
 from world.coach_generation import generate_coach_for_school
 from player_roles.two_way import roll_two_way_profile
 from game.personality import roll_player_personality
+from game.player_generation import seed_negative_traits
+from game.trait_logic import seed_initial_traits
 
 # Initialize DB
 create_database()
@@ -134,17 +136,29 @@ def get_random_city(prefecture):
 def generate_stats(position, specific_pos, focus):
     # Generates raw stats dictionary
     stats = {}
-    def get_val(bonus=0):
+
+    def _clamp(val, low=10, high=99):
+        return max(low, min(high, int(val)))
+
+    focus_label = (focus or "Balanced").lower()
+
+    def get_val(bonus=0, tag=None):
         # Apply focus bonuses
-        if focus == "Power" and "power" in str(bonus): bonus += 10
-        if focus == "Speed" and "speed" in str(bonus): bonus += 10
-        if focus == "Defense" and "fielding" in str(bonus): bonus += 10
-        if focus == "Pitching" and position == "Pitcher": bonus += 5
-        if focus == "Stamina" and "stamina" in str(bonus): bonus += 15
-        if focus == "Technical" and ("control" in str(bonus) or "contact" in str(bonus)): bonus += 10
-        
+        if focus_label == "power" and tag == "power":
+            bonus += 10
+        if focus_label == "speed" and tag == "speed":
+            bonus += 10
+        if focus_label == "defense" and tag in {"fielding", "throwing"}:
+            bonus += 10
+        if focus_label == "pitching" and position == "Pitcher" and tag in {"control", "movement", "stamina"}:
+            bonus += 5
+        if focus_label == "stamina" and tag == "stamina":
+            bonus += 15
+        if focus_label == "technical" and tag in {"control", "contact"}:
+            bonus += 10
+
         # Base range 30-50 + bonus, clamped 10-99
-        return max(10, min(99, random.randint(30 + bonus, 50 + bonus)))
+        return _clamp(random.randint(30 + bonus, 50 + bonus))
 
     # Potential
     roll = random.random()
@@ -178,39 +192,88 @@ def generate_stats(position, specific_pos, focus):
     stats['height_potential'] = stats['height_cm'] + random.randint(5, 20)
     
     two_way, secondary = roll_two_way_profile(position, rng=random)
-    stats['stamina'] = get_val()
+    stats['stamina'] = get_val(tag="stamina")
     
     # Pitching vs Fielding
     if position == "Pitcher":
-        stats['control'] = get_val(10)
-        stats['velocity'] = int(random.normalvariate(130 + (5 if focus=="Pitching" else 0), 5))
-        stats['breaking_ball'] = get_val(5) 
+        stats['control'] = get_val(10, tag="control")
+        stats['velocity'] = int(random.normalvariate(130 + (5 if focus_label == "pitching" else 0), 5))
+        stats['breaking_ball'] = get_val(5, tag="movement")
         # Map to V2 Schema 'movement'
         stats['movement'] = stats['breaking_ball']
-        
+
         # Batting stats for pitcher (weak)
-        stats['power'] = get_val(-15)
-        stats['contact'] = get_val(-15)
-        stats['fielding'] = get_val(10)
-        stats['speed'] = get_val(-5)
+        stats['power'] = get_val(-15, tag="power")
+        stats['contact'] = get_val(-15, tag="contact")
+        stats['fielding'] = get_val(10, tag="fielding")
+        stats['speed'] = get_val(-5, tag="speed")
     else:
         stats['velocity'] = 0
         stats['control'] = 10
         stats['movement'] = 0
-        
-        stats['power'] = get_val()
-        stats['contact'] = get_val()
-        stats['fielding'] = get_val()
-        stats['speed'] = get_val()
-        
+
+        stats['power'] = get_val(tag="power")
+        stats['contact'] = get_val(tag="contact")
+        stats['fielding'] = get_val(tag="fielding")
+        stats['speed'] = get_val(tag="speed")
+
         # Specific pos tweaks
-        if specific_pos == "C": stats['fielding'] += 15; stats['speed'] -= 10
-        elif specific_pos == "SS": stats['fielding'] += 10; stats['speed'] += 5
-        elif specific_pos == "1B": stats['power'] += 10
+        if specific_pos == "C":
+            stats['fielding'] += 15
+            stats['speed'] -= 10
+        elif specific_pos == "SS":
+            stats['fielding'] += 10
+            stats['speed'] += 5
+        elif specific_pos == "1B":
+            stats['power'] += 10
+
+    # Clamp core ratings after positional tweaks
+    for attr in ("power", "contact", "speed", "fielding", "stamina", "control", "movement"):
+        if attr in stats:
+            stats[attr] = _clamp(stats[attr])
+
+    # Arm strength / throwing
+    if position == "Pitcher":
+        stats['throwing'] = _clamp(random.randint(60, 90))
+    else:
+        stats['throwing'] = get_val(tag="throwing")
+        if specific_pos == "C":
+            stats['throwing'] += 10
+        elif specific_pos in {"RF", "CF", "LF"}:
+            stats['throwing'] += 8
+        elif specific_pos in {"SS", "3B"}:
+            stats['throwing'] += 5
+        stats['throwing'] = _clamp(stats['throwing'])
+
+    # Mental/discipline/clutch & command ratings (were previously defaults)
+    mental = random.randint(35, 70)
+    discipline = random.randint(32, 72)
+    clutch = random.randint(32, 78)
+    command = random.randint(30, 60)
+
+    if focus_label in {"technical", "balanced"}:
+        discipline += 5
+    if focus_label in {"guts", "power", "gamblers"}:
+        clutch += 6
+    if focus_label in {"pitching", "defense"}:
+        mental += 4
+
+    if specific_pos == "C":
+        mental += 6
+        discipline += 5
+        command += 15
+
+    if position == "Pitcher":
+        command = stats['control'] + random.randint(-5, 7)
+
+    stats['mental'] = _clamp(mental)
+    stats['discipline'] = _clamp(discipline)
+    stats['clutch'] = _clamp(clutch)
+    stats['command'] = _clamp(command)
 
     stats['is_two_way'] = two_way
     stats['secondary_position'] = secondary if secondary else None
-    
+
     return stats
 
 def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Overhand"):
@@ -418,14 +481,18 @@ def populate_world():
                             next_num += 1
                         
                         session.add_all(roster_players)
+                        session.flush()
+                        seed_initial_traits(session, roster_players)
+                        seed_negative_traits(session, roster_players)
                         
                         # Visual progress
                         if schools_in_pref % 10 == 0:
                             print(".", end="", flush=True)
                     
                     except Exception as e:
-                        # Log error but don't crash the loop
-                        # print(f"Error generating school: {e}")
+                        if os.getenv("POPULATE_DEBUG"):
+                            import traceback
+                            traceback.print_exc()
                         continue
 
             session.commit()

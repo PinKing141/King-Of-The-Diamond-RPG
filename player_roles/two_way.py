@@ -32,4 +32,3 @@ def roll_two_way_profile(primary_position: str, rng: Optional[object] = None) ->
     options = DEFAULT_SECONDARY.get(primary_position, ("Infielder",))
     secondary = random_source.choice(options)
     return True, secondary
-*** End of File

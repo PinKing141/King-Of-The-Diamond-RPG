@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional, Tuple
 from battery_system.battery_trust import adjust_confidence_delta_for_battery
+from game.skill_system import player_has_skill
 
 CONFIDENCE_MIN = -100
 CONFIDENCE_MAX = 100
@@ -59,6 +60,7 @@ def initialize_confidence(state) -> None:
     state.player_team_map = player_team_map
     _sync_loyalty_bias(state)
     _sync_battery_pairs(state)
+    _apply_home_field_advantage(state)
 
 
 def _sync_loyalty_bias(state) -> None:
@@ -114,9 +116,13 @@ def adjust_confidence(state, player_id: int, delta: float, *, reason: Optional[s
     base_delta = float(delta)
     if not player:
         return 0
+    has_mental_wall = player_has_skill(player, "mental_wall")
+    has_control_freak = player_has_skill(player, "control_freak")
 
     if base_delta < 0 and reason in {"error", "wild_pitch", "strikeout"}:
         volatility = getattr(player, "volatility", 50) or 50
+        if has_control_freak:
+            volatility = min(volatility, 55)
         base_delta *= 1 + max(0, (volatility - 55) / 90)
     elif base_delta > 0 and reason in {"clutch_hit", "heroics", "shutout", "discipline"}:
         drive = getattr(player, "drive", 50) or 50
@@ -127,6 +133,8 @@ def adjust_confidence(state, player_id: int, delta: float, *, reason: Optional[s
             base_delta -= 4
         elif resilience >= 70:
             base_delta *= 0.5
+    if base_delta < 0 and has_mental_wall:
+        base_delta *= 0.5
 
     previous = confidence_map.get(player_id, 0)
     base_delta = _apply_battery_cushion(state, player_id, base_delta)
@@ -164,6 +172,29 @@ def _propagate(state, player_id: int, delta: float, reason: Optional[str]) -> No
                 confidence = get_confidence(state, mate.id)
                 confidence = _clamp(confidence + delta * 0.2)
                 state.confidence_map[mate.id] = confidence
+
+
+def _apply_home_field_advantage(state) -> None:
+    home_team = getattr(state, "home_team", None)
+    away_team = getattr(state, "away_team", None)
+    rosters = (getattr(state, "team_rosters", {}) or {})
+    if not home_team or not away_team:
+        return
+    home_roster = rosters.get(getattr(home_team, "id", None), [])
+    away_roster = rosters.get(getattr(away_team, "id", None), [])
+    if home_roster:
+        for player in home_roster:
+            if not player or not getattr(player, "id", None):
+                continue
+            bonus = 2
+            if getattr(player, "is_captain", False):
+                bonus += 1
+            adjust_confidence(state, player.id, bonus, reason="home_field", contagious=False)
+    if away_roster:
+        for player in away_roster:
+            if not player or not getattr(player, "id", None):
+                continue
+            adjust_confidence(state, player.id, -1, reason="road_game", contagious=False)
 
 
 def apply_fielding_error_confidence(state, team_id: int, primary_position: Optional[str]) -> None:

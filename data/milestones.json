@@ -1,0 +1,90 @@
+[
+  {
+    "key": "slugfest_hat_trick",
+    "label": "Slugfest Hat Trick",
+    "skill_key": "power_surge",
+    "description": "Three-homer showcase or a barrage of long balls in a season.",
+    "chance": 0.55,
+    "min_games": 6,
+    "condition_type": "slugfest"
+  },
+  {
+    "key": "rbi_machine",
+    "label": "RBI Machine",
+    "skill_key": "clutch_hitter",
+    "description": "Repeated multi-RBI games highlight late-inning heroics.",
+    "chance": 0.45,
+    "min_games": 8,
+    "condition_type": "rbi_machine"
+  },
+  {
+    "key": "strikeout_showcase",
+    "label": "Strikeout Showcase",
+    "skill_key": "strikeout_artist",
+    "description": "Dominant strikeout outings unlock elite pitching aura.",
+    "chance": 0.5,
+    "min_games": 4,
+    "condition_type": "strikeout_showcase"
+  },
+  {
+    "key": "flawless_glove",
+    "label": "Flawless Glove",
+    "skill_key": "defensive_anchor",
+    "description": "Error-free campaign cements gold-glove reputation.",
+    "chance": 0.4,
+    "min_games": 10,
+    "condition_type": "flawless_glove"
+  },
+  {
+    "key": "gap_artist",
+    "label": "Gap-to-Gap Artist",
+    "skill_key": "gap_specialist",
+    "description": "Consistent multi-hit weeks turn a doubles threat into a legend.",
+    "chance": 0.4,
+    "min_games": 10,
+    "condition_type": "gap_machine",
+    "params": {
+      "min_hits": 24,
+      "min_avg": 0.34
+    }
+  },
+  {
+    "key": "walkoff_spark",
+    "label": "Walk-off Spark",
+    "skill_key": "spark_plug",
+    "description": "Massive RBI bursts ignite dugout celebrations.",
+    "chance": 0.35,
+    "min_games": 8,
+    "condition_type": "walkoff_proxy",
+    "params": {
+      "single_game_rbi": 5,
+      "season_rbi": 18
+    }
+  },
+  {
+    "key": "ironman_workhorse",
+    "label": "Ironman Streak",
+    "skill_key": "workhorse",
+    "description": "Stacked innings totals prove this ace never leaves the hill.",
+    "chance": 0.5,
+    "min_games": 6,
+    "condition_type": "workhorse",
+    "params": {
+      "min_innings": 45.0,
+      "min_avg_ip": 5.5
+    }
+  },
+  {
+    "key": "shutdown_specialist",
+    "label": "Shutdown Specialist",
+    "skill_key": "situational_ace",
+    "description": "Low-ERA dominance and strikeout punch fuel bullpen legend.",
+    "chance": 0.45,
+    "min_games": 5,
+    "condition_type": "shutdown",
+    "params": {
+      "max_era": 2.75,
+      "min_k_per_nine": 9.5
+    }
+  }
+]

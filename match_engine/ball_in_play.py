@@ -1,4 +1,5 @@
 from game.rng import get_rng
+from match_engine.confidence import apply_fielding_error_confidence
 
 rng = get_rng()
 
@@ -12,6 +13,18 @@ INFIELD_POSITIONS = [
 ]
 OUTFIELD_POSITIONS = ["Left Field", "Center Field", "Right Field"]
 
+# Slight bump for home hitters; keep modest to avoid runaway scoring.
+HOME_CONTACT_BONUS = 2
+HOME_POWER_BONUS = 0
+
+
+def _defense_team_id(state):
+    if not state:
+        return None
+    if getattr(state, "top_bottom", "Top") == "Top":
+        return getattr(state.home_team, "id", None)
+    return getattr(state.away_team, "id", None)
+
 
 class ContactResult:
     def __init__(self, hit_type, description, rbi=0, outs=0, credited_hit=True, error_on_play=False, primary_position=None):
@@ -24,7 +37,7 @@ class ContactResult:
         self.primary_position = primary_position
 
 
-def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0):
+def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_mods=None):
     """
     Determines the result of a ball put in play.
     Uses contact_quality from pitch_logic + Batter Power + Randomness.
@@ -32,8 +45,9 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0):
     """
     
     # Apply Power Mod (e.g. +25 from Power Swing)
-    raw_power = batter.power + power_mod
-    running = getattr(batter, 'running', getattr(batter, 'speed', 50))
+    trait_mods = trait_mods or {}
+    raw_power = batter.power + trait_mods.get("power", 0) + power_mod
+    running = getattr(batter, 'running', getattr(batter, 'speed', 50)) + trait_mods.get("speed", 0)
     power_transfer = raw_power + rng.randint(0, 20)
     weather = getattr(state, 'weather', None)
     carry_shift = 0
@@ -48,6 +62,10 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0):
             error_pressure += 0.03
         if weather.condition == "windy":
             error_pressure += 0.01
+
+    if state and getattr(state, "top_bottom", "Top") == "Bot":
+        contact_quality += HOME_CONTACT_BONUS
+        power_transfer += HOME_POWER_BONUS
     
     # Determine Trajectory
     if contact_quality < 35:
@@ -150,5 +168,8 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0):
                 error_position = rng.choice(OUTFIELD_POSITIONS + INFIELD_POSITIONS[2:])
             else:
                 error_position = rng.choice(INFIELD_POSITIONS)
+            defense_id = _defense_team_id(state)
+            if defense_id is not None:
+                apply_fielding_error_confidence(state, defense_id, error_position)
 
     return ContactResult(hit_type, desc, credited_hit=credited_hit, error_on_play=error_on_play, primary_position=error_position)

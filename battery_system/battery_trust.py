@@ -50,7 +50,7 @@ def update_trust_after_at_bat(pitcher_id, catcher_id, result_type):
 
 
 def adjust_confidence_delta_for_battery(pitcher, catcher, delta: float) -> float:
-    """Scale a confidence delta using catcher loyalty, trust, and pitcher volatility."""
+    """Scale confidence swings based on catcher loyalty, battery trust, and pitcher volatility."""
 
     if not pitcher or not catcher or delta == 0:
         return delta
@@ -62,16 +62,19 @@ def adjust_confidence_delta_for_battery(pitcher, catcher, delta: float) -> float
     catcher_id = getattr(catcher, "id", None)
     trust = get_trust(pitcher_id, catcher_id) if pitcher_id and catcher_id else 50
 
-    loyalty_anchor = max(0.0, (loyalty - 55) / 40.0)
-    trust_bonus = max(0.0, (trust - 50) / 30.0)
-    volatility_push = max(0.0, (volatility - 55) / 35.0)
+    loyalty_factor = (loyalty - 50) / 50.0
+    volatility_factor = (volatility - 50) / 50.0
+    trust_factor = (trust - 50) / 50.0
 
-    calming = _clamp(loyalty_anchor + trust_bonus, 0.0, 1.2)
-    agitation = _clamp(volatility_push, 0.0, 1.0)
+    loyalty_factor = _clamp(loyalty_factor, -1.0, 1.0)
+    volatility_factor = _clamp(volatility_factor, -1.0, 1.0)
+    trust_factor = _clamp(trust_factor, -1.0, 1.0)
 
-    if delta < 0:
-        scale = 1.0 - (calming * 0.45) + (agitation * 0.35)
+    if delta > 0:
+        # High loyalty + trust boost positive moments, volatile pitchers dampen it.
+        scale = 1.0 + (loyalty_factor * 0.35) + (trust_factor * 0.25) - (volatility_factor * 0.30)
     else:
-        scale = 1.0 + (calming * 0.30) - (agitation * 0.25)
+        # Negative swings are softened by loyalty/trust but amplified by volatility.
+        scale = 1.0 - (loyalty_factor * 0.30) - (trust_factor * 0.15) + (volatility_factor * 0.45)
 
-    return delta * _clamp(scale, 0.4, 1.6)
+    return delta * _clamp(scale, 0.35, 1.75)

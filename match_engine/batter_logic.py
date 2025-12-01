@@ -2,6 +2,7 @@ import time
 from .pitch_logic import resolve_pitch, get_current_catcher
 from .ball_in_play import resolve_contact
 from .base_running import advance_runners, resolve_steal_attempt
+from match_engine.context_manager import get_at_bat_context
 from .commentary import (
     display_state,
     announce_pitch,
@@ -10,9 +11,13 @@ from .commentary import (
     commentary_enabled,
 )
 from game.rng import get_rng
+from game.skill_system import (
+    evaluate_situational_skills,
+    gather_behavior_tendencies,
+    gather_passive_skill_modifiers,
+)
 from match_engine.confidence import (
     adjust_confidence,
-    apply_fielding_error_confidence,
     apply_lead_change_swing,
     apply_slump_boost,
     collect_confidence_flashes,
@@ -25,6 +30,38 @@ from match_engine.confidence import (
 )
 
 rng = get_rng()
+
+
+def _reset_plate_summary(state):
+    state.umpire_plate_summary = {
+        "offense": {"favored": 0, "squeezed": 0},
+        "defense": {"favored": 0, "squeezed": 0},
+    }
+
+
+def _plate_pressure(state, role: str) -> int:
+    plate = getattr(state, 'umpire_plate_summary', None) or {}
+    role_state = plate.get(role, {})
+    return int(role_state.get("squeezed", 0) - role_state.get("favored", 0))
+
+
+def _apply_umpire_pressure_bonus(state, batter, pitcher, outcome: str) -> None:
+    pressure_offense = _plate_pressure(state, "offense")
+    pressure_defense = _plate_pressure(state, "defense")
+    if outcome == "walk":
+        if pressure_defense > 1:
+            adjust_confidence(state, getattr(pitcher, 'id', None), -2, reason="umpire_squeeze", contagious=False)
+        elif pressure_defense < -1:
+            adjust_confidence(state, getattr(pitcher, 'id', None), 1, reason="umpire_favor", contagious=False)
+        if pressure_offense > 1:
+            adjust_confidence(state, getattr(batter, 'id', None), 1, reason="umpire_resolve", contagious=False)
+    elif outcome == "strikeout":
+        if pressure_offense > 1:
+            adjust_confidence(state, getattr(batter, 'id', None), -2, reason="umpire_squeeze", contagious=False)
+        elif pressure_offense < -1:
+            adjust_confidence(state, getattr(pitcher, 'id', None), 1, reason="umpire_favor", contagious=False)
+        if pressure_defense > 1:
+            adjust_confidence(state, getattr(pitcher, 'id', None), 1, reason="umpire_resolve", contagious=False)
 
 
 def _update_pitch_diagnostics(state, pitcher_id, outcome):
@@ -77,6 +114,83 @@ def _player_team_id(player):
     return getattr(player, 'team_id', getattr(player, 'school_id', None))
 
 
+def _offense_margin(state) -> int:
+    if state.top_bottom == "Top":
+        return state.away_score - state.home_score
+    return state.home_score - state.away_score
+
+
+def _collect_trait_mods(player, context) -> dict:
+    if not player:
+        return {}
+    merged = dict(gather_passive_skill_modifiers(player))
+    situational, _activated = evaluate_situational_skills(player, context)
+    for stat, delta in (situational or {}).items():
+        merged[stat] = merged.get(stat, 0.0) + delta
+    return merged
+
+
+def _player_has_milestone(state, player, milestone_key: str) -> bool:
+    if not state or not player or not milestone_key:
+        return False
+    checker = getattr(state, "player_has_milestone", None)
+    if callable(checker):
+        return checker(getattr(player, 'id', None), milestone_key)
+    pid = getattr(player, 'id', None)
+    milestones = getattr(state, 'player_milestones', {}) or {}
+    entries = milestones.get(pid, [])
+    target = milestone_key.lower()
+    return any((entry.get("key") or "").lower() == target for entry in entries)
+
+
+def _maybe_call_milestone_pinch_hit(state, lineup):
+    offense_team, _ = _offense_context(state)
+    team_id = getattr(offense_team, 'id', None)
+    if not team_id or team_id == 1:
+        return lineup[0]
+    if getattr(state, 'inning', 1) < 7:
+        return lineup[0]
+    if not any(state.runners[idx] for idx in (1, 2)):
+        return lineup[0]
+    margin = _offense_margin(state)
+    if margin > 1:
+        return lineup[0]
+    bench_map = getattr(state, 'bench_players', {}) or {}
+    bench = bench_map.get(team_id)
+    if not bench:
+        return lineup[0]
+    candidates = [
+        p for p in bench
+        if _player_has_milestone(state, p, "gap_artist")
+        and (getattr(p, 'position', '').lower() != 'pitcher')
+    ]
+    if not candidates:
+        return lineup[0]
+
+    def _pinch_score(player):
+        return (getattr(player, 'contact', 0) * 1.1) + (getattr(player, 'power', 0)) + (getattr(player, 'speed', 0) * 0.2)
+
+    pinch = max(candidates, key=_pinch_score)
+    bench.remove(pinch)
+    previous = lineup[0]
+    lineup[0] = pinch
+    state.player_lookup[pinch.id] = pinch
+    state.player_team_map[pinch.id] = team_id
+    state.burned_bench.setdefault(team_id, []).append(previous)
+    state.pinch_history.append({
+        "team_id": team_id,
+        "pinch_id": getattr(pinch, 'id', None),
+        "replaced_id": getattr(previous, 'id', None),
+        "inning": getattr(state, 'inning', 0),
+    })
+    if commentary_enabled():
+        pinch_name = getattr(pinch, 'last_name', getattr(pinch, 'name', 'Batter'))
+        prev_name = getattr(previous, 'last_name', getattr(previous, 'name', 'starter'))
+        team_label = getattr(offense_team, 'name', 'Coach')
+        print(f"   >> {team_label} summons {pinch_name} (Gap-to-Gap milestone) to hit for {prev_name}.")
+    return lineup[0]
+
+
 def _maybe_call_aggressive_play(state):
     """High-volatility coaches occasionally send the runner."""
     offense_team, opp_pitcher = _offense_context(state)
@@ -102,6 +216,12 @@ def _maybe_call_aggressive_play(state):
     runner_speed = getattr(runner, 'speed', 50) or 50
     base_chance += max(0, runner_speed - 65) * 0.001
 
+    if _player_has_milestone(state, runner, "walkoff_spark"):
+        base_chance += 0.04
+        if commentary_enabled():
+            runner_name = getattr(runner, 'last_name', getattr(runner, 'name', 'Runner'))
+            print(f"   >> Milestone swagger: {runner_name} earned Walk-off Spark; coach trusts his jump.")
+
     # Late innings or when trailing nudges aggression upward
     offense_is_away = state.top_bottom == "Top"
     score_diff = (state.away_score - state.home_score) if offense_is_away else (state.home_score - state.away_score)
@@ -115,7 +235,7 @@ def _maybe_call_aggressive_play(state):
         return None
 
     catcher = get_current_catcher(state)
-    success, message = resolve_steal_attempt(runner, opp_pitcher, catcher, "2B")
+    success, message = resolve_steal_attempt(state, runner, opp_pitcher, catcher, "2B")
     if commentary_enabled():
         coach_name = getattr(coach, 'name', 'Coach')
         runner_name = getattr(runner, 'last_name', getattr(runner, 'name', 'Runner'))
@@ -171,16 +291,16 @@ def _lead_changed(state, runs_scored, pre_home, pre_away):
 def _apply_walk_confidence(state, batter, pitcher):
     adjust_confidence(state, getattr(batter, 'id', None), 2, reason="discipline")
     adjust_confidence(state, getattr(pitcher, 'id', None), -2, reason="discipline")
+    _apply_umpire_pressure_bonus(state, batter, pitcher, "walk")
 
 
 def _apply_strikeout_confidence(state, batter, pitcher):
     adjust_confidence(state, getattr(batter, 'id', None), -8, reason="strikeout")
     adjust_confidence(state, getattr(pitcher, 'id', None), 4, reason="strikeout")
+    _apply_umpire_pressure_bonus(state, batter, pitcher, "strikeout")
 
 
 def _apply_contact_confidence(state, batter, pitcher, contact_res):
-    if contact_res.error_on_play:
-        apply_fielding_error_confidence(state, _defense_team_id(state), contact_res.primary_position)
     if contact_res.hit_type == "Out":
         adjust_confidence(state, getattr(batter, 'id', None), -4, reason="out")
         adjust_confidence(state, getattr(pitcher, 'id', None), 3, reason="heroics")
@@ -210,17 +330,42 @@ def _handle_argument_event(state, pitch_res, batter, pitcher):
     if label not in {"argument_batter", "argument_pitcher"}:
         return
     penalty = getattr(pitch_res, 'argument_penalty', 0) or 0
-    if penalty <= 0:
-        return
     target = batter if label == "argument_batter" else pitcher
     target_id = getattr(target, 'id', None)
-    adjust_confidence(state, target_id, -penalty, reason="ump_argument", contagious=False)
-    morale = getattr(target, 'morale', 60) or 60
-    morale -= max(1, penalty // 2)
-    target.morale = max(15, morale)
+    ejected = getattr(pitch_res, 'argument_ejection', False)
+    if penalty > 0:
+        adjust_confidence(state, target_id, -penalty, reason="ump_argument", contagious=False)
+        morale = getattr(target, 'morale', 60) or 60
+        morale -= max(1, penalty // 2)
+        target.morale = max(15, morale)
+        if commentary_enabled():
+            name = getattr(target, 'last_name', getattr(target, 'name', 'Player'))
+            print(f"   >> {name} barks at the ump and gets rattled ({penalty} confidence hit).")
+    if ejected:
+        _record_ejection(state, target, label)
+
+
+def _record_ejection(state, player, label):
+    if not player:
+        return
+    pid = getattr(player, 'id', None)
+    team_id = state.player_team_map.get(pid) if hasattr(state, 'player_team_map') else None
+    adjust_confidence(state, pid, -22, reason="ejected", contagious=False)
+    if team_id:
+        for mate in state.team_rosters.get(team_id, []):
+            if mate and getattr(mate, 'id', None) != pid:
+                adjust_confidence(state, mate.id, -4, reason="ejected", contagious=False)
+    morale = getattr(player, 'morale', 60) or 60
+    player.morale = max(5, morale - 25)
+    getattr(state, 'ejections', []).append({
+        "player_id": pid,
+        "team_id": team_id,
+        "inning": getattr(state, 'inning', 0),
+        "role": label,
+    })
     if commentary_enabled():
-        name = getattr(target, 'last_name', getattr(target, 'name', 'Player'))
-        print(f"   >> {name} barks at the ump and gets rattled ({penalty} confidence hit).")
+        name = getattr(player, 'last_name', getattr(player, 'name', 'Player'))
+        print(f"   >> {name} is tossed after the argument! Umpire patience ran out.")
 
 def start_at_bat(state):
     """
@@ -228,18 +373,23 @@ def start_at_bat(state):
     Returns True if the inning continues, False if 3 outs reached immediately.
     """
     pitcher = state.home_pitcher if state.top_bottom == "Top" else state.away_pitcher
-    batter = state.away_lineup[0] if state.top_bottom == "Top" else state.home_lineup[0]
+    lineup = state.away_lineup if state.top_bottom == "Top" else state.home_lineup
+    batter = lineup[0]
+    batter = _maybe_call_milestone_pinch_hit(state, lineup)
+    lineup[0] = batter
     batting_team = state.away_team if state.top_bottom == "Top" else state.home_team
     offense_team_id = _offense_team_id(state)
     batter_id = getattr(batter, 'id', None)
     pitcher_id = getattr(pitcher, 'id', None)
     
     state.reset_count()
+    _reset_plate_summary(state)
     batter_stats = state.get_stats(batter.id)
     pitcher_stats = state.get_stats(pitcher.id)
     if commentary_enabled():
         display_state(state, pitcher, batter)
     
+    batter_tendencies = gather_behavior_tendencies(batter)
     steal_checked = False
     while True:
         # time.sleep(0.5) # Pace the game
@@ -261,9 +411,22 @@ def start_at_bat(state):
                     return
                 continue
 
+        trait_context = get_at_bat_context(state, batter, pitcher)
+        batter_trait_mods = _collect_trait_mods(batter, trait_context)
+        pitcher_trait_mods = _collect_trait_mods(pitcher, trait_context)
+
         # 1. Pitch Resolution (Pass batter intent)
         state.add_pitch_count(pitcher.id)
-        pitch_res = resolve_pitch(pitcher, batter, state, batter_action, batter_mods)
+        pitch_res = resolve_pitch(
+            pitcher,
+            batter,
+            state,
+            batter_action,
+            batter_mods,
+            batter_trait_mods=batter_trait_mods,
+            pitcher_trait_mods=pitcher_trait_mods,
+            batter_tendencies=batter_tendencies,
+        )
         tracker = _update_pitch_diagnostics(state, pitcher.id, pitch_res.outcome)
 
         announce_pitch(pitch_res)
@@ -334,6 +497,7 @@ def start_at_bat(state):
                 pitcher,
                 state,
                 power_mod=p_mod,
+                trait_mods=batter_trait_mods,
             )
             announce_play(contact_res)
             reached_base = contact_res.hit_type != "Out"

@@ -1,12 +1,21 @@
+import logging
+import os
 import random
-from typing import Optional
+from typing import List, Optional
 
 from .health_system import check_injury_risk, apply_injury, get_performance_modifiers
 from database.setup_db import Player
 from game.academic_system import resolve_study_session, clamp, is_academically_eligible
 from game.game_context import GameContext
 from game.personality_effects import adjust_player_morale, decay_slump
+from game.player_progression import MilestoneUnlockResult, process_milestone_unlocks
 from game.relationship_manager import register_morale_rebound
+from game.skill_system import check_and_grant_skills
+from game.trait_logic import get_progression_speed_multiplier
+from ui.ui_display import Colour
+
+logger = logging.getLogger(__name__)
+PROGRESSION_DEBUG = os.getenv("PROGRESSION_DEBUG", "").lower() in {"1", "true", "yes"}
 
 
 def _get_player(context: GameContext) -> Optional[Player]:
@@ -211,6 +220,10 @@ def apply_scheduled_action(context: GameContext, action_type: str) -> dict:
 
     # --- DB UPDATE ---
     _apply_temp_training_bonuses(context, stat_gains)
+    progression_mult = get_progression_speed_multiplier(player)
+    if stat_gains and progression_mult != 1.0:
+        for stat in list(stat_gains.keys()):
+            stat_gains[stat] *= progression_mult
     # 1. Update Fatigue
     new_fatigue = max(0, min(100, fatigue + fatigue_change))
     player.fatigue = new_fatigue
@@ -233,6 +246,30 @@ def apply_scheduled_action(context: GameContext, action_type: str) -> dict:
             register_morale_rebound(context.session, player, reason="slump_cleared")
             summary += " (You finally shake the slump.)"
 
+    unlocked_skills = check_and_grant_skills(context.session, player)
+    milestone_unlocks = process_milestone_unlocks(context.session, player)
+    if milestone_unlocks:
+        unlocked_skills.extend(entry.skill_name for entry in milestone_unlocks)
+        _announce_milestones(milestone_unlocks)
+        if PROGRESSION_DEBUG:
+            logger.info(
+                "Training action %s for player %s triggered milestones %s",
+                action_type,
+                getattr(player, "id", "unknown"),
+                [entry.milestone_key for entry in milestone_unlocks],
+            )
+
+    if unlocked_skills:
+        names = ", ".join(unlocked_skills)
+        summary += f" New skill unlocked: {names}."
+        if PROGRESSION_DEBUG:
+            logger.info(
+                "Training action %s for player %s granted skills %s",
+                action_type,
+                getattr(player, "id", "unknown"),
+                unlocked_skills,
+            )
+
     context.session.add(player)
     context.session.commit()
 
@@ -242,9 +279,21 @@ def apply_scheduled_action(context: GameContext, action_type: str) -> dict:
         "fatigue_change": fatigue_change,
         "stat_changes": stat_gains,
         "new_fatigue": new_fatigue,
+        "skills_unlocked": unlocked_skills,
+        "milestones": milestone_unlocks,
     }
 
 def run_training_camp_event(context: GameContext):
     # This is a stub or full function depending on if you want it in this file
     # Ideally, keep the implementation I gave in the previous turn here if you want it.
     pass
+
+
+def _announce_milestones(milestones: List[MilestoneUnlockResult]) -> None:
+    if not milestones:
+        return
+    for entry in milestones:
+        label = entry.milestone_label or entry.milestone_key
+        print(
+            f"{Colour.gold}[MILESTONE]{Colour.RESET} {label}: {entry.description} -> {entry.skill_name}"
+        )

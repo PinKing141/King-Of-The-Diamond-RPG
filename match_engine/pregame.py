@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional
 
 from sqlalchemy.orm import Session
 
 from database.setup_db import Player, School, GameState, PlayerRelationship
 from game.coach_strategy import export_mod_descriptors
+from game.player_progression import fetch_player_milestone_tags
 from game.rng import get_rng
 from match_engine.confidence import initialize_confidence
 
@@ -111,10 +112,78 @@ WEATHER_PRESETS = [
 ]
 
 
+@dataclass
+class UmpireProfile:
+    """Defines the personality quirks for the plate umpire."""
+
+    name: str
+    zone_bias: float  # Positive squeezes the zone (more balls), negative expands
+    home_bias: float  # Positive favors home pitchers, negative favors home batters
+    temperament: float  # 0 (calm) -> 1 (fiery)
+    description: str | None = None
+    weight: float = 1.0
+
+
+UMPIRE_PRESETS = [
+    UmpireProfile(
+        name="Ayako Tanaka",
+        zone_bias=0.35,
+        home_bias=-0.05,
+        temperament=0.45,
+        description="Tight zone that rewards patient hitters.",
+        weight=1.1,
+    ),
+    UmpireProfile(
+        name="Daisuke Mori",
+        zone_bias=-0.25,
+        home_bias=0.12,
+        temperament=0.65,
+        description="Generous corners, especially for the home ace.",
+        weight=1.0,
+    ),
+    UmpireProfile(
+        name="Haruto Sato",
+        zone_bias=0.1,
+        home_bias=0.0,
+        temperament=0.3,
+        description="Balanced caller who rarely loses his cool.",
+        weight=0.9,
+    ),
+    UmpireProfile(
+        name="Mika Fujimori",
+        zone_bias=-0.05,
+        home_bias=-0.08,
+        temperament=0.8,
+        description="Lets the home crowd sway borderline balls into base runners.",
+        weight=0.8,
+    ),
+    UmpireProfile(
+        name="Koji Nakamura",
+        zone_bias=0.2,
+        home_bias=0.15,
+        temperament=0.55,
+        description="Old-school strike zone with a subtle lean toward home pitchers.",
+        weight=1.0,
+    ),
+]
+
+
 class MatchState:
     """Container for all mutable state shared across the match engine."""
 
-    def __init__(self, home_team, away_team, home_lineup, away_lineup, home_pitcher, away_pitcher, db_session):
+    def __init__(
+        self,
+        home_team,
+        away_team,
+        home_lineup,
+        away_lineup,
+        home_pitcher,
+        away_pitcher,
+        db_session,
+        *,
+        home_bench: Optional[Iterable[Player]] = None,
+        away_bench: Optional[Iterable[Player]] = None,
+    ):
         # Teams (Now Schools)
         self.home_team = home_team
         self.away_team = away_team
@@ -124,6 +193,10 @@ class MatchState:
         self.away_lineup = list(away_lineup)
         self.home_roster = list(self.home_lineup)
         self.away_roster = list(self.away_lineup)
+        self.home_bench = list(home_bench or [])
+        self.away_bench = list(away_bench or [])
+        self.home_roster.extend(self.home_bench)
+        self.away_roster.extend(self.away_bench)
         
         # Current Pitchers
         self.home_pitcher = home_pitcher
@@ -172,10 +245,34 @@ class MatchState:
         self.confidence_events = []
         self.confidence_story = {}
         self.argument_cooldowns = {}
+        self.ejections = []
+        self.pinch_history = []
+        self.pitching_changes = []
+        self.last_change_reason = None
+        self.player_milestones: dict[int, list[dict[str, object]]] = {}
         self.weather: WeatherState | None = None
+        self.umpire: UmpireProfile | None = None
+        self.umpire_mood: float = 0.0
+        self.umpire_call_tilt: dict[int | None, dict[str, int]] = {}
+        for team in (self.home_team, self.away_team):
+            team_id = getattr(team, "id", None)
+            if team_id is not None:
+                self.umpire_call_tilt[team_id] = {"favored": 0, "squeezed": 0}
+        self.umpire_plate_summary = {
+            "offense": {"favored": 0, "squeezed": 0},
+            "defense": {"favored": 0, "squeezed": 0},
+        }
         self.team_rosters = {
             getattr(self.home_team, "id", None): self.home_roster,
             getattr(self.away_team, "id", None): self.away_roster,
+        }
+        self.bench_players = {
+            getattr(self.home_team, "id", None): list(self.home_bench),
+            getattr(self.away_team, "id", None): list(self.away_bench),
+        }
+        self.burned_bench = {
+            getattr(self.home_team, "id", None): [],
+            getattr(self.away_team, "id", None): [],
         }
         self.player_lookup = {}
         for player in self.home_roster + self.away_roster:
@@ -202,6 +299,22 @@ class MatchState:
                 "strikeouts_pitched": 0, "innings_pitched": 0.0, "pitches": 0
             }
         return self.stats[p_id]
+
+    def set_player_milestones(self, mapping: dict[int, list[dict[str, object]]]):
+        self.player_milestones = mapping or {}
+
+    def player_has_milestone(self, player_id: Optional[int], milestone_key: str) -> bool:
+        if not player_id or not milestone_key:
+            return False
+        entries = self.player_milestones.get(player_id, [])
+        target = milestone_key.lower()
+        return any((entry.get("key") or "").lower() == target for entry in entries)
+
+    def get_player_milestone_labels(self, player_id: Optional[int]) -> list[str]:
+        if not player_id:
+            return []
+        entries = self.player_milestones.get(player_id, [])
+        return [str(entry.get("label") or entry.get("key")) for entry in entries]
 
     def add_pitch_count(self, pitcher_id):
         self.pitch_counts[pitcher_id] = self.pitch_counts.get(pitcher_id, 0) + 1
@@ -255,6 +368,13 @@ def _attach_coach_modifiers(state: MatchState):
     }
 
 
+def _tag_lineup_slots(lineup: Iterable[Player]) -> None:
+    for idx, player in enumerate(lineup, start=1):
+        if player is None:
+            continue
+        setattr(player, "_lineup_slot", idx)
+
+
 def _weighted_pick(options: Iterable[dict[str, Any]]):
     rng = get_rng()
     total = sum(opt.get("weight", 1.0) for opt in options)
@@ -287,6 +407,19 @@ def _roll_weather_state() -> WeatherState:
     )
 
 
+def _roll_umpire_profile() -> UmpireProfile | None:
+    if not UMPIRE_PRESETS:
+        return None
+    total = sum(profile.weight for profile in UMPIRE_PRESETS)
+    roll = get_rng().random() * total
+    running = 0.0
+    for profile in UMPIRE_PRESETS:
+        running += profile.weight
+        if roll <= running:
+            return profile
+    return UMPIRE_PRESETS[-1]
+
+
 def prepare_match(home_id, away_id, db_session: Session):
     """
     Loads teams, builds lineups, selects pitchers.
@@ -310,10 +443,14 @@ def prepare_match(home_id, away_id, db_session: Session):
     home_lineup = [p for p in home_players if p.is_starter][:9]
     if len(home_lineup) < 9: # Fallback
         home_lineup = home_players[:9]
+    home_bench = [p for p in home_players if p not in home_lineup]
+    _tag_lineup_slots(home_lineup)
 
     away_lineup = [p for p in away_players if p.is_starter][:9]
     if len(away_lineup) < 9:
         away_lineup = away_players[:9]
+    away_bench = [p for p in away_players if p not in away_lineup]
+    _tag_lineup_slots(away_lineup)
     
     # Select Pitcher
     # Try to find assigned 'ACE' or 'STARTER' pitcher role
@@ -325,14 +462,30 @@ def prepare_match(home_id, away_id, db_session: Session):
     
     rivalry_info = _apply_rivalry_context(db_session, home_lineup, away_lineup)
 
-    match_state = MatchState(home_team, away_team, home_lineup, away_lineup, home_pitcher, away_pitcher, db_session)
+    match_state = MatchState(
+        home_team,
+        away_team,
+        home_lineup,
+        away_lineup,
+        home_pitcher,
+        away_pitcher,
+        db_session,
+        home_bench=home_bench,
+        away_bench=away_bench,
+    )
     _attach_coach_modifiers(match_state)
+    player_ids = [p.id for p in match_state.home_roster + match_state.away_roster if p and getattr(p, 'id', None)]
+    match_state.set_player_milestones(fetch_player_milestone_tags(db_session, player_ids))
     match_state.weather = _roll_weather_state()
     if match_state.weather:
         description = match_state.weather.describe()
         match_state.log(f"Weather report: {description}")
         if match_state.weather.commentary_hint:
             match_state.log(match_state.weather.commentary_hint)
+    match_state.umpire = _roll_umpire_profile()
+    if match_state.umpire:
+        summary = match_state.umpire.description or "Neutral strike zone in effect."
+        match_state.log(f"Behind the plate: {match_state.umpire.name} — {summary}")
     if rivalry_info:
         match_state.hero_player_id = rivalry_info["hero_id"]
         match_state.hero_school_id = rivalry_info["hero_school_id"]

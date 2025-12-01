@@ -6,8 +6,14 @@ import random
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.setup_db import School, Player
 from ui.ui_display import Colour, clear_screen
-from game.scouting_system import get_scouting_info, perform_scout_action
+from game.scouting_system import (
+    get_scouting_info,
+    perform_scout_action,
+    SCOUTING_PACKAGES,
+    MAX_KNOWLEDGE_LEVEL,
+)
 from game.game_context import GameContext
+from game.player_progression import fetch_player_milestone_tags
 
 DEBUG_MODE = False 
 KNOWLEDGE_LABELS = ["Unknown", "Basic", "Detailed", "Full"]
@@ -49,13 +55,21 @@ def format_scouting_result_message(result):
         lvl = KNOWLEDGE_LABELS[min(lvl_idx, len(KNOWLEDGE_LABELS) - 1)]
         return f"We already have full intel on this team (knowledge: {lvl})."
 
+    if result.status == "invalid-tier":
+        return "Selected scouting package is unavailable right now."
+
     if result.status == "success":
         lvl_idx = result.knowledge_after or 0
         lvl = KNOWLEDGE_LABELS[min(lvl_idx, len(KNOWLEDGE_LABELS) - 1)]
         remaining = result.budget_after or 0
+        tier_label = (result.tier or "basic").title()
+        gain = result.knowledge_gained or 0
+        gain_text = f"+{gain} level" if gain == 1 else f"+{gain} levels"
+        bonus = result.recruit_roll_bonus or 0
+        bonus_text = f" Recruit potential bonus +{bonus}." if bonus > 0 else ""
         return (
-            f"Scouting complete! Knowledge increased to {lvl}. "
-            f"Cost: ¥{result.cost_yen:,}. Remaining budget: ¥{remaining:,}."
+            f"{tier_label} scouting complete! Knowledge {gain_text}, now {lvl}. "
+            f"Cost: ¥{result.cost_yen:,}. Remaining budget: ¥{remaining:,}.{bonus_text}"
         )
 
     return "Scouting action could not be processed."
@@ -113,6 +127,11 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
     
     # Fetch players
     all_players = session.query(Player).filter_by(school_id=school.id).order_by(Player.jersey_number).all()
+    show_milestones = is_my_team or knowledge >= 2
+    milestone_map = {}
+    if show_milestones and all_players:
+        player_ids = [p.id for p in all_players]
+        milestone_map = fetch_player_milestone_tags(session, player_ids)
     
     # Filter based on mode
     display_players = []
@@ -130,7 +149,7 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
     if not display_players:
         print(f"   (No players found in {view_mode} list)")
     else:
-        header = f" {'NO':<3} | {'POS':<4} | {'NAME':<22} | {'STS':<8} | {'KEY ATTRIBUTES':<40}"
+        header = f" {'NO':<3} | {'POS':<4} | {'NAME':<22} | {'STS':<8} | {'KEY ATTRIBUTES':<40} | {'MILESTONES':<18}"
         print(header)
         print("-" * len(header))
 
@@ -162,23 +181,44 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
                 )
 
             num_str = f"#{p.jersey_number}" if (p.jersey_number and p.jersey_number < 99) else "--"
-            row_str = f" {num_str:<3} | {role:<4} | {name_display:<22} | {status:<8} | {stats_str:<40}"
+            if show_milestones:
+                tags = [str(entry.get('label') or entry.get('key')) for entry in milestone_map.get(p.id, [])]
+                milestone_str = ', '.join(tags) if tags else '--'
+            else:
+                milestone_str = '--'
+
+            row_str = f" {num_str:<3} | {role:<4} | {name_display:<22} | {status:<8} | {stats_str:<40} | {milestone_str:<18}"
             print(row_str)
         
     print("="*95)
     
     # Scouting Actions
-    if not is_my_team and knowledge < 3:
-        cost = 50000 * (knowledge + 1)
-        print(f"{Colour.CYAN}[ACTION] Scout Team (Cost: ¥{cost:,}){Colour.RESET}")
-        if input("Purchase Intel? (y/n): ").lower() == 'y':
-            user_school = session.get(School, user_p.school_id)
-            result = perform_scout_action(session, user_school.id, school.id, cost)
-            print(format_scouting_result_message(result))
-            if result.success:
-                import time; time.sleep(1)
-                session.expire_all()
-                print_team_roster(session, school, active_player_id, title_prefix, view_mode) # Refresh
+    if not is_my_team and knowledge < MAX_KNOWLEDGE_LEVEL:
+        package_keys = list(SCOUTING_PACKAGES.keys())
+        print(f"{Colour.CYAN}[ACTION] Purchase Scouting Intel{Colour.RESET}")
+        for idx, key in enumerate(package_keys, start=1):
+            pkg = SCOUTING_PACKAGES[key]
+            gain = pkg['knowledge_gain']
+            gain_text = f"+{gain} lvl" if gain == 1 else f"+{gain} lvls"
+            bonus = pkg['recruit_roll_bonus']
+            bonus_text = f", Recruit +{bonus}" if bonus > 0 else ""
+            print(
+                f"  {idx}. {key.title():<8} (¥{pkg['cost']:,}, {gain_text}{bonus_text})"
+            )
+        print("  0. Cancel")
+
+        choice = input("Select scouting tier: ").strip()
+        if choice.isdigit():
+            pick = int(choice)
+            if 1 <= pick <= len(package_keys):
+                tier_key = package_keys[pick - 1]
+                user_school = session.get(School, user_p.school_id)
+                result = perform_scout_action(session, user_school.id, school.id, tier=tier_key)
+                print(format_scouting_result_message(result))
+                if result.success:
+                    import time; time.sleep(1)
+                    session.expire_all()
+                    print_team_roster(session, school, active_player_id, title_prefix, view_mode)
 
 def view_scouting_menu(context: GameContext):
     if context.player_id is None:

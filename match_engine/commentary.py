@@ -343,4 +343,17 @@ def game_over(state, winner):
     
     print(f" Final Score: {away_name} {state.away_score} - {state.home_score} {home_name}")
     print(f" Winner: {Colour.gold}{winner_name}{Colour.RESET}")
+    umpire = getattr(state, 'umpire', None)
+    if umpire:
+        desc = umpire.description or "Neutral strike zone."
+        home_id = getattr(state.home_team, 'id', None)
+        away_id = getattr(state.away_team, 'id', None)
+        tilt = getattr(state, 'umpire_call_tilt', {}) or {}
+        home_tilt = tilt.get(home_id, {"favored": 0, "squeezed": 0})
+        away_tilt = tilt.get(away_id, {"favored": 0, "squeezed": 0})
+        zone = getattr(umpire, 'zone_bias', 0.0) or 0.0
+        home_bias = getattr(umpire, 'home_bias', 0.0) or 0.0
+        print(f" Plate Umpire: {umpire.name} — {desc}")
+        print(f"   Zone bias {zone:+.2f} | Home lean {home_bias:+.2f}")
+        print(f"   Calls: Home +{home_tilt.get('favored', 0)} / -{home_tilt.get('squeezed', 0)} | Away +{away_tilt.get('favored', 0)} / -{away_tilt.get('squeezed', 0)}")
     print("#"*60 + "\n")

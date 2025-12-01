@@ -1,5 +1,18 @@
 import sqlalchemy
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Boolean, Text, text
+from datetime import datetime, timezone
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Float,
+    ForeignKey,
+    Boolean,
+    Text,
+    DateTime,
+    Index,
+    text,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, synonym
 from sqlalchemy import inspect
 from contextlib import contextmanager
@@ -98,21 +111,22 @@ def ensure_player_schema():
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
-        # Normalize nulls on existing rows
-        conn.execute(text("UPDATE players SET height_cm = COALESCE(height_cm, 165)"))
-        conn.execute(text("UPDATE players SET height_potential = COALESCE(height_potential, 180)"))
-        conn.execute(text("UPDATE players SET growth_tag = COALESCE(growth_tag, 'Normal')"))
-        conn.execute(text("UPDATE players SET weight_kg = COALESCE(weight_kg, 72)"))
-        conn.execute(text("UPDATE players SET is_two_way = COALESCE(is_two_way, 0)"))
-        conn.execute(text("UPDATE players SET secondary_position = NULLIF(secondary_position, '')"))
-        conn.execute(text("UPDATE players SET academic_skill = COALESCE(academic_skill, 55)"))
-        conn.execute(text("UPDATE players SET test_score = COALESCE(test_score, 55)"))
-        conn.execute(text("UPDATE players SET drive = COALESCE(drive, 50)"))
-        conn.execute(text("UPDATE players SET loyalty = COALESCE(loyalty, 50)"))
-        conn.execute(text("UPDATE players SET volatility = COALESCE(volatility, 50)"))
-        conn.execute(text("UPDATE players SET morale = COALESCE(morale, 60)"))
-        conn.execute(text("UPDATE players SET slump_timer = COALESCE(slump_timer, 0)"))
-        conn.execute(text("UPDATE players SET archetype = COALESCE(archetype, 'steady')"))
+
+
+def ensure_player_skill_schema():
+    inspector = inspect(engine)
+    if inspector.has_table('player_skills'):
+        return
+
+    PlayerSkill.__table__.create(bind=engine)
+
+
+def ensure_player_milestone_schema():
+    inspector = inspect(engine)
+    if inspector.has_table('player_milestones'):
+        return
+
+    PlayerMilestone.__table__.create(bind=engine)
 
 
 def ensure_coach_schema():
@@ -177,6 +191,15 @@ def ensure_game_schema():
     _add('weather_wind_speed', 'FLOAT')
     _add('weather_wind_direction', 'VARCHAR')
     _add('weather_summary', 'TEXT')
+    _add('umpire_name', 'VARCHAR')
+    _add('umpire_description', 'TEXT')
+    _add('umpire_zone_bias', 'FLOAT')
+    _add('umpire_home_bias', 'FLOAT')
+    _add('umpire_temperament', 'FLOAT')
+    _add('umpire_favored_home', 'INTEGER')
+    _add('umpire_squeezed_home', 'INTEGER')
+    _add('umpire_favored_away', 'INTEGER')
+    _add('umpire_squeezed_away', 'INTEGER')
 
     if not statements:
         return
@@ -319,6 +342,48 @@ class Player(Base):
         uselist=False,
         foreign_keys="PlayerRelationship.player_id",
     )
+    skills = relationship(
+        "PlayerSkill",
+        back_populates="player",
+        cascade="all, delete-orphan",
+    )
+
+
+# ============================================================
+# 3b. PLAYER SKILLS TABLE
+# ============================================================
+class PlayerSkill(Base):
+    __tablename__ = 'player_skills'
+    __table_args__ = (
+        Index('ix_player_skills_player_id', 'player_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey('players.id'), nullable=False)
+    skill_key = Column(String, nullable=False)
+    acquired_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    is_active = Column(Boolean, default=True)
+
+    player = relationship("Player", back_populates="skills")
+
+
+class PlayerMilestone(Base):
+    __tablename__ = 'player_milestones'
+    __table_args__ = (
+        Index('ix_player_milestone_player_id', 'player_id'),
+        Index('ix_player_milestone_key', 'milestone_key'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey('players.id'), nullable=False)
+    milestone_key = Column(String, nullable=False)
+    milestone_label = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    skill_key = Column(String, nullable=True)
+    season_year = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    player = relationship("Player")
 
 
 # ============================================================
@@ -367,6 +432,15 @@ class Game(Base):
     weather_wind_speed = Column(Float, nullable=True)
     weather_wind_direction = Column(String, nullable=True)
     weather_summary = Column(Text, nullable=True)
+    umpire_name = Column(String, nullable=True)
+    umpire_description = Column(Text, nullable=True)
+    umpire_zone_bias = Column(Float, nullable=True)
+    umpire_home_bias = Column(Float, nullable=True)
+    umpire_temperament = Column(Float, nullable=True)
+    umpire_favored_home = Column(Integer, default=0)
+    umpire_squeezed_home = Column(Integer, default=0)
+    umpire_favored_away = Column(Integer, default=0)
+    umpire_squeezed_away = Column(Integer, default=0)
 
     home_school = relationship("School", foreign_keys=[home_school_id], back_populates="games_home")
     away_school = relationship("School", foreign_keys=[away_school_id], back_populates="games_away")
@@ -500,6 +574,8 @@ def create_database():
     Base.metadata.create_all(engine)
     ensure_gamestate_schema()
     ensure_player_schema()
+    ensure_player_skill_schema()
+    ensure_player_milestone_schema()
     ensure_coach_schema()
     ensure_game_schema()
     ensure_game_stats_schema()
