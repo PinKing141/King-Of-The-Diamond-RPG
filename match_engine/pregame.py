@@ -10,6 +10,7 @@ from game.coach_strategy import export_mod_descriptors
 from game.player_progression import fetch_player_milestone_tags
 from game.rng import get_rng
 from match_engine.confidence import initialize_confidence
+from match_engine.momentum import MomentumSystem, PresenceProfile, PresenceSystem
 
 
 @dataclass
@@ -249,6 +250,8 @@ class MatchState:
         self.times_through_order = {}
         self.batter_tell_tracker = {}
         self.argument_cooldowns = {}
+        self.batters_eye_history: list[dict[str, object]] = []
+        self.defensive_shift: str = "normal"
         self.ejections = []
         self.pinch_history = []
         self.pitching_changes = []
@@ -294,6 +297,84 @@ class MatchState:
             if player:
                 self.player_team_map[player.id] = self.away_team.id
         initialize_confidence(self)
+
+        self.momentum_system = MomentumSystem(
+            getattr(self.home_team, "id", None),
+            getattr(self.away_team, "id", None),
+        )
+        self.presence_system = PresenceSystem()
+        self.pressure_index: float = 0.0
+        self.aura_events: list[dict[str, object]] = []
+
+    def configure_presence(self, profiles: Iterable[PresenceProfile]) -> None:
+        self.presence_system.configure(profiles)
+
+    def update_pressure_index(self) -> float:
+        inning_factor = min(self.inning, 9) / 9.0
+        score_gap = abs(self.home_score - self.away_score)
+        gap_factor = 1.0 if score_gap == 0 else max(0.0, 1.0 - min(score_gap, 6) / 6.0)
+        runner_weights = (0.15, 0.25, 0.35)
+        runner_factor = 0.0
+        for runner, weight in zip(self.runners, runner_weights):
+            if runner:
+                runner_factor += weight
+        self.pressure_index = round(((inning_factor * 0.5) + (gap_factor * 0.3) + (runner_factor * 0.2)) * 10, 2)
+        return self.pressure_index
+
+    def pressure_penalty(self, player, role: str) -> float:
+        if not player:
+            return 0.0
+        clutch = getattr(player, "clutch", 50) or 50
+        if clutch >= 65:
+            return 0.0
+        pressure_scalar = max(0.0, self.pressure_index - 3.0) / 7.0
+        clutch_gap = max(0.0, 65 - clutch) / 65.0
+        penalty = round(pressure_scalar * clutch_gap, 3)
+        return penalty if role.lower() in {"pitcher", "batter"} else 0.0
+
+    def log_aura_event(self, payload: dict[str, object]) -> None:
+
+
+    def _build_presence_profiles(state: MatchState) -> List[PresenceProfile]:
+        profiles: List[PresenceProfile] = []
+
+        def _profile_for_pitcher(pitcher, team_id: Optional[int]):
+            if not pitcher or not getattr(pitcher, "id", None):
+                return None
+            return PresenceProfile(
+                player_id=pitcher.id,
+                team_id=team_id,
+                role="ACE",
+                trust_baseline=getattr(pitcher, "trust_baseline", 50) or 50,
+            )
+
+        def _profile_for_cleanup(lineup, team_id: Optional[int]):
+            if len(lineup) < 4:
+                return None
+            cleanup = lineup[3]
+            if not cleanup or not getattr(cleanup, "id", None):
+                return None
+            return PresenceProfile(
+                player_id=cleanup.id,
+                team_id=team_id,
+                role="CLEANUP",
+                trust_baseline=getattr(cleanup, "trust_baseline", 50) or 50,
+            )
+
+        home_id = getattr(state.home_team, "id", None)
+        away_id = getattr(state.away_team, "id", None)
+
+        for profile in (
+            _profile_for_pitcher(state.home_pitcher, home_id),
+            _profile_for_pitcher(state.away_pitcher, away_id),
+            _profile_for_cleanup(state.home_lineup, home_id),
+            _profile_for_cleanup(state.away_lineup, away_id),
+        ):
+            if profile:
+                profiles.append(profile)
+
+        return profiles
+        self.aura_events.append(payload)
 
     def get_stats(self, p_id):
         if p_id not in self.stats:
@@ -485,6 +566,8 @@ def prepare_match(home_id, away_id, db_session: Session):
         away_bench=away_bench,
     )
     _attach_coach_modifiers(match_state)
+    match_state.configure_presence(_build_presence_profiles(match_state))
+    match_state.update_pressure_index()
     player_ids = [p.id for p in match_state.home_roster + match_state.away_roster if p and getattr(p, 'id', None)]
     match_state.set_player_milestones(fetch_player_milestone_tags(db_session, player_ids))
     match_state.weather = _roll_weather_state()

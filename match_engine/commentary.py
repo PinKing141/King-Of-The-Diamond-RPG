@@ -2,6 +2,7 @@ from typing import List, Optional
 
 from ui.ui_display import Colour
 from game.rng import get_rng
+from .batter_logic import get_recent_batters_eye_history
 
 rng = get_rng()
 
@@ -269,8 +270,23 @@ def display_state(state, pitcher, batter):
     print(f" BATTER:  {b_name} {b_cond} (Pow {batter.power} / Con {batter.contact})")
     print(f" COUNT:   {state.balls}-{state.strikes}  |  OUTS: {state.outs}")
     print("-" * 60)
+    _render_batters_eye_panel(state)
     _announce_weather_once(state)
     _emit_contextual_notes(state, pitcher, batter)
+def _render_batters_eye_panel(state):
+    history = get_recent_batters_eye_history(state, max_items=3)
+    if not history:
+        return
+    print(" Batter's Eye Calls:")
+    icons = {"locked_in": f"{Colour.GREEN}✓{Colour.RESET}", "fooled": f"{Colour.RED}✗{Colour.RESET}"}
+    for entry in history:
+        icon = icons.get(entry.get("result"), "-")
+        label = (entry.get("label") or "?").lower()
+        source = entry.get("source", "ai")
+        tag = "YOU" if source == "user" else "AI"
+        count = f"{entry.get('balls', 0)}-{entry.get('strikes', 0)}"
+        print(f"   {icon} [{tag}] {label} at {count}")
+    print("-" * 60)
 
 def announce_pitch(pitch_result):
     if not _COMMENTARY_ENABLED:

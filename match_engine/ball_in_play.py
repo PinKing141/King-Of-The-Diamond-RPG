@@ -1,5 +1,6 @@
 from game.rng import get_rng
 from match_engine.confidence import apply_fielding_error_confidence
+from player_roles.fielder_controls import prompt_hero_dive
 
 rng = get_rng()
 
@@ -26,6 +27,93 @@ def _defense_team_id(state):
     return getattr(state.away_team, "id", None)
 
 
+def _user_controls_defense(state):
+    return _defense_team_id(state) == 1 if state else False
+
+
+def _offense_team_id(state):
+    if not state:
+        return None
+    if getattr(state, "top_bottom", "Top") == "Top":
+        return getattr(state.away_team, "id", None)
+    return getattr(state.home_team, "id", None)
+
+
+def _flow_multiplier(state, team_id):
+    system = getattr(state, "momentum_system", None)
+    if not system or team_id is None:
+        return 1.0
+    return system.get_multiplier(team_id)
+
+
+def _hero_defender_for_trajectory(trajectory: str) -> str:
+    if trajectory == "Line Drive":
+        return rng.choice(["Left Field", "Right Field"])
+    if trajectory in {"Gapper", "Deep Fly"}:
+        return "Center Field"
+    return "Left Field"
+
+
+def _is_gap_highlight_window(contact_quality: float, trajectory: str) -> bool:
+    if trajectory not in {"Line Drive", "Gapper", "Deep Fly"}:
+        return False
+    return 70 <= contact_quality <= 90
+
+
+def _ai_hero_dive_decision(state) -> str:
+    pressure = getattr(state, "pressure_index", 0.0) or 0.0
+    base = 0.35
+    if pressure >= 7.0:
+        base += 0.15
+    if rng.random() < base:
+        return "dive"
+    return "safe"
+
+
+def _maybe_handle_hero_dive(state, trajectory, hit_type, description, contact_quality):
+    if hit_type == "Out" or not _is_gap_highlight_window(contact_quality, trajectory):
+        return None
+    defender = _hero_defender_for_trajectory(trajectory)
+    if _user_controls_defense(state):
+        decision = prompt_hero_dive(0.3, defender)
+    else:
+        decision = _ai_hero_dive_decision(state)
+    logs = getattr(state, "logs", None) if state else None
+    inning = getattr(state, "inning", 0) if state else 0
+    half = getattr(state, "top_bottom", "Top") if state else "Top"
+    if decision == "safe":
+        if logs is not None:
+            logs.append(f"[Field General] {defender} plays it safe, holding it to one. (Inning {half} {inning})")
+        return ContactResult("1B", "Plays it on a hop to hold it to a single.", credited_hit=True, primary_position=defender)
+    success = rng.random() <= 0.3
+    if success:
+        if logs is not None:
+            logs.append(f"[Field General] {defender} lays out and robs a hit! (Inning {half} {inning})")
+        return ContactResult("Out", "Laid out and snagged it!", outs=1, credited_hit=False, primary_position=defender)
+    if logs is not None:
+        logs.append(f"[Field General] Dive whiffs and it rolls to the wall! (Inning {half} {inning})")
+    return ContactResult("3B", "Dives and misses! Ball rockets to the wall.", credited_hit=True, primary_position=defender)
+
+
+def _apply_defensive_shift(state, trajectory, hit_type, description):
+    shift = getattr(state, "defensive_shift", "normal")
+    if shift == "double_play" and trajectory == "Grounder":
+        if hit_type != "Out" and rng.random() < 0.4:
+            return "Out", "Infield at double-play depth gobbles it up."
+    elif shift == "infield_in" and trajectory == "Grounder":
+        roll = rng.random()
+        if hit_type != "Out" and roll < 0.4:
+            return "Out", "Drawn-in infield cuts down the lead runner."
+        if hit_type == "Out" and roll >= 0.4 and roll < 0.7:
+            return "1B", "Hot shot bounces past the drawn-in infield."
+    elif shift == "deep_outfield" and trajectory in {"Fly", "Gapper", "Deep Fly"}:
+        if hit_type in {"2B", "3B", "HR"} and rng.random() < 0.5:
+            return "1B", "Deep alignment limits it to a single."
+        if hit_type == "1B" and rng.random() < 0.25:
+            return "2B", "Shallow flare drops in front of the deep defense."
+    return hit_type, description
+
+
 class ContactResult:
     def __init__(self, hit_type, description, rbi=0, outs=0, credited_hit=True, error_on_play=False, primary_position=None):
         self.hit_type = hit_type # "Out", "1B", "2B", "3B", "HR"
@@ -48,6 +136,33 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
     trait_mods = trait_mods or {}
     raw_power = batter.power + trait_mods.get("power", 0) + power_mod
     running = getattr(batter, 'running', getattr(batter, 'speed', 50)) + trait_mods.get("speed", 0)
+    offense_id = _offense_team_id(state)
+    defense_id = _defense_team_id(state)
+    flow_offense = _flow_multiplier(state, offense_id)
+    flow_defense = _flow_multiplier(state, defense_id)
+    pressure_index = getattr(state, "pressure_index", 0.0) if state else 0.0
+
+    if flow_offense != 1.0:
+        contact_quality *= flow_offense
+        raw_power *= flow_offense
+        running *= flow_offense
+    if flow_defense != 1.0:
+        contact_quality /= flow_defense
+
+    batter_pressure = state.pressure_penalty(batter, "batter") if hasattr(state, "pressure_penalty") else 0.0
+    if batter_pressure:
+        penalty = max(0.55, 1.0 - batter_pressure)
+        contact_quality *= penalty
+        raw_power *= penalty
+        running *= penalty
+
+    pitcher_pressure = state.pressure_penalty(pitcher, "pitcher") if hasattr(state, "pressure_penalty") else 0.0
+    if pitcher_pressure:
+        contact_quality *= 1.0 + min(0.25, pitcher_pressure * 0.8)
+
+    raw_power = max(15.0, raw_power)
+    running = max(20.0, running)
+    contact_quality = float(contact_quality)
     power_transfer = raw_power + rng.randint(0, 20)
     weather = getattr(state, 'weather', None)
     carry_shift = 0
@@ -145,6 +260,11 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
         else:
             desc = "Deep fly out at the warning track."
 
+    hit_type, desc = _apply_defensive_shift(state, trajectory, hit_type, desc)
+    hero_result = _maybe_handle_hero_dive(state, trajectory, hit_type, desc, contact_quality)
+    if hero_result:
+        return hero_result
+
     if hit_type == "Out":
         error_chance = 0.0
         if trajectory == "Grounder":
@@ -157,6 +277,10 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
                 error_chance += 0.04
             if weather.condition == "windy" and trajectory in ("Fly", "Deep Fly"):
                 error_chance += 0.02
+        if pressure_index > 0:
+            error_chance += max(0.0, pressure_index - 4.0) * 0.01
+        if flow_defense > 1.0:
+            error_chance /= flow_defense
         if rng.random() < min(0.4, error_chance):
             hit_type = "1B"
             desc = "Mishandled in the field! Batter reaches on the error."

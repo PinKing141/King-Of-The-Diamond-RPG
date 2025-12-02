@@ -194,6 +194,63 @@ def _defense_team_id(state):
     return getattr(state.home_team, 'id', None) if getattr(state, 'top_bottom', 'Top') == 'Top' else getattr(state.away_team, 'id', None)
 
 
+def _flow_multiplier(state, team_id):
+    system = getattr(state, "momentum_system", None)
+    if not system or team_id is None:
+        return 1.0
+    return system.get_multiplier(team_id)
+
+
+def _annotate_result(result: PitchResult, count_snapshot: tuple[int, int]):
+    result.count_before = count_snapshot
+    result.full_count = count_snapshot == (3, 2)
+    return result
+
+
+_OFFSPEED_FAMILIES = {"changeup", "splitter", "forkball"}
+
+
+def _guess_matches(payload: dict | None, pitch_def: dict, location: str) -> bool | None:
+    if not payload:
+        return None
+    kind = (payload.get("kind") or "").lower()
+    target = (payload.get("value") or "").lower()
+    if not kind or not target:
+        return None
+    if kind == "family":
+        family = (pitch_def.get("family") or "").lower()
+        if not family:
+            return None
+        if target == "offspeed":
+            return family in _OFFSPEED_FAMILIES
+        return family == target
+    if kind == "location":
+        actual = "zone" if location == "Zone" else "chase"
+        return actual == target
+    return None
+
+
+def _runner_on_base(state, slot: int):
+    runners = getattr(state, "runners", None)
+    if not runners:
+        return None
+    if slot < 0 or slot >= len(runners):
+        return None
+    return runners[slot]
+
+
+def _baserunning_aura_penalty(state) -> float:
+    if not state or _defense_team_id(state) == 1:
+        return 0.0
+    runner = _runner_on_base(state, 0)
+    if not runner or _player_team_id(runner) != 1:
+        return 0.0
+    speed = getattr(runner, "speed", 50) or 50
+    if speed < 72:
+        return 0.0
+    return 10.0
+
+
 def _record_umpire_bias(state, favored_role: str) -> None:
     plate = getattr(state, 'umpire_plate_summary', None)
     if plate is None:
@@ -230,6 +287,9 @@ class PitchResult:
         self.argument_penalty = 0
         self.argument_target_id = None
         self.argument_ejection = False
+        self.count_before: tuple[int, int] = (0, 0)
+        self.full_count: bool = False
+        self.guess_payload: dict | None = None
 
 
 def _maybe_flag_wild_pitch(result, state, pitcher):
@@ -424,6 +484,10 @@ def resolve_pitch(
     pitcher_trait_mods = pitcher_trait_mods or {}
     batter_tendencies = batter_tendencies or {}
 
+    updater = getattr(state, "update_pressure_index", None)
+    if callable(updater):
+        updater()
+
     from match_engine.confidence import get_confidence
 
     times_through_order = max(1, times_through_order or 1)
@@ -520,6 +584,28 @@ def resolve_pitch(
     if forced_call:
         effective_control -= 3
 
+    flow_offense = _flow_multiplier(state, _offense_team_id(state))
+    flow_defense = _flow_multiplier(state, _defense_team_id(state))
+    if flow_defense != 1.0:
+        effective_control *= flow_defense
+        effective_movement *= flow_defense
+        velocity *= flow_defense
+
+    aura_penalty = _baserunning_aura_penalty(state)
+    if aura_penalty:
+        effective_control -= aura_penalty
+        logs = getattr(state, "logs", None)
+        runner = _runner_on_base(state, 0)
+        if isinstance(logs, list) and runner:
+            logs.append(f"[Field General] {getattr(runner, 'name', 'Runner')} toys with the pitcher on first. Control -10.")
+
+    pitcher_pressure = state.pressure_penalty(pitcher, "pitcher") if hasattr(state, "pressure_penalty") else 0.0
+    if pitcher_pressure:
+        control_factor = max(0.4, 1.0 - pitcher_pressure)
+        effective_control *= control_factor
+        effective_movement *= control_factor
+        velocity *= max(0.6, 1.0 - pitcher_pressure * 0.5)
+
     # --- 3. BATTER REACTION ---
     
     # Apply mods (from User Choice or AI buffs)
@@ -529,6 +615,46 @@ def resolve_pitch(
     base_contact = getattr(batter, 'contact', 50) or 50
     base_contact += batter_trait_mods.get('contact', 0)
     contact_stat = base_contact + batter_mods.get('contact_mod', 0)
+
+    guess_payload = batter_mods.get('guess_payload')
+    guess_match = _guess_matches(guess_payload, p_def, location) if guess_payload else None
+    guess_source = (guess_payload or {}).get('source', 'user')
+    if guess_match is True:
+        if guess_source == 'ai':
+            eye_stat *= 1.12
+            contact_stat *= 1.18
+            batter_mods['power_mod'] = batter_mods.get('power_mod', 0) + 15
+        else:
+            eye_stat *= 1.25
+            contact_stat *= 1.35
+            batter_mods['power_mod'] = batter_mods.get('power_mod', 0) + 30
+        guess_payload['result'] = 'locked_in'
+    elif guess_match is False:
+        if guess_source == 'ai':
+            eye_stat *= 0.78
+            contact_stat *= 0.75
+            batter_mods['power_mod'] = batter_mods.get('power_mod', 0) - 12
+        else:
+            eye_stat *= 0.6
+            contact_stat *= 0.65
+            batter_mods['power_mod'] = batter_mods.get('power_mod', 0) - 25
+        guess_payload['result'] = 'fooled'
+
+    def _finalize_result(res_obj: PitchResult) -> PitchResult:
+        _annotate_result(res_obj, count_snapshot)
+        if guess_payload:
+            res_obj.guess_payload = dict(guess_payload)
+        return res_obj
+
+    if flow_offense != 1.0:
+        eye_stat *= flow_offense
+        contact_stat *= flow_offense
+
+    batter_pressure = state.pressure_penalty(batter, "batter") if hasattr(state, "pressure_penalty") else 0.0
+    if batter_pressure:
+        penalty_factor = max(0.5, 1.0 - batter_pressure)
+        eye_stat *= penalty_factor
+        contact_stat *= penalty_factor
 
     if player_has_skill(batter, "clutch_hitter") and _is_clutch_situation(state):
         contact_stat *= 1.1
@@ -575,6 +701,7 @@ def resolve_pitch(
         if call == "Strike":
             description = "Looking" if location == "Zone" else "Called Strike"
             res = PitchResult(pitch.pitch_name, location, "Strike", description, velocity)
+            res = _finalize_result(res)
             _maybe_mark_close_call(state, batter, res, took_pitch=True, leverage=1.6 if flipped else 1.0)
             _note_batter_behavior(
                 state,
@@ -586,6 +713,7 @@ def resolve_pitch(
             _adjust_pitcher_presence(state, pitcher_id, 0.12 if location == "Zone" else 0.05)
             return res
         result = PitchResult(pitch.pitch_name, location, "Ball", "Ball", velocity)
+        result = _finalize_result(result)
         _maybe_flag_wild_pitch(result, state, pitcher)
         _maybe_mark_close_call(state, pitcher, result, took_pitch=True, role="pitcher", leverage=1.6 if flipped else 1.0)
         _note_batter_behavior(
@@ -617,6 +745,7 @@ def resolve_pitch(
     
     if contact_quality < 0:
         res = PitchResult(pitch.pitch_name, location, "Strike", "Swinging Miss", velocity)
+        res = _finalize_result(res)
         _note_batter_behavior(
             state,
             batter_id,
@@ -630,6 +759,7 @@ def resolve_pitch(
         return res
     elif contact_quality < 20:
         res = PitchResult(pitch.pitch_name, location, "Foul", "Tipped", velocity)
+        res = _finalize_result(res)
         _note_batter_behavior(
             state,
             batter_id,
@@ -643,6 +773,7 @@ def resolve_pitch(
     else:
         # In Play
         res = PitchResult(pitch.pitch_name, location, "InPlay", "Contact", velocity)
+        res = _finalize_result(res)
         
         # Attach dynamic attributes for ball_in_play logic
         res.contact_quality = contact_quality

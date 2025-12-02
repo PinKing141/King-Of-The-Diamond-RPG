@@ -1,6 +1,37 @@
 import sys
 from ui.ui_display import Colour
 
+
+_BATTERS_EYE_CHOICES = {
+    '1': {"kind": "family", "value": "fastball", "label": "Fastball"},
+    '2': {"kind": "family", "value": "breaker", "label": "Breaking Ball"},
+    '3': {"kind": "family", "value": "offspeed", "label": "Offspeed (Change/Split)"},
+    '4': {"kind": "location", "value": "zone", "label": "In the Zone"},
+    '5': {"kind": "location", "value": "chase", "label": "Out of Zone"},
+}
+
+
+def _prompt_batters_eye() -> dict | None:
+    """Optional pre-pitch guess that fuels the Batter's Eye mechanic."""
+    print(f"\n{Colour.GOLD}Batter's Eye — Sit on something?{Colour.RESET}")
+    print(" Enter to skip if you want to stay reactive.")
+    print(" 1. Fastball family")
+    print(" 2. Breaking ball")
+    print(" 3. Offspeed / Splitter")
+    print(" 4. Zone attack (strike)")
+    print(" 5. Waste pitch (outside zone)")
+    while True:
+        choice = input("Sit on: ").strip().lower()
+        if choice in {"", "0", "skip"}:
+            return None
+        payload = _BATTERS_EYE_CHOICES.get(choice)
+        if payload:
+            print(f" Locking in on {payload['label']}.")
+            data = payload.copy()
+            data['source'] = 'user'
+            return data
+        print(" Invalid guess. Enter 1-5 or press Enter to skip.")
+
 def player_bat_turn(pitcher, batter, state):
     """
     Handles the User Interaction for a batting turn.
@@ -68,4 +99,7 @@ def player_bat_turn(pitcher, batter, state):
         else:
             print("Invalid command.")
             
+    guess_payload = _prompt_batters_eye()
+    if guess_payload:
+        mods['guess_payload'] = guess_payload
     return action, mods

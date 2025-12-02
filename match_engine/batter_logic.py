@@ -15,7 +15,9 @@ from game.skill_system import (
     evaluate_situational_skills,
     gather_behavior_tendencies,
     gather_passive_skill_modifiers,
+    player_has_skill,
 )
+from player_roles.fielder_controls import prompt_defensive_shift, SHIFT_LABELS
 from match_engine.confidence import (
     adjust_confidence,
     apply_lead_change_swing,
@@ -30,6 +32,57 @@ from match_engine.confidence import (
 )
 
 rng = get_rng()
+
+
+def _record_momentum(state, team_id, event_key: str) -> None:
+    system = getattr(state, "momentum_system", None)
+    if system and team_id is not None:
+        system.record_event(team_id, event_key)
+
+
+def _lineup_slot(player) -> int | None:
+    if not player:
+        return None
+    return getattr(player, "_lineup_slot", getattr(player, "lineup_slot", None))
+
+
+def _is_cleanup(player) -> bool:
+    return _lineup_slot(player) == 4
+
+
+def _bases_loaded(state) -> bool:
+    runners = getattr(state, "runners", None)
+    if not runners:
+        return False
+    return all(runners)
+
+
+def _trigger_presence(state, player, trigger_key: str, label: str) -> None:
+    system = getattr(state, "presence_system", None)
+    if not system or not player:
+        return
+    player_id = getattr(player, "id", None)
+    if not player_id:
+        return
+    profile = system.get_profile(player_id)
+    if not profile:
+        return
+    was_zone = profile.in_zone
+    updated = system.register_trigger(player_id, trigger_key)
+    if not updated:
+        return
+    log_fn = getattr(state, "log_aura_event", None)
+    if updated.in_zone and not was_zone and callable(log_fn):
+        aura_type = "ace_zone" if updated.role == "ACE" else "cleanup_zone"
+        log_fn(
+            {
+                "type": aura_type,
+                "player_id": updated.player_id,
+                "team_id": updated.team_id,
+                "mode": updated.trust_state(),
+                "trigger": label,
+            }
+        )
 
 
 def _reset_plate_summary(state):
@@ -104,6 +157,119 @@ def _maybe_comment_on_dominance(pitcher, tracker, pitcher_stats):
     tracker["last_k_comment"] = strikeouts
 
 
+def _handle_batters_eye_feedback(state, batter, pitch_res):
+    payload = getattr(pitch_res, "guess_payload", None)
+    if not payload or payload.get("result") not in {"locked_in", "fooled"}:
+        return
+        history = getattr(state, "batters_eye_history", None)
+        if not isinstance(history, list):
+            history = []
+            state.batters_eye_history = history
+        entry = {
+            "batter_id": getattr(batter, "id", None),
+            "name": getattr(batter, "last_name", getattr(batter, "name", "")),
+            "label": payload.get("label"),
+            "result": payload["result"],
+            "source": payload.get("source", "ai"),
+            "inning": getattr(state, "inning", 0),
+            "outs": getattr(state, "outs", 0),
+            "balls": state.balls,
+            "strikes": state.strikes,
+        }
+        history.append(entry)
+        if len(history) > 6:
+            del history[0]
+    label = payload.get("label") or "that pitch"
+    label_txt = label.lower()
+    result = payload["result"]
+    source = payload.get("source", "ai")
+    name = getattr(batter, "last_name", getattr(batter, "name", "The batter"))
+    actor = "You" if source == "user" else name
+    if result == "locked_in":
+        message = f"{actor} sat on {label_txt} and was ready."
+    else:
+        message = f"{actor} guessed {label_txt} but was fooled."
+    if commentary_enabled():
+        print(f"   >> {message}")
+    logs = getattr(state, "logs", None)
+    if isinstance(logs, list):
+        logs.append(f"Batter's Eye: {message}")
+
+
+def _auto_batters_eye_guess(state, batter, pitcher, tendencies=None):
+    if not state or not batter or not pitcher:
+        return None
+    discipline = getattr(batter, "discipline", 50) or 50
+    mental = getattr(batter, "mental", 50) or 50
+    clutch = getattr(batter, "clutch", 50) or 50
+    base = 0.08 + max(0, discipline - 50) / 180 + max(0, mental - 50) / 220
+    base += max(0, clutch - 60) / 600
+    if player_has_skill(batter, "contact_artist"):
+        base += 0.05
+    if player_has_skill(batter, "walk_machine"):
+        base += 0.04
+    if player_has_skill(batter, "tough_out"):
+        base += 0.03
+    tendencies = tendencies or {}
+    aggression = tendencies.get("swing_aggression", 1.0)
+    if aggression > 1.1:
+        base -= min(0.06, (aggression - 1.1) * 0.07)
+    base = max(0.03, min(0.45, base))
+    if rng.random() > base:
+        return None
+
+    balls, strikes = state.balls, state.strikes
+    velocity = getattr(pitcher, "velocity", 130) or 130
+    movement = getattr(pitcher, "movement", 50) or 50
+    control = getattr(pitcher, "control", 50) or 50
+    pressure = getattr(state, "pressure_index", 0.0) or 0.0
+
+    options: list[tuple[float, dict]] = []
+
+    def _add_option(kind, value, label, weight, reason=None):
+        if weight <= 0:
+            return
+        payload = {"kind": kind, "value": value, "label": label, "source": "ai"}
+        if reason:
+            payload["reason"] = reason
+        options.append((weight, payload))
+
+    zone_weight = 0.0
+    if balls - strikes >= 2 or (balls >= 3 and strikes <= 1):
+        zone_weight = 1.2
+    if pressure >= 7.0:
+        zone_weight += 0.2
+    _add_option("location", "zone", "Challenge Strike", zone_weight, "green light count")
+
+    chase_weight = 0.0
+    if strikes >= 2 and balls <= 1:
+        chase_weight = 0.9
+    _add_option("location", "chase", "Waste Pitch", chase_weight, "protect mode")
+
+    fastball_weight = 1.0 + max(0, velocity - 135) / 40
+    _add_option("family", "fastball", "Fastball", fastball_weight, "respecting heat")
+
+    breaker_weight = 0.8 + max(0, movement - 60) / 70
+    _add_option("family", "breaker", "Breaking Ball", breaker_weight, "expecting spin")
+
+    offspeed_weight = 0.55 + max(0, control - 60) / 150
+    _add_option("family", "offspeed", "Offspeed (Change/Split)", offspeed_weight, "timing change")
+
+    if not options:
+        _add_option("family", "fastball", "Fastball", 1.0)
+
+    total = sum(weight for weight, _ in options)
+    pick = rng.random() * total
+    for weight, payload in options:
+        pick -= weight
+        if pick <= 0:
+            return payload
+    return options[-1][1]
+
+
+def get_recent_batters_eye_history(state, *, max_items: int = 3):
+    history = getattr(state, "batters_eye_history", None) or []
+    return list(history[-max_items:])
 def _offense_context(state):
     if state.top_bottom == "Top":
         return state.away_team, state.home_pitcher
@@ -276,6 +442,57 @@ def _offense_team_id(state):
     return state.away_team.id if state.top_bottom == "Top" else state.home_team.id
 
 
+def _user_controls_defense(state):
+    return _defense_team_id(state) == 1
+
+
+def _catcher_trusts_shift(state):
+    if not _user_controls_defense(state):
+        return False
+    catcher = get_current_catcher(state)
+    if not catcher:
+        return False
+    trust = getattr(catcher, "trust_baseline", 50) or 50
+    return trust >= 55
+
+
+def _auto_defensive_shift_choice(state):
+    runners = getattr(state, "runners", [None, None, None])
+    outs = getattr(state, "outs", 0)
+    inning = getattr(state, "inning", 1)
+    margin = abs(_offense_margin(state))
+    if runners[2] and outs <= 1:
+        return "infield_in"
+    if runners[0] and outs <= 1:
+        return "double_play"
+    if inning >= 8 and margin <= 2:
+        return "deep_outfield"
+    return "normal"
+
+
+def _configure_defensive_shift(state):
+    current = getattr(state, "defensive_shift", "normal")
+    if _catcher_trusts_shift(state):
+        new_shift = prompt_defensive_shift(current)
+        source = "User catcher"
+    else:
+        new_shift = _auto_defensive_shift_choice(state)
+        source = "Bench call"
+    state.defensive_shift = new_shift
+    if new_shift != current:
+        label = SHIFT_LABELS.get(new_shift, "Standard Alignment")
+        _log_field_general(state, f"{source} sets defense to {label}.")
+
+
+def _log_field_general(state, message: str) -> None:
+    logs = getattr(state, "logs", None)
+    if not isinstance(logs, list):
+        return
+    inning = getattr(state, "inning", 0)
+    half = getattr(state, "top_bottom", "Top")
+    logs.append(f"[Field General] {message} (Inning {half} {inning})")
+
+
 def _lead_changed(state, runs_scored, pre_home, pre_away):
     if runs_scored <= 0:
         return False
@@ -381,8 +598,14 @@ def start_at_bat(state):
     offense_team_id = _offense_team_id(state)
     batter_id = getattr(batter, 'id', None)
     pitcher_id = getattr(pitcher, 'id', None)
+
+    last_pitch_res = None
+    pressure_updater = getattr(state, "update_pressure_index", None)
+    if callable(pressure_updater):
+        pressure_updater()
     
     state.reset_count()
+    state.defensive_shift = "normal"
     _reset_plate_summary(state)
     batter_stats = state.get_stats(batter.id)
     pitcher_stats = state.get_stats(pitcher.id)
@@ -401,8 +624,12 @@ def start_at_bat(state):
         
         # Check if Batter is USER (Assuming Team ID 1 is User)
         if _player_team_id(batter) == 1:
-             from player_roles.batter_controls import player_bat_turn
-             batter_action, batter_mods = player_bat_turn(pitcher, batter, state)
+            from player_roles.batter_controls import player_bat_turn
+            batter_action, batter_mods = player_bat_turn(pitcher, batter, state)
+        else:
+            guess_payload = _auto_batters_eye_guess(state, batter, pitcher, batter_tendencies)
+            if guess_payload:
+                batter_mods['guess_payload'] = guess_payload
         
         if not steal_checked:
             steal_result = _maybe_call_aggressive_play(state)
@@ -415,6 +642,11 @@ def start_at_bat(state):
         trait_context = get_at_bat_context(state, batter, pitcher)
         batter_trait_mods = _collect_trait_mods(batter, trait_context)
         pitcher_trait_mods = _collect_trait_mods(pitcher, trait_context)
+
+        _configure_defensive_shift(state)
+
+        bases_loaded_snapshot = _bases_loaded(state)
+        outs_snapshot = state.outs
 
         # 1. Pitch Resolution (Pass batter intent)
         state.add_pitch_count(pitcher.id)
@@ -429,11 +661,13 @@ def start_at_bat(state):
             batter_tendencies=batter_tendencies,
             times_through_order=times_faced,
         )
+        last_pitch_res = pitch_res
         tracker = _update_pitch_diagnostics(state, pitcher.id, pitch_res.outcome)
 
         announce_pitch(pitch_res)
         _maybe_comment_on_control(pitcher, tracker)
         _handle_argument_event(state, pitch_res, batter, pitcher)
+        _handle_batters_eye_feedback(state, batter, pitch_res)
         
         # 2. Update Count
         if pitch_res.outcome == "Ball":
@@ -467,6 +701,7 @@ def start_at_bat(state):
                     record_rally_progress(state, offense_team_id, batter_id, reached_base=True)
                     apply_slump_boost(state, batter_id, was_slumping, "walk")
                     maybe_catcher_settle(state, pitcher_id)
+                    _trigger_presence(state, pitcher, "walk_batter", "Issued Walk")
                 break
                 
         elif pitch_res.outcome == "Strike":
@@ -479,6 +714,17 @@ def start_at_bat(state):
                 state.outs += 1
                 batter_stats["strikeouts"] += 1
                 pitcher_stats["strikeouts_pitched"] += 1
+                _record_momentum(state, _defense_team_id(state), "strikeout")
+                if last_pitch_res and getattr(last_pitch_res, "full_count", False):
+                    _trigger_presence(state, pitcher, "strikeout_full_count", "Full Count K")
+                if bases_loaded_snapshot and outs_snapshot == 2:
+                    _trigger_presence(state, pitcher, "escape_bases_loaded", "Bases Loaded Escape")
+                if _is_cleanup(batter):
+                    trigger_label = "Cleanup Silenced"
+                    if last_pitch_res and last_pitch_res.description == "Swinging Miss":
+                        _trigger_presence(state, batter, "strikeout_swinging", "Cleanup Whiffs")
+                        trigger_label = "Cleanup Chased"
+                    _trigger_presence(state, pitcher, "strikeout_cleanup", trigger_label)
                 _maybe_comment_on_dominance(pitcher, tracker, pitcher_stats)
                 _apply_strikeout_confidence(state, batter, pitcher)
                 reset_slump_chain(state, batter_id)
@@ -505,6 +751,13 @@ def start_at_bat(state):
             reached_base = contact_res.hit_type != "Out"
             was_slumping = reached_base and get_confidence(state, batter_id) <= -30
             _apply_contact_confidence(state, batter, pitcher, contact_res)
+            if contact_res.error_on_play:
+                _record_momentum(state, _defense_team_id(state), "error")
+
+            if contact_res.hit_type != "Out" and getattr(batter, "position", "").lower() == "pitcher":
+                _trigger_presence(state, pitcher, "hit_allowed_to_pitcher", "Pitcher Hit Allowed")
+            if contact_res.hit_type != "Out" and _is_cleanup(batter) and contact_res.hit_type in {"2B", "3B", "HR"}:
+                _trigger_presence(state, batter, "extra_base_hit", "Cleanup Slug")
 
             if contact_res.hit_type == "Out":
                 state.outs += 1
@@ -537,6 +790,8 @@ def start_at_bat(state):
                     pitcher_stats["runs_allowed"] += runs
                     if lead_change:
                         apply_lead_change_swing(state)
+                if runs > 0 and _is_cleanup(batter):
+                    _trigger_presence(state, batter, "rbi", "Cleanup RBI")
 
                 record_pitcher_stress(state, pitcher_id, spike=True)
                 record_rally_progress(state, offense_team_id, batter_id, reached_base=True)
@@ -545,5 +800,7 @@ def start_at_bat(state):
 
             break
 
+    if callable(pressure_updater):
+        pressure_updater()
     _broadcast_confidence_flashes(state)
     return

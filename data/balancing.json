@@ -1,0 +1,62 @@
+{
+  "actions": {
+    "costs": {
+      "rest": -15,
+      "team_practice": 20,
+      "practice_match": 35,
+      "b_team_match": 25,
+      "train_heavy": 15,
+      "train_light": 10,
+      "study": 5,
+      "social": 5,
+      "mind": 0
+    },
+    "metadata": {
+      "rest": {
+        "short": "REST",
+        "desc": "Recover fatigue and clear the head.",
+        "colour": "GREEN"
+      },
+      "team_practice": {
+        "short": "TEAM",
+        "desc": "Mandatory drills with the varsity squad.",
+        "colour": "YELLOW"
+      },
+      "practice_match": {
+        "short": "GAME",
+        "desc": "A-team practice game for prestige.",
+        "colour": "RED"
+      },
+      "b_team_match": {
+        "short": "SCRM",
+        "desc": "B-team scrimmage to climb the ladder.",
+        "colour": "GOLD"
+      },
+      "train_heavy": {
+        "short": "HARD",
+        "desc": "High-intensity strength & power focus.",
+        "colour": "CYAN"
+      },
+      "train_light": {
+        "short": "DRIL",
+        "desc": "Technique reps for finesse stats.",
+        "colour": "CYAN"
+      },
+      "study": {
+        "short": "STDY",
+        "desc": "Academics time to avoid suspension.",
+        "colour": "BLUE"
+      },
+      "social": {
+        "short": "SOCL",
+        "desc": "Team bonding to reduce stress.",
+        "colour": "BLUE"
+      },
+      "mind": {
+        "short": "MIND",
+        "desc": "Visualization / focus reset.",
+        "colour": "CYAN"
+      }
+    }
+  }
+}

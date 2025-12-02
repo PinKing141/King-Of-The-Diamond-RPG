@@ -23,9 +23,9 @@ create_database()
 
 def print_banner():
     clear_screen()
-    print(f"{Colour.HEADER}=========================================={Colour.RESET}")
-    print(f"{Colour.HEADER}       ⚾  KŌSHIEN RPG: THE FINAL  ⚾     {Colour.RESET}")
-    print(f"{Colour.HEADER}=========================================={Colour.RESET}")
+    print(f"{Colour.HEADER}==============================================={Colour.RESET}")
+    print(f"{Colour.HEADER}   ⚾  KING OF THE DIAMOND RPG: THE FINAL  ⚾     {Colour.RESET}")
+    print(f"{Colour.HEADER}==============================================={Colour.RESET}")
     print("     The Road to the Sacred Stadium begins here.\n")
 
 
