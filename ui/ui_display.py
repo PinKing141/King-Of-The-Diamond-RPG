@@ -9,6 +9,7 @@ class Colour:
     RED = '\033[91m'
     RESET = '\033[0m'
     BOLD = '\033[1m'
+    GOLD = '\033[93m'
     
     # Semantic Aliases
     FAIL = '\033[91m'    # RED

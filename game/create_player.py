@@ -34,6 +34,74 @@ GROWTH_STYLE_INFO = {
     "Balanced": {"desc": "Jack of all trades.", "pros": "No weakness", "cons": "No specialty"}
 }
 
+FRAME_WIDTH = 84
+STEP_TITLES = {
+    0: "Name Entry",
+    1: "Select Position",
+    2: "Roll Base Attributes",
+    3: "Choose Growth Style",
+    4: "Pick Hometown",
+    5: "Select School",
+    6: "Confirm Profile",
+}
+
+
+def _bar(value: Optional[int], width: int = 20) -> str:
+    if value is None:
+        return " " * width
+    pct = max(0, min(99, int(value))) / 100
+    filled = int(pct * width)
+    return ("█" * filled) + ("░" * (width - filled))
+
+
+def _render_creation_banner(step: int, data: dict, subtitle: str) -> None:
+    clear_screen()
+    stage = min(step + 1, 6)
+    print(f"{Colour.CYAN}{'═' * FRAME_WIDTH}{Colour.RESET}")
+    title = f"CHARACTER CREATION  |  STEP {stage}/6"
+    print(title.center(FRAME_WIDTH))
+    print(subtitle.center(FRAME_WIDTH))
+    print(f"{Colour.CYAN}{'═' * FRAME_WIDTH}{Colour.RESET}")
+
+    summary = [
+        f"Name: {data['first_name']} {data['last_name']}",
+        f"Focus: {data.get('specific_pos') or '--'} ({data.get('position') or '--'})",
+        f"Growth: {data.get('growth_style') or '--'}",
+        f"Hometown: {data.get('hometown') or '--'}",
+        f"School: {(data.get('school').name if data.get('school') else '--')}"
+    ]
+    for line in summary:
+        print(line.ljust(FRAME_WIDTH))
+    print("─" * FRAME_WIDTH)
+
+
+def _render_stat_overview(position: str, stats: dict) -> None:
+    if not stats:
+        return
+    if position == "Pitcher":
+        fields = [
+            ("Velocity", stats.get('velocity')),
+            ("Control", stats.get('control')),
+            ("Movement", stats.get('movement')),
+            ("Stamina", stats.get('stamina')),
+        ]
+    else:
+        fields = [
+            ("Contact", stats.get('contact')),
+            ("Power", stats.get('power')),
+            ("Speed", stats.get('speed')),
+            ("Fielding", stats.get('fielding')),
+            ("Throwing", stats.get('throwing')),
+        ]
+    for label, value in fields:
+        bar = _bar(value)
+        val_txt = f"{int(value):>3}" if value is not None else "--"
+        print(f" {label:<10} {bar}  {val_txt}")
+
+
+def _print_option(title: str) -> None:
+    print(f"{Colour.GOLD}{title}{Colour.RESET}")
+
 
 # ------------------------------------------------------
 #  ROLL STATS  — now includes HEIGHT SYSTEM (A + B)
@@ -212,8 +280,8 @@ def create_hero(session: Session) -> Optional[int]:
     }
     
     while True:
-        clear_screen()
-        print(f"{Colour.HEADER}--- CHARACTER CREATION (Step {step}/6) ---{Colour.RESET}")
+        step_title = STEP_TITLES.get(step, "Overview")
+        _render_creation_banner(step, data, step_title)
         
         # STEP 0: NAME
         if step == 0:
@@ -226,7 +294,7 @@ def create_hero(session: Session) -> Optional[int]:
             
         # STEP 1: POSITION
         elif step == 1:
-            print(f"{Colour.CYAN}Select Position:{Colour.RESET}")
+            _print_option("Select Position:")
             opts = ["Pitcher", "Catcher", "1B", "2B", "3B", "SS", "LF", "CF", "RF"]
             for i, p in enumerate(opts): print(f" {i+1}. {p}")
             print(" 0. Back")
@@ -251,17 +319,14 @@ def create_hero(session: Session) -> Optional[int]:
                 data['stats'] = roll_stats(data['position'])
             
             s = data['stats']
-            print(f"\n{Colour.HEADER}--- BASE STATS (Rerolls left: {data['rerolls_left']}) ---{Colour.RESET}")
-
+            print(f"Rerolls left: {data['rerolls_left']}")
             print(f"HEIGHT: {s['height_cm']} cm")
             print(f"WEIGHT: {s['weight_kg']} kg")
             if s.get('is_two_way') and s.get('secondary_position'):
-                print(f"{Colour.gold}TWO-WAY POTENTIAL: {s['position']} / {s['secondary_position']}{Colour.RESET}")
+                primary = data.get('position') or 'Primary'
+                print(f"{Colour.gold}TWO-WAY POTENTIAL: {primary} / {s['secondary_position']}{Colour.RESET}")
 
-            if data['position'] == "Pitcher":
-                print(f"VEL: {s['velocity']} km/h   STA: {s['stamina']}   CTRL: {s['control']}   MOV: {s['movement']}")
-            else:
-                print(f"CON: {s['contact']}  PWR: {s['power']}  SPD: {s['speed']}  FLD: {s['fielding']}  THR: {s['throwing']}")
+            _render_stat_overview(data['position'], s)
 
             print("\nOptions:")
             print("1. Accept Stats")
@@ -284,7 +349,7 @@ def create_hero(session: Session) -> Optional[int]:
 
         # STEP 3: GROWTH STYLE (AFTER STATS)
         elif step == 3:
-            print(f"{Colour.CYAN}Select Growth Style for {data['specific_pos']}:{Colour.RESET}")
+            _print_option(f"Select Growth Style for {data['specific_pos']}:")
 
             if data['position'] == "Pitcher":
                 styles = ["Power Pitcher", "Technical Pitcher", "Fierce Pitcher", "Marathon Pitcher", "Balanced"]
@@ -317,7 +382,7 @@ def create_hero(session: Session) -> Optional[int]:
 
         # STEP 4: HOMETOWN
         elif step == 4:
-            print(f"{Colour.CYAN}Enter Hometown Search (Prefecture or City):{Colour.RESET}")
+            _print_option("Enter Hometown Search (Prefecture or City):")
             print("0. Back")
             term = input("Search: ").strip()
             
@@ -347,7 +412,7 @@ def create_hero(session: Session) -> Optional[int]:
             if not offers:
                 offers = session.query(School).limit(5).all()
             
-            print(f"\n{Colour.CYAN}Offers from {pref}:{Colour.RESET}")
+            _print_option(f"Offers from {pref}:")
             for i, t in enumerate(offers):
                 print(f" {i+1}. {t.name} (Rank: {t.prestige})")
             print(" 0. Back")
@@ -368,7 +433,6 @@ def create_hero(session: Session) -> Optional[int]:
 
         # STEP 6: FINAL CONFIRMATION
         elif step == 6:
-            print(f"\n{Colour.HEADER}=== CONFIRM PROFILE ==={Colour.RESET}")
             print(f"Name:   {data['first_name']} {data['last_name']}")
             print(f"Role:   {data['specific_pos']}")
             print(f"Style:  {data['growth_style']}")
@@ -377,7 +441,7 @@ def create_hero(session: Session) -> Optional[int]:
             acad_skill = data['stats'].get('academic_skill', '??')
             last_score = data['stats'].get('test_score', '??')
             print(f"Academics: Skill {acad_skill} / Latest Test {last_score}")
-            print("=======================")
+            print("─" * FRAME_WIDTH)
             
             print("1. Start Game")
             print("0. Back")

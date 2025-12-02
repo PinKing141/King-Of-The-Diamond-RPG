@@ -15,6 +15,7 @@ from game.scouting_system import (
 from game.game_context import GameContext
 from game.player_progression import fetch_player_milestone_tags
 from game.skill_system import trait_synergy_summary
+from game.player_profile_renderer import render_team_scouting_report
 
 DEBUG_MODE = False 
 KNOWLEDGE_LABELS = ["Unknown", "Basic", "Detailed", "Full"]
@@ -29,6 +30,39 @@ GRADE_BUCKETS = [
     (82, "A"),
     (92, "S"),
 ]
+
+
+def _select_school(session, exclude_id=None):
+    candidates = (
+        session.query(School)
+        .order_by(School.prestige.desc())
+        .limit(12)
+        .all()
+    )
+    if not candidates:
+        return None
+
+    print("\nSelect target school:")
+    for idx, school in enumerate(candidates, start=1):
+        print(f" {idx}. {school.name} ({school.prefecture}) Rank {school.prestige}")
+    print(" R. Random opponent")
+    print(" 0. Cancel")
+
+    choice = input("Choice: ").strip().lower()
+    if choice == '0':
+        return None
+    if choice == 'r':
+        pool = [s for s in candidates if s.id != exclude_id]
+        return random.choice(pool) if pool else random.choice(candidates)
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(candidates):
+            pick = candidates[idx]
+            if exclude_id and pick.id == exclude_id:
+                print("Cannot scout your own school.")
+                return None
+            return pick
+    return None
 
 
 def _grade_index(value: int) -> int:
@@ -127,6 +161,39 @@ def _format_synergy_blurb(player, knowledge: int, width: int) -> str:
     edge = (summary or {}).get("edge_bonus", 0.0)
     edge_text = f" Edge {edge:+.2f}" if abs(edge) >= 0.01 else ""
     return _trim_text(base + edge_text, width)
+
+
+def _maybe_purchase_scouting(session, user_school, target_school, current_info):
+    if current_info.knowledge_level >= MAX_KNOWLEDGE_LEVEL:
+        print("\nAlready at maximum intel for this school.")
+        input("[Press Enter]")
+        return
+
+    package_keys = list(SCOUTING_PACKAGES.keys())
+    print(f"\n{Colour.CYAN}[ACTION] Purchase additional intel?{Colour.RESET}")
+    for idx, key in enumerate(package_keys, start=1):
+        pkg = SCOUTING_PACKAGES[key]
+        gain = pkg['knowledge_gain']
+        gain_text = f"+{gain} lvl" if gain == 1 else f"+{gain} lvls"
+        bonus = pkg['recruit_roll_bonus']
+        bonus_text = f", Recruit +{bonus}" if bonus > 0 else ""
+        cost = f"¥{pkg['cost']:,}"
+        print(f"  {idx}. {key.title():<10}{cost:<12} ({gain_text}{bonus_text})")
+    print("  0. Cancel")
+
+    choice = input("Select scouting tier: ").strip()
+    if not choice.isdigit() or choice == '0':
+        return
+    idx = int(choice) - 1
+    if not (0 <= idx < len(package_keys)):
+        return
+
+    tier_key = package_keys[idx]
+    result = perform_scout_action(session, user_school.id, target_school.id, tier=tier_key)
+    print(format_scouting_result_message(result))
+    input("[Press Enter]")
+    if result.success:
+        session.expire_all()
 
 def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING", view_mode="ACTIVE"):
     """
@@ -298,13 +365,15 @@ def view_scouting_menu(context: GameContext):
             print_team_roster(session, user_school, context.player_id, "MY TEAM", "RESERVE")
             input("\n[Press Enter]")
         elif choice == '3':
-            count = session.query(School).count()
-            if count > 0:
-                rand_idx = random.randint(0, count - 1)
-                rand_school = session.query(School).offset(rand_idx).first()
-                if rand_school:
-                    print_team_roster(session, rand_school, context.player_id, "RIVAL REPORT", "ACTIVE")
-            input("\n[Press Enter]")
+            target = _select_school(session, exclude_id=user_school.id)
+            if target:
+                info = get_scouting_info(target.id, session=session)
+                render_team_scouting_report(session, target.id, info.knowledge_level, info.rivalry_score)
+                session.expire_all()
+                refreshed = get_scouting_info(target.id, session=session)
+                _maybe_purchase_scouting(session, user_school, target, refreshed)
+            else:
+                input("\n[Press Enter]")
         elif choice == '0':
             break
         else:
