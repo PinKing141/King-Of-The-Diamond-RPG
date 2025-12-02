@@ -1,9 +1,21 @@
 import time
 import sys
 from collections import defaultdict
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 from database.setup_db import Player
+from game.constants import (
+    ACTION_COSTS,
+    ACTION_METADATA,
+    ACTION_METADATA_DEFAULT,
+    FIRST_STRING_WEEKEND,
+    HEAVY_TRAINING_ACTIONS,
+    LIGHT_TRAINING_ACTIONS,
+    MANDATORY_TEAM_POLICY,
+    SECOND_STRING_WEEKEND,
+    SQUAD_FIRST_STRING,
+    SQUAD_SECOND_STRING,
+)
 from world.roster_manager import run_roster_logic
 # Import the bridge function from the new match engine location
 from ui.ui_display import Colour, clear_screen
@@ -23,24 +35,23 @@ from game.weekly_scheduler_core import (
     execute_schedule_core,
 )
 
-# --- CONSTANTS ---
-# Costs are used for UI forecasting only; actual costs are in training_logic.py
-COSTS = {
-    'rest': -15, 
-    'team_practice': 20, 
-    'practice_match': 35,
-    'b_team_match': 25, # New Cost for B-Team
-    'train_heavy': 15, 
-    'train_light': 10, 
-    'study': 5,
-    'social': 5,
-}
+# --- CONSTANT HELPERS ---
 
-MANDATORY_SCHEDULE = {
-    (3, 1): 'team_practice', # THU Afternoon
-    (5, 0): 'practice_match', # SAT Morning
-    (5, 1): 'practice_match', # SAT Afternoon
-}
+def _action_meta_key(action: Optional[str]) -> Optional[str]:
+    if not action:
+        return None
+    if action in HEAVY_TRAINING_ACTIONS:
+        return 'train_heavy'
+    if action in LIGHT_TRAINING_ACTIONS:
+        return 'train_light'
+    if action.startswith('train_'):
+        return 'train_heavy'
+    return action
+
+
+def _colourize(label: str, colour_name: str) -> str:
+    colour_value = getattr(Colour, colour_name.upper(), Colour.RESET)
+    return f"{colour_value}{label}{Colour.RESET}"
 
 
 def _get_active_player(context: GameContext) -> Optional[Player]:
@@ -51,12 +62,13 @@ def _get_active_player(context: GameContext) -> Optional[Player]:
 # --- HELPER FUNCTIONS ---
 
 def get_action_cost(action_key):
-    if not action_key: return 0
-    if 'power' in action_key or 'speed' in action_key or 'stamina' in action_key:
-        return COSTS['train_heavy']
-    if 'control' in action_key or 'contact' in action_key or 'fielding' in action_key:
-        return COSTS['train_light']
-    return COSTS.get(action_key, 0)
+    if not action_key:
+        return 0
+    if action_key in HEAVY_TRAINING_ACTIONS:
+        return ACTION_COSTS['train_heavy']
+    if action_key in LIGHT_TRAINING_ACTIONS:
+        return ACTION_COSTS['train_light']
+    return ACTION_COSTS.get(action_key, 0)
 
 def render_planning_ui(schedule_state, current_day_idx, current_slot_idx, current_fatigue):
     """

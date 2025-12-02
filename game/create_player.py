@@ -3,14 +3,14 @@ import os
 import random
 import time
 import sqlite3
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from sqlalchemy.orm import Session
 
 # Add root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.setup_db import School, Player
+from database.setup_db import School, Player, PitchRepertoire
 from config import CITIES_DB_PATH
 from ui.ui_display import Colour, clear_screen
 from player_roles.two_way import roll_two_way_profile
@@ -19,6 +19,7 @@ from game.relationship_manager import seed_relationships
 from game.personality import roll_player_personality
 from game.player_generation import maybe_assign_bad_trait
 from game.trait_logic import grant_user_creation_trait_rolls
+from match_engine.pitch_definitions import PITCH_TYPES
 
 # --- GROWTH STYLE DEFINITIONS ---
 GROWTH_STYLE_INFO = {
@@ -38,12 +39,41 @@ FRAME_WIDTH = 84
 STEP_TITLES = {
     0: "Name Entry",
     1: "Select Position",
-    2: "Roll Base Attributes",
-    3: "Choose Growth Style",
-    4: "Pick Hometown",
-    5: "Select School",
-    6: "Confirm Profile",
+    2: "Starter Trait Gacha",
+    3: "Roll Base Attributes",
+    4: "Choose Growth Style",
+    5: "Pick Hometown",
+    6: "Select School",
+    7: "Configure Pitch Arsenal",
+    8: "Confirm Profile",
 }
+TOTAL_STEPS = max(STEP_TITLES.keys()) + 1
+
+PITCH_SELECTION_POOL = [
+    "4-Seam Fastball",
+    "2-Seam Fastball",
+    "Cutter",
+    "Power Cutter",
+    "Sinker",
+    "Turbo Sinker",
+    "Shuuto",
+    "Slider",
+    "Sweeper",
+    "Curveball",
+    "Power Curve",
+    "Knuckle Curve",
+    "Changeup",
+    "Circle Change",
+    "Vulcan Change",
+    "Splitter",
+    "Forkball",
+    "Split-Change",
+]
+PITCH_SELECTION_POOL = [pitch for pitch in PITCH_SELECTION_POOL if pitch in PITCH_TYPES]
+DEFAULT_PITCH_ARSENAL = [pitch for pitch in ("4-Seam Fastball", "Slider", "Changeup") if pitch in PITCH_SELECTION_POOL][:3]
+FASTBALL_PITCHES = {"4-Seam Fastball", "2-Seam Fastball", "Sinker", "Turbo Sinker", "Shuuto", "Cutter", "Power Cutter"}
+MIN_PITCHES = 1
+MAX_PITCHES = 4
 
 _PREFECTURE_CACHE: Optional[List[str]] = None
 
@@ -113,15 +143,17 @@ def _bar(value: Optional[int], width: int = 20) -> str:
 
 def _render_creation_banner(step: int, data: dict, subtitle: str) -> None:
     clear_screen()
-    stage = min(step + 1, 6)
+    stage_index = min(step, TOTAL_STEPS - 1)
+    stage = stage_index + 1
     print(f"{Colour.CYAN}{'═' * FRAME_WIDTH}{Colour.RESET}")
-    title = f"CHARACTER CREATION  |  STEP {stage}/6"
+    title = f"CHARACTER CREATION  |  STEP {stage}/{TOTAL_STEPS}"
     print(title.center(FRAME_WIDTH))
     print(subtitle.center(FRAME_WIDTH))
     print(f"{Colour.CYAN}{'═' * FRAME_WIDTH}{Colour.RESET}")
 
+    full_name = " ".join(part for part in [data['first_name'], data['last_name']] if part).strip()
     summary = [
-        f"Name: {data['first_name']} {data['last_name']}",
+        f"Name: {full_name or '--'}",
         f"Focus: {data.get('specific_pos') or '--'} ({data.get('position') or '--'})",
         f"Hometown: {data.get('hometown') or '--'}",
         f"School: {(data.get('school').name if data.get('school') else '--')}"
@@ -157,6 +189,15 @@ def _render_stat_overview(position: str, stats: dict) -> None:
 
 def _print_option(title: str) -> None:
     print(f"{Colour.GOLD}{title}{Colour.RESET}")
+
+
+def _validate_pitch_selection(selection: Optional[List[str]]) -> Tuple[bool, str]:
+    picks = [p for p in (selection or []) if p in PITCH_SELECTION_POOL]
+    if len(picks) < MIN_PITCHES:
+        return False, f"Select at least {MIN_PITCHES} pitches."
+    if len(picks) > MAX_PITCHES:
+        return False, f"You can only bring {MAX_PITCHES} pitches."
+    return True, ""
 
 
 # ------------------------------------------------------
@@ -239,6 +280,8 @@ def roll_stats(position, is_monster=False):
 # ------------------------------------------------------
 def commit_player_to_db(session: Session, data) -> int:
     s = data['stats']
+    if data.get('position') == "Pitcher" and not data.get('pitch_arsenal'):
+        data['pitch_arsenal'] = list(DEFAULT_PITCH_ARSENAL)
     valid_cols = [c.key for c in Player.__table__.columns]
     clean_stats = {k: v for k, v in s.items() if k in valid_cols}
 
@@ -246,6 +289,12 @@ def commit_player_to_db(session: Session, data) -> int:
         academic_skill, test_score = roll_academic_profile(data.get('hometown'), data.get('school'))
         clean_stats['academic_skill'] = academic_skill
         clean_stats['test_score'] = test_score
+
+    if data.get('starter_trait') and data.get('position') == "Pitcher":
+        clean_stats['is_starter'] = True
+        clean_stats['role'] = "STARTER"
+    else:
+        clean_stats.setdefault('is_starter', False)
 
     growth_tag = clean_stats.pop("growth_tag", None)
     traits = roll_player_personality(data.get('school'))
@@ -273,10 +322,32 @@ def commit_player_to_db(session: Session, data) -> int:
     session.add(p)
     session.commit()
     session.refresh(p)
+
+    _persist_pitch_arsenal(session, p, data.get('pitch_arsenal'), clean_stats)
     seed_relationships(session, p)
     grant_user_creation_trait_rolls(session, p, rolls=3)
     maybe_assign_bad_trait(session, p)
     return p.id
+
+
+def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Optional[List[str]], stats: dict) -> None:
+    if not player or not pitch_names or player.position != "Pitcher":
+        return
+
+    control = stats.get('control') or getattr(player, 'control', 50) or 50
+    movement = stats.get('movement') or getattr(player, 'movement', 50) or 50
+
+    for name in pitch_names:
+        quality = max(30, min(95, int(control + random.randint(-6, 6))))
+        break_level = max(30, min(95, int(movement + random.randint(-6, 6))))
+        entry = PitchRepertoire(
+            player_id=player.id,
+            pitch_name=name,
+            quality=quality,
+            break_level=break_level,
+        )
+        session.add(entry)
+    session.commit()
 
 
 
@@ -286,20 +357,204 @@ def commit_player_to_db(session: Session, data) -> int:
 def create_hero(session: Session) -> Optional[int]:
     step = 0
     data = {
-        "first_name": "Taro", "last_name": "Yamada",
+        "first_name": "", "last_name": "",
         "position": None, "specific_pos": None,
         "growth_style": None,
         "stats": None, "rerolls_left": 3,
         "hometown": None,
-        "school": None
+        "school": None,
+        "pitch_arsenal": [],
+        "starter_trait": None,
     }
     
     while True:
         step_title = STEP_TITLES.get(step, "Overview")
         _render_creation_banner(step, data, step_title)
         
-        # STEP 0: NAME
+        # STEP 0: NAME ENTRY
         if step == 0:
+            _print_option("Player Identity")
+            print(f"First Name : {data['first_name']}")
+            print(f"Last Name  : {data['last_name']}")
+            print("Enter new values or leave blank to keep current.")
+            first = input("First Name: ").strip()
+            if first:
+                data['first_name'] = first
+            last = input("Last Name: ").strip()
+            if last:
+                data['last_name'] = last
+            if not data['first_name']:
+                print("First name is required.")
+                time.sleep(1)
+                continue
+            if not data['last_name']:
+                print("Last name is required.")
+                time.sleep(1)
+                continue
+            confirm = input("Continue with this name? (y/n): ").strip().lower()
+            if confirm == 'y':
+                step += 1
+            continue
+
+        # STEP 1: POSITION SELECTION
+        elif step == 1:
+            _print_option("Select Player Position")
+            positions = [
+                "Pitcher",
+                "Catcher",
+                "First Base",
+                "Second Base",
+                "Third Base",
+                "Shortstop",
+                "Left Field",
+                "Center Field",
+                "Right Field",
+            ]
+            for idx, label in enumerate(positions, start=1):
+                print(f" {idx}. {label}")
+            print(" 0. Back")
+            print(f"{Colour.GOLD}Coach's staff will decide starter vs reliever roles after creation.{Colour.RESET}")
+
+            choice = input("Choice: ").strip()
+            if choice == '0':
+                step -= 1
+                continue
+            if not choice.isdigit():
+                continue
+            pick = int(choice) - 1
+            if 0 <= pick < len(positions):
+                specific = positions[pick]
+                data['specific_pos'] = specific
+                if specific == "Pitcher":
+                    data['position'] = "Pitcher"
+                elif specific == "Catcher":
+                    data['position'] = "Catcher"
+                elif specific in {"First Base", "Second Base", "Third Base", "Shortstop"}:
+                    data['position'] = "Infielder"
+                else:
+                    data['position'] = "Outfielder"
+                if data['position'] != "Pitcher":
+                    data['pitch_arsenal'] = []
+                    data['starter_trait'] = None
+                else:
+                    data['starter_trait'] = None
+                step += 1
+            continue
+
+        # STEP 2: STARTER TRAIT GACHA
+        elif step == 2:
+            if not data.get('position'):
+                print("Select a position before rolling for traits.")
+                time.sleep(1)
+                step -= 1
+                continue
+            if data['position'] != "Pitcher":
+                data['starter_trait'] = None
+                step += 1
+                continue
+
+            _print_option("Starter Trait Gacha")
+            status = data.get('starter_trait')
+            if status is None:
+                print("One roll decides if the coaches tag you with the Starter trait.")
+                print("Odds: 35% chance. No rerolls.")
+                print("1. Roll Gacha")
+                print("0. Back")
+                sel = input("Choice: ").strip()
+                if sel == '0':
+                    step -= 1
+                    continue
+                if sel == '1':
+                    won = random.random() < 0.35
+                    data['starter_trait'] = won
+                    message = "Starter trait unlocked!" if won else "No starter trait this time."
+                    colour = Colour.GREEN if won else Colour.RED
+                    print(f"{colour}{message}{Colour.RESET}")
+                    time.sleep(1.5)
+                continue
+
+            result_txt = "Starter Trait secured. Coaches expect you to anchor games." if status else "No Starter Trait. Earn it through performance."
+            print(result_txt)
+            print("1. Continue")
+            print("0. Back")
+            sel = input("Choice: ").strip()
+            if sel == '0':
+                data['starter_trait'] = None
+                step -= 1
+                continue
+            if sel == '1':
+                step += 1
+            continue
+
+        # STEP 3: STATS + REROLLS (NOW BEFORE GROWTH STYLE)
+        elif step == 3:
+            if data['stats'] is None:
+                data['stats'] = roll_stats(data['position'])
+            
+            s = data['stats']
+            print(f"Rerolls left: {data['rerolls_left']}")
+            print(f"HEIGHT: {s['height_cm']} cm")
+            print(f"WEIGHT: {s['weight_kg']} kg")
+            if s.get('is_two_way') and s.get('secondary_position'):
+                primary = data.get('position') or 'Primary'
+                print(f"{Colour.gold}TWO-WAY POTENTIAL: {primary} / {s['secondary_position']}{Colour.RESET}")
+
+            _render_stat_overview(data['position'], s)
+
+            print("\nOptions:")
+            print("1. Accept Stats")
+            if data['rerolls_left'] > 0:
+                print("2. Reroll (Uses 1 attempt)")
+            else:
+                print("2. Reroll (LOCKED)")
+            print("0. Back")
+
+            sel = input("Choice: ")
+            if sel == '0': step -= 1; continue
+            elif sel == '1': step += 1; continue
+            elif sel == '2':
+                if data['rerolls_left'] > 0:
+                    data['rerolls_left'] -= 1
+                    data['stats'] = roll_stats(data['position'])
+                else:
+                    print("No rerolls left!")
+                    time.sleep(1)
+
+        # STEP 4: GROWTH STYLE (AFTER STATS)
+        elif step == 4:
+            _print_option(f"Select Growth Style for {data['specific_pos']}:")
+
+            if data['position'] == "Pitcher":
+                styles = ["Power Pitcher", "Technical Pitcher", "Fierce Pitcher", "Marathon Pitcher", "Balanced"]
+            elif data['position'] == "Catcher":
+                styles = ["Offensive Catcher", "Defensive General", "Balanced"]
+            else:
+                styles = ["Power Hitter", "Speedster", "Balanced"]
+
+            for i, s in enumerate(styles): print(f" {i+1}. {s}")
+            print(" 0. Back")
+
+            sel = input("Choice: ")
+            if sel == '0': step -= 1; continue
+
+            try:
+                idx = int(sel) - 1
+                if 0 <= idx < len(styles):
+                    s_name = styles[idx]
+                    info = GROWTH_STYLE_INFO.get(s_name, GROWTH_STYLE_INFO['Balanced'])
+
+                    print(f"\n{Colour.gold}>> {s_name} <<{Colour.RESET}")
+                    print(f"{info['desc']}")
+                    print(f"{Colour.GREEN}PROS: {info['pros']}{Colour.RESET}")
+                    print(f"{Colour.RED}CONS: {info['cons']}{Colour.RESET}")
+
+                    if input("Confirm? (y/n): ").lower() == 'y':
+                        data['growth_style'] = s_name
+                        step += 1
+            except: pass
+
+        # STEP 5: HOMETOWN (PREFECTURE -> CITY)
+        elif step == 5:
             prefectures = get_prefecture_catalog()
             if not prefectures:
                 print("No prefecture data found. Defaulting to Tokyo.")
@@ -308,11 +563,13 @@ def create_hero(session: Session) -> Optional[int]:
                 continue
 
             selected_pref = None
-            while not selected_pref:
+            back_to_prev = False
+            while not selected_pref and not back_to_prev:
                 _print_option("Select Prefecture (type to filter, 0 to Back):")
                 filter_text = input("Filter: ").strip().lower()
                 if filter_text == '0':
                     step -= 1
+                    back_to_prev = True
                     break
                 filtered = [p for p in prefectures if filter_text in p.lower()] or prefectures
                 for idx, pref in enumerate(filtered, start=1):
@@ -323,6 +580,8 @@ def create_hero(session: Session) -> Optional[int]:
                 pick = int(choice)
                 if 1 <= pick <= len(filtered):
                     selected_pref = filtered[pick - 1]
+            if back_to_prev:
+                continue
             if not selected_pref:
                 continue
 
@@ -358,106 +617,9 @@ def create_hero(session: Session) -> Optional[int]:
                     break
             if not selected_pref:
                 continue
-                    if opts[idx] == "Pitcher": data['position'] = "Pitcher"
-                    elif opts[idx] == "Catcher": data['position'] = "Catcher"
-                    elif opts[idx] in ["1B", "2B", "3B", "SS"]: data['position'] = "Infielder"
-                    else: data['position'] = "Outfielder"
-                    step += 1
-            except: pass
 
-        # STEP 2: STATS + REROLLS (NOW BEFORE GROWTH STYLE)
-        elif step == 2:
-            if data['stats'] is None:
-                data['stats'] = roll_stats(data['position'])
-            
-            s = data['stats']
-            print(f"Rerolls left: {data['rerolls_left']}")
-            print(f"HEIGHT: {s['height_cm']} cm")
-            print(f"WEIGHT: {s['weight_kg']} kg")
-            if s.get('is_two_way') and s.get('secondary_position'):
-                primary = data.get('position') or 'Primary'
-                print(f"{Colour.gold}TWO-WAY POTENTIAL: {primary} / {s['secondary_position']}{Colour.RESET}")
-
-            _render_stat_overview(data['position'], s)
-
-            print("\nOptions:")
-            print("1. Accept Stats")
-            if data['rerolls_left'] > 0:
-                print("2. Reroll (Uses 1 attempt)")
-            else:
-                print("2. Reroll (LOCKED)")
-            print("0. Back")
-
-            sel = input("Choice: ")
-            if sel == '0': step -= 1; continue
-            elif sel == '1': step += 1; continue
-            elif sel == '2':
-                if data['rerolls_left'] > 0:
-                    data['rerolls_left'] -= 1
-                    data['stats'] = roll_stats(data['position'])
-                else:
-                    print("No rerolls left!")
-                    time.sleep(1)
-
-        # STEP 3: GROWTH STYLE (AFTER STATS)
-        elif step == 3:
-            _print_option(f"Select Growth Style for {data['specific_pos']}:")
-
-            if data['position'] == "Pitcher":
-                styles = ["Power Pitcher", "Technical Pitcher", "Fierce Pitcher", "Marathon Pitcher", "Balanced"]
-            elif data['position'] == "Catcher":
-                styles = ["Offensive Catcher", "Defensive General", "Balanced"]
-            else:
-                styles = ["Power Hitter", "Speedster", "Balanced"]
-
-            for i, s in enumerate(styles): print(f" {i+1}. {s}")
-            print(" 0. Back")
-
-            sel = input("Choice: ")
-            if sel == '0': step -= 1; continue
-
-            try:
-                idx = int(sel) - 1
-                if 0 <= idx < len(styles):
-                    s_name = styles[idx]
-                    info = GROWTH_STYLE_INFO.get(s_name, GROWTH_STYLE_INFO['Balanced'])
-
-                    print(f"\n{Colour.gold}>> {s_name} <<{Colour.RESET}")
-                    print(f"{info['desc']}")
-                    print(f"{Colour.GREEN}PROS: {info['pros']}{Colour.RESET}")
-                    print(f"{Colour.RED}CONS: {info['cons']}{Colour.RESET}")
-
-                    if input("Confirm? (y/n): ").lower() == 'y':
-                        data['growth_style'] = s_name
-                        step += 1
-            except: pass
-
-        # STEP 4: HOMETOWN
-        elif step == 4:
-            _print_option("Enter Hometown Search (Prefecture or City):")
-            print("0. Back")
-            term = input("Search: ").strip()
-            
-            if term == '0': step -= 1; continue
-            
-            matches = get_city_matches(term)
-            if not matches:
-                print("No matches found. Using 'Tokyo' as default?")
-                if input("Confirm? (y/n): ").lower() == 'y':
-                    data['hometown'] = "Tokyo"
-                    step += 1
-            else:
-                print("\nSelect City:")
-                for i, m in enumerate(matches): print(f" {i+1}. {m}")
-                try:
-                    idx = int(input("Choice: ")) - 1
-                    if 0 <= idx < len(matches):
-                        data['hometown'] = matches[idx] 
-                        step += 1
-                except: pass
-
-        # STEP 5: SCHOOL SELECTION
-        elif step == 5:
+        # STEP 6: SCHOOL SELECTION
+        elif step == 6:
             pref = data['hometown'].split('—')[0].strip() if '—' in data['hometown'] else "Tokyo"
             
             offers = session.query(School).filter(School.prefecture == pref).limit(5).all()
@@ -483,16 +645,79 @@ def create_hero(session: Session) -> Optional[int]:
                     step += 1
             except: pass
 
-        # STEP 6: FINAL CONFIRMATION
-        elif step == 6:
+        # STEP 7: PITCH SELECTION (PITCHERS ONLY)
+        elif step == 7:
+            if data['position'] != "Pitcher":
+                data['pitch_arsenal'] = []
+                step += 1
+                continue
+
+            selected = list(data['pitch_arsenal'] or DEFAULT_PITCH_ARSENAL)
+            while True:
+                _print_option("Configure Pitch Arsenal")
+                print(f"Need {MIN_PITCHES}-{MAX_PITCHES} total pitches. Mix and match however you like.")
+                current_display = ", ".join(selected) if selected else "--"
+                print(f"Selected [{len(selected)}/{MAX_PITCHES}]: {current_display}")
+                print("Choices: toggle #, D=Done, R=Reset defaults, C=Clear, 0=Back")
+                for idx, pitch in enumerate(PITCH_SELECTION_POOL, start=1):
+                    marker = "*" if pitch in selected else " "
+                    fb_tag = " (FB)" if pitch in FASTBALL_PITCHES else ""
+                    print(f" {idx:>2}. [{marker}] {pitch}{fb_tag}")
+
+                sel = input("Command: ").strip().lower()
+                if sel in {'0', 'b'}:
+                    data['pitch_arsenal'] = selected
+                    step -= 1
+                    break
+                if sel in {'d', 'done'}:
+                    valid, message = _validate_pitch_selection(selected)
+                    if valid:
+                        data['pitch_arsenal'] = selected
+                        step += 1
+                        break
+                    print(message)
+                    time.sleep(1)
+                    continue
+                if sel in {'c', 'clear'}:
+                    selected = []
+                    continue
+                if sel in {'r', 'reset'}:
+                    selected = list(DEFAULT_PITCH_ARSENAL)
+                    continue
+                if sel.isdigit():
+                    idx = int(sel) - 1
+                    if 0 <= idx < len(PITCH_SELECTION_POOL):
+                        pitch_name = PITCH_SELECTION_POOL[idx]
+                        if pitch_name in selected:
+                            selected.remove(pitch_name)
+                        else:
+                            if len(selected) >= MAX_PITCHES:
+                                print(f"Remove a pitch before adding a new one (max {MAX_PITCHES}).")
+                                time.sleep(1)
+                                continue
+                            selected.append(pitch_name)
+                    continue
+                print("Unknown command.")
+                time.sleep(1)
+                continue
+            continue
+
+        # STEP 8: FINAL CONFIRMATION
+        elif step == 8:
             print(f"Name:   {data['first_name']} {data['last_name']}")
             print(f"Role:   {data['specific_pos']}")
             print(f"Style:  {data['growth_style']}")
             print(f"Hometown: {data['hometown']}")
-            print(f"School: {Colour.gold}{data['school'].name}{Colour.RESET}")
+            school_name = data['school'].name if data.get('school') else '--'
+            print(f"School: {Colour.gold}{school_name}{Colour.RESET}")
             acad_skill = data['stats'].get('academic_skill', '??')
             last_score = data['stats'].get('test_score', '??')
             print(f"Academics: Skill {acad_skill} / Latest Test {last_score}")
+            if data['position'] == "Pitcher":
+                trait_txt = "Unlocked" if data.get('starter_trait') else "--"
+                print(f"Starter Trait: {trait_txt}")
+                pitch_summary = ", ".join(data.get('pitch_arsenal') or DEFAULT_PITCH_ARSENAL)
+                print(f"Pitches: {pitch_summary}")
             print("─" * FRAME_WIDTH)
             
             print("1. Start Game")
