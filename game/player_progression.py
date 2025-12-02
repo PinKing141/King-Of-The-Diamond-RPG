@@ -6,7 +6,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
@@ -58,6 +58,9 @@ def process_milestone_unlocks(
     *,
     season_year: Optional[int] = None,
     rng: Optional[DeterministicRNG] = None,
+    milestone_definitions: Optional[Sequence[MilestoneDefinition]] = None,
+    stats_cache: Optional[Dict[Tuple[int, Optional[int]], Dict[str, float]]] = None,
+    owned_skill_keys: Optional[Set[str]] = None,
 ) -> List[MilestoneUnlockResult]:
     """Check milestone definitions and grant matching skills."""
     if not player or not player.id:
@@ -66,7 +69,12 @@ def process_milestone_unlocks(
     if season_year is None:
         season_year = _current_season_year(session)
 
-    stats = _collect_season_totals(session, player.id, season_year)
+    stats = _collect_season_totals(
+        session,
+        player.id,
+        season_year,
+        stats_cache=stats_cache,
+    )
     if stats["games_played"] == 0:
         return []
 
@@ -81,7 +89,10 @@ def process_milestone_unlocks(
     random_source = rng or _milestone_rng
     results: List[MilestoneUnlockResult] = []
 
-    for milestone in get_milestone_definitions():
+    definitions = list(milestone_definitions or get_milestone_definitions())
+    owned_lookup = owned_skill_keys
+
+    for milestone in definitions:
         if stats["games_played"] < milestone.min_games:
             if PROGRESSION_DEBUG:
                 logger.debug(
@@ -94,7 +105,17 @@ def process_milestone_unlocks(
             continue
         if milestone.skill_key not in SKILL_DEFINITIONS:
             continue
-        if player_has_skill(player, milestone.skill_key):
+        skill_key_lower = milestone.skill_key.lower()
+        if owned_lookup is not None:
+            if skill_key_lower in owned_lookup:
+                if PROGRESSION_DEBUG:
+                    logger.debug(
+                        "Player %s already cached with milestone skill %s",
+                        player.id,
+                        milestone.skill_key,
+                    )
+                continue
+        elif player_has_skill(player, milestone.skill_key):
             if PROGRESSION_DEBUG:
                 logger.debug(
                     "Player %s already has milestone skill %s",
@@ -131,7 +152,12 @@ def process_milestone_unlocks(
                 adjusted_chance,
             )
 
-        skill_name = grant_skill_by_key(session, player, milestone.skill_key)
+        skill_name = grant_skill_by_key(
+            session,
+            player,
+            milestone.skill_key,
+            owned_cache=owned_skill_keys,
+        )
         if not skill_name:
             if PROGRESSION_DEBUG:
                 logger.debug(
@@ -166,7 +192,29 @@ def _current_season_year(session: Session) -> Optional[int]:
     return getattr(state, "current_year", None) if state else None
 
 
-def _collect_season_totals(session: Session, player_id: int, season_year: Optional[int]) -> Dict[str, float]:
+def _collect_season_totals(
+    session: Session,
+    player_id: int,
+    season_year: Optional[int],
+    *,
+    stats_cache: Optional[Dict[Tuple[int, Optional[int]], Dict[str, float]]] = None,
+) -> Dict[str, float]:
+    cache = stats_cache
+    if cache is None:
+        cache = getattr(session, "info", None)
+        if cache is not None:
+            cache = cache.setdefault("_milestone_stats", {})
+    key = (player_id, season_year)
+    if cache is not None and key in cache:
+        return dict(cache[key])
+
+    stats = _query_season_totals(session, player_id, season_year)
+    if cache is not None:
+        cache[key] = dict(stats)
+    return stats
+
+
+def _query_season_totals(session: Session, player_id: int, season_year: Optional[int]) -> Dict[str, float]:
     query = (
         session.query(
             func.count(PlayerGameStats.game_id).label("games_played"),

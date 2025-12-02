@@ -279,6 +279,7 @@ def check_and_grant_skills(
     *,
     probability_hook: Optional[Callable[[object, str, Dict], float]] = None,
     rng=None,
+    owned_keys: Optional[Set[str]] = None,
 ) -> List[str]:
     """Grant any newly-qualified skills for the provided player.
 
@@ -287,15 +288,15 @@ def check_and_grant_skills(
     if not player or not player.id:
         return []
 
-    cache = _skill_key_cache(player)
-    owned_keys = set(cache)
+    cache = owned_keys if owned_keys is not None else _skill_key_cache(player)
+    owned_lookup = cache if owned_keys is not None else set(cache)
     unlocked: List[str] = []
 
     random_source = rng or _SKILL_RNG
 
     for key, data in SKILL_DEFINITIONS.items():
         key_lower = key.lower()
-        if key_lower in owned_keys:
+        if key_lower in owned_lookup:
             continue
         if not data.get("allow_progression", True):
             continue
@@ -338,9 +339,9 @@ def check_and_grant_skills(
                     )
                 continue
 
-        display_name = grant_skill_by_key(session, player, key)
+        display_name = grant_skill_by_key(session, player, key, owned_cache=cache)
         if display_name:
-            owned_keys.add(key_lower)
+            owned_lookup.add(key_lower)
             unlocked.append(display_name)
             if PROGRESSION_DEBUG:
                 logger.info(
@@ -963,12 +964,19 @@ def list_meetable_skills(player) -> List[str]:
     return eligible
 
 
-def grant_skill_by_key(session, player, skill_key: str) -> Optional[str]:
+def grant_skill_by_key(
+    session,
+    player,
+    skill_key: str,
+    *,
+    owned_cache: Optional[Set[str]] = None,
+) -> Optional[str]:
     """Grant the provided skill to the player, bypassing requirement checks."""
     if not player or not player.id or not skill_key:
         return None
 
-    cache = _skill_key_cache(player)
+    cache = owned_cache if owned_cache is not None else _skill_key_cache(player)
+    setattr(player, "_skill_key_cache", cache)
     canonical = str(skill_key).lower()
     if canonical in cache:
         return None

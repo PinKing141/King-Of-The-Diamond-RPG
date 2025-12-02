@@ -3,7 +3,7 @@ import os
 import random
 import time
 import sqlite3
-from typing import Optional
+from typing import Optional, List
 
 from sqlalchemy.orm import Session
 
@@ -45,6 +45,63 @@ STEP_TITLES = {
     6: "Confirm Profile",
 }
 
+_PREFECTURE_CACHE: Optional[List[str]] = None
+
+
+def get_prefecture_catalog() -> List[str]:
+    global _PREFECTURE_CACHE
+    if _PREFECTURE_CACHE is not None:
+        return _PREFECTURE_CACHE
+    if not os.path.exists(CITIES_DB_PATH):
+        _PREFECTURE_CACHE = []
+        return _PREFECTURE_CACHE
+
+    try:
+        conn = sqlite3.connect(CITIES_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jpcities'")
+        table = "jpcities" if cur.fetchone() else "Cities"
+        cur.execute(f"SELECT DISTINCT admin_name FROM {table} ORDER BY admin_name")
+        _PREFECTURE_CACHE = [row[0] for row in cur.fetchall() if row[0]]
+        conn.close()
+    except Exception as exc:
+        print(f"Prefecture DB Error: {exc}")
+        _PREFECTURE_CACHE = []
+    return _PREFECTURE_CACHE
+
+
+def get_city_matches(prefecture: str, search_term: str = "") -> List[str]:
+    matches: List[str] = []
+    if not os.path.exists(CITIES_DB_PATH):
+        return matches
+
+    try:
+        conn = sqlite3.connect(CITIES_DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jpcities'")
+        tbl = "jpcities" if c.fetchone() else "Cities"
+
+        sql = f"""
+            SELECT admin_name, city
+            FROM {tbl}
+            WHERE admin_name = ?
+              AND (
+                    ? = ''
+                 OR lower(city) LIKE ?
+                 OR lower(city_ascii) LIKE ?
+              )
+            ORDER BY city
+            LIMIT 20
+        """
+        term = f"%{search_term.lower()}%"
+        c.execute(sql, (prefecture, search_term.lower(), term, term))
+        matches = [f"{row[0]} — {row[1]}" for row in c.fetchall()]
+        conn.close()
+    except Exception as exc:
+        print(f"City DB Error: {exc}")
+
+    return matches
+
 
 def _bar(value: Optional[int], width: int = 20) -> str:
     if value is None:
@@ -66,7 +123,6 @@ def _render_creation_banner(step: int, data: dict, subtitle: str) -> None:
     summary = [
         f"Name: {data['first_name']} {data['last_name']}",
         f"Focus: {data.get('specific_pos') or '--'} ({data.get('position') or '--'})",
-        f"Growth: {data.get('growth_style') or '--'}",
         f"Hometown: {data.get('hometown') or '--'}",
         f"School: {(data.get('school').name if data.get('school') else '--')}"
     ]
@@ -179,47 +235,6 @@ def roll_stats(position, is_monster=False):
 
 
 # ------------------------------------------------------
-#  CITY SEARCH
-# ------------------------------------------------------
-def get_city_matches(search_term):
-    matches = []
-    if not os.path.exists(CITIES_DB_PATH): return []
-
-    try:
-        conn = sqlite3.connect(CITIES_DB_PATH)
-        c = conn.cursor()
-
-        # Determine correct table
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jpcities'")
-        if c.fetchone():
-            tbl = "jpcities"
-        else:
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='Cities'")
-            tbl = "Cities" if c.fetchone() else "cities"
-
-        query = f"""
-            SELECT admin_name, city 
-            FROM {tbl} 
-            WHERE lower(city) LIKE ? 
-               OR lower(city_ascii) LIKE ? 
-               OR lower(admin_name) LIKE ?
-            ORDER BY admin_name, city
-            LIMIT 20
-        """
-
-        term = f"%{search_term.lower()}%"
-        c.execute(query, (term, term, term))
-        matches = [f"{row[0]} — {row[1]}" for row in c.fetchall()]
-        conn.close()
-
-    except Exception as e:
-        print(f"City DB Error: {e}")
-
-    return matches
-
-
-
-# ------------------------------------------------------
 # SAVE PLAYER TO DB (now includes height fields)
 # ------------------------------------------------------
 def commit_player_to_db(session: Session, data) -> int:
@@ -285,27 +300,64 @@ def create_hero(session: Session) -> Optional[int]:
         
         # STEP 0: NAME
         if step == 0:
-            print("Enter Name (or press Enter for default):")
-            f = input(f"First Name [{data['first_name']}]: ").strip()
-            l = input(f"Last Name  [{data['last_name']}]:  ").strip()
-            if f: data['first_name'] = f.capitalize()
-            if l: data['last_name'] = l.capitalize()
-            step += 1
-            
-        # STEP 1: POSITION
-        elif step == 1:
-            _print_option("Select Position:")
-            opts = ["Pitcher", "Catcher", "1B", "2B", "3B", "SS", "LF", "CF", "RF"]
-            for i, p in enumerate(opts): print(f" {i+1}. {p}")
-            print(" 0. Back")
-            
-            sel = input("Choice: ")
-            if sel == '0': step -= 1; continue
-            
-            try:
-                idx = int(sel) - 1
-                if 0 <= idx < len(opts):
-                    data['specific_pos'] = opts[idx]
+            prefectures = get_prefecture_catalog()
+            if not prefectures:
+                print("No prefecture data found. Defaulting to Tokyo.")
+                data['hometown'] = "Tokyo"
+                step += 1
+                continue
+
+            selected_pref = None
+            while not selected_pref:
+                _print_option("Select Prefecture (type to filter, 0 to Back):")
+                filter_text = input("Filter: ").strip().lower()
+                if filter_text == '0':
+                    step -= 1
+                    break
+                filtered = [p for p in prefectures if filter_text in p.lower()] or prefectures
+                for idx, pref in enumerate(filtered, start=1):
+                    print(f" {idx:>2}. {pref}")
+                choice = input("Choice #: ").strip()
+                if not choice.isdigit():
+                    continue
+                pick = int(choice)
+                if 1 <= pick <= len(filtered):
+                    selected_pref = filtered[pick - 1]
+            if not selected_pref:
+                continue
+
+            while True:
+                _print_option(f"{selected_pref}: enter city keyword (blank lists popular). 0=Back")
+                city_term = input("City Search: ").strip()
+                if city_term == '0':
+                    selected_pref = None
+                    break
+                matches = get_city_matches(selected_pref, city_term)
+                if not matches:
+                    print("No cities found. Use prefecture only?")
+                    if input("Use prefecture only (y/n): ").lower() == 'y':
+                        data['hometown'] = selected_pref
+                        step += 1
+                        break
+                    continue
+                print("\nSelect City:")
+                print(" 0. Use prefecture only")
+                for i, m in enumerate(matches, start=1):
+                    print(f" {i}. {m}")
+                choice = input("Choice: ").strip()
+                if not choice.isdigit():
+                    continue
+                pick = int(choice)
+                if pick == 0:
+                    data['hometown'] = selected_pref
+                    step += 1
+                    break
+                if 1 <= pick <= len(matches):
+                    data['hometown'] = matches[pick - 1]
+                    step += 1
+                    break
+            if not selected_pref:
+                continue
                     if opts[idx] == "Pitcher": data['position'] = "Pitcher"
                     elif opts[idx] == "Catcher": data['position'] = "Catcher"
                     elif opts[idx] in ["1B", "2B", "3B", "SS"]: data['position'] = "Infielder"

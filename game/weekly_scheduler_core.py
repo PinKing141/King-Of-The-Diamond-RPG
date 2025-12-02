@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 import random
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from database.setup_db import Team
 from game.training_logic import apply_scheduled_action
@@ -11,6 +12,46 @@ from game.game_context import GameContext
 
 DAYS_OF_WEEK = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']
 SLOTS = ['Morning', 'Afternoon', 'Evening']
+
+FAST_PRACTICE_MATCHES = os.getenv("FAST_PRACTICE_MATCHES", "").lower() in {"1", "true", "yes"}
+PRACTICE_OPPONENT_SAMPLE = int(os.getenv("PRACTICE_OPPONENT_SAMPLE", "0") or 0)
+
+
+def _pick_practice_opponent(session, school_id: Optional[int]) -> Optional[Team]:
+    if school_id is None:
+        return None
+
+    base_query = session.query(Team).filter(Team.id != school_id)
+    total = base_query.count()
+    if total == 0:
+        return None
+
+    if PRACTICE_OPPONENT_SAMPLE and PRACTICE_OPPONENT_SAMPLE < total:
+        offsets = set()
+        while len(offsets) < PRACTICE_OPPONENT_SAMPLE:
+            offsets.add(random.randrange(total))
+        candidates = []
+        for offset in offsets:
+            opponent = (
+                session.query(Team)
+                .filter(Team.id != school_id)
+                .offset(offset)
+                .limit(1)
+                .first()
+            )
+            if opponent:
+                candidates.append(opponent)
+        if candidates:
+            return random.choice(candidates)
+
+    offset = random.randrange(total)
+    return (
+        session.query(Team)
+        .filter(Team.id != school_id)
+        .offset(offset)
+        .limit(1)
+        .first()
+    )
 
 
 @dataclass
@@ -52,7 +93,7 @@ def execute_schedule_core(
     if context.school_id is None:
         raise ValueError("GameContext missing school_id; cannot execute schedule.")
 
-    from match_engine import sim_match  # Local import avoids circular dependency
+    from match_engine import sim_match, sim_match_fast  # Local import avoids circular dependency
 
     my_team = session.get(Team, context.school_id)
     if not my_team:
@@ -60,14 +101,21 @@ def execute_schedule_core(
 
     slot_results: List[SlotResult] = []
     warnings: List[str] = []
+    progression_state: Dict[str, object] = {}
 
     for d_idx, day_slots in enumerate(schedule_grid):
+        day_dirty = False
         for s_idx, action in enumerate(day_slots):
             if not action:
                 continue
 
             try:
-                action_result = apply_scheduled_action(context, action)
+                action_result = apply_scheduled_action(
+                    context,
+                    action,
+                    commit=False,
+                    progression_state=progression_state,
+                )
                 summary = action_result.get("message", "Done.")
                 slot_result = SlotResult(
                     day_index=d_idx,
@@ -78,13 +126,13 @@ def execute_schedule_core(
                 slot_result.training_details = action_result
 
                 if 'match' in action and 'b_team' not in action:
-                    opponents = session.query(Team).filter(Team.id != context.school_id).all()
-                    if not opponents:
+                    opponent = _pick_practice_opponent(session, context.school_id)
+                    if not opponent:
                         slot_result.error = "No opponents available for practice match."
                     else:
-                        opponent = random.choice(opponents)
                         slot_result.opponent_name = opponent.name
-                        winner, score = sim_match(
+                        sim_runner = sim_match_fast if FAST_PRACTICE_MATCHES else sim_match
+                        winner, score = sim_runner(
                             my_team,
                             opponent,
                             tournament_name="Practice Match",
@@ -97,10 +145,15 @@ def execute_schedule_core(
                         else:
                             slot_result.match_result = "UNKNOWN"
                 slot_results.append(slot_result)
+                day_dirty = True
             except Exception as exc:  # Capture errors per-slot to continue week
+                session.rollback()
                 warnings.append(
                     f"Error running {action} on {DAYS_OF_WEEK[d_idx]} {SLOTS[s_idx]}: {exc}"
                 )
+
+        if day_dirty:
+            session.commit()
 
     session.expire_all()
     return ScheduleExecution(results=slot_results, warnings=warnings)

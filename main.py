@@ -33,10 +33,8 @@ def print_banner():
 # FIRST TIME SETUP
 # -----------------------------------------------------
 
-def check_first_time_setup(session, state):
-    """Populate world and ensure an active player exists."""
-
-    # 1. World population
+def ensure_world_population(session):
+    """Ensure the database has a populated world map."""
     try:
         school_count = session.query(School).count()
     except Exception:
@@ -49,6 +47,12 @@ def check_first_time_setup(session, state):
         populate_world()
         print(f"{Colour.GREEN}World Generation Complete.{Colour.RESET}")
         time.sleep(1)
+
+
+def check_first_time_setup(session, state):
+    """Populate world and ensure an active player exists."""
+
+    ensure_world_population(session)
 
     # 2. Player creation
     player = load_active_player(session, state)
@@ -96,6 +100,56 @@ def get_player_info(session, state):
     return "Unknown Player"
 
 
+def start_new_career_same_world():
+    """Create a new first-year while keeping the current database intact."""
+    session = get_session()
+    try:
+        state = initialize_game_state(session)
+        ensure_world_population(session)
+
+        active_player = load_active_player(session, state)
+        if active_player:
+            print(f"\nReplacing current lead: {active_player.name} will continue as an AI teammate.")
+
+        confirm = input("Create a new first-year in the existing world? (y/n): ")
+        if confirm.lower() != 'y':
+            print("Cancelled new career setup.")
+            time.sleep(1)
+            return False
+
+        new_id = create_hero(session)
+        if not new_id:
+            print("Character creation aborted.")
+            time.sleep(1)
+            return False
+
+        state.active_player_id = new_id
+        session.commit()
+        print(f"{Colour.GREEN}New career ready. Jumping into the season...{Colour.RESET}")
+        time.sleep(1)
+        return True
+    finally:
+        session.close()
+
+
+def rebuild_world_database():
+    """Delete the active database file and create a clean world."""
+    from config import DB_PATH
+
+    if os.path.exists(DB_PATH):
+        try:
+            os.remove(DB_PATH)
+        except OSError as exc:
+            print(f"{Colour.FAIL}Could not delete save: {exc}{Colour.RESET}")
+            time.sleep(1)
+            return False
+
+    create_database()
+    print(f"{Colour.GREEN}Database reset. Fresh world will be generated on next launch.{Colour.RESET}")
+    time.sleep(1)
+    return True
+
+
 # -----------------------------------------------------
 # MAIN MENU
 # -----------------------------------------------------
@@ -113,8 +167,9 @@ def main_menu():
 
         print("1. Continue Active Game")
         print("2. Load Game (Select Slot)")
-        print("3. New Game (Resets Everything)")
-        print("4. Exit")
+        print("3. New Career (Reuse Current World)")
+        print("4. Rebuild World (Fresh Generation)")
+        print("5. Exit")
 
         choice = input("\nSelect: ")
 
@@ -137,28 +192,23 @@ def main_menu():
         # NEW GAME
         # -----------------------
         elif choice == '3':
-            confirm = input(f"{Colour.RED}Are you sure? This deletes all progress. (y/n): {Colour.RESET}")
-            if confirm.lower() == 'y':
-                session.close()
-
-                from config import DB_PATH
-                if os.path.exists(DB_PATH):
-                    try:
-                        os.remove(DB_PATH)
-                    except:
-                        pass
-
-                print(f"{Colour.GREEN}Save deleted. Restarting fresh world...{Colour.RESET}")
-                time.sleep(1)
-
-                # Rebuild database
-                create_database()
+            session.close()
+            if start_new_career_same_world():
                 run_game_loop()
 
         # -----------------------
         # EXIT
         # -----------------------
         elif choice == '4':
+            confirm = input(f"{Colour.RED}Rebuild entire world? This deletes all progress. (y/n): {Colour.RESET}")
+            if confirm.lower() == 'y':
+                session.close()
+                if rebuild_world_database():
+                    run_game_loop()
+            else:
+                session.close()
+
+        elif choice == '5':
             sys.exit()
 
         session.close()

@@ -4,6 +4,7 @@ import os
 import sqlite3
 import pykakasi 
 import traceback
+from collections import defaultdict
 
 # Fix Imports for subfolder location
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -349,6 +350,7 @@ def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
     return arsenal
 
 used_school_names = set()
+_school_name_bases = defaultdict(int)
 school_types = ["High School", "Academy", "Tech", "Commercial", "Gakuen"]
 directions = ["East", "West", "North", "South", "Central"]
 
@@ -361,19 +363,30 @@ def generate_school_name(prefecture, city):
         attempts += 1
         pattern = random.randint(1, 4)
         
-        # If we are stuck, fallback to appending a number
-        suffix = ""
-        if attempts > 20:
-            suffix = f" No.{random.randint(1, 999)}"
-        
-        if pattern == 1: name = f"{city} {random.choice(school_types)}{suffix}"
-        elif pattern == 2: name = f"{prefecture} {random.choice(directions)} {random.choice(school_types)}{suffix}"
-        elif pattern == 3: name = f"{city} {random.choice(directions)} {random.choice(school_types)}{suffix}"
-        else: name = f"{prefecture} {random.choice(school_types)}{suffix}"
-        
+        if pattern == 1:
+            base_name = f"{city} {random.choice(school_types)}"
+        elif pattern == 2:
+            base_name = f"{prefecture} {random.choice(directions)} {random.choice(school_types)}"
+        elif pattern == 3:
+            base_name = f"{city} {random.choice(directions)} {random.choice(school_types)}"
+        else:
+            base_name = f"{prefecture} {random.choice(school_types)}"
+
+        count = _school_name_bases[base_name]
+        suffix = f" No.{count + 1}" if count else ""
+        name = f"{base_name}{suffix}"
+
         if name not in used_school_names:
             used_school_names.add(name)
+            _school_name_bases[base_name] += 1
             return name
+
+        if attempts > 25:
+            fallback = f"{base_name} #{random.randint(100, 999)}"
+            if fallback not in used_school_names:
+                used_school_names.add(fallback)
+                _school_name_bases[base_name] += 1
+                return fallback
 
 def populate_world():
     with session_scope() as session:
@@ -388,6 +401,9 @@ def populate_world():
         except Exception as e:
             print(f"Error wiping data: {e}")
             session.rollback()
+
+        used_school_names.clear()
+        _school_name_bases.clear()
 
         print(f"--- SYSTEM: GENERATING JAPAN (Scale: {SCALE_FACTOR}) ---")
         total_schools = 0

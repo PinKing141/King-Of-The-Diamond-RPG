@@ -8,9 +8,13 @@ from database.setup_db import Player
 from game.academic_system import resolve_study_session, clamp, is_academically_eligible
 from game.game_context import GameContext
 from game.personality_effects import adjust_player_morale, decay_slump
-from game.player_progression import MilestoneUnlockResult, process_milestone_unlocks
+from game.player_progression import (
+    MilestoneUnlockResult,
+    get_milestone_definitions,
+    process_milestone_unlocks,
+)
 from game.relationship_manager import register_morale_rebound
-from game.skill_system import check_and_grant_skills
+from game.skill_system import check_and_grant_skills, list_player_skill_keys
 from game.trait_logic import get_progression_speed_multiplier
 from ui.ui_display import Colour
 
@@ -35,7 +39,13 @@ def _apply_temp_training_bonuses(context: GameContext, stat_gains: dict):
         stat_gains[stat] *= multiplier
 
 
-def apply_scheduled_action(context: GameContext, action_type: str) -> dict:
+def apply_scheduled_action(
+    context: GameContext,
+    action_type: str,
+    *,
+    commit: bool = True,
+    progression_state: Optional[dict] = None,
+) -> dict:
     """Execute a scheduled action and return a structured result dict."""
     player = _get_player(context)
     if not player:
@@ -246,8 +256,32 @@ def apply_scheduled_action(context: GameContext, action_type: str) -> dict:
             register_morale_rebound(context.session, player, reason="slump_cleared")
             summary += " (You finally shake the slump.)"
 
-    unlocked_skills = check_and_grant_skills(context.session, player)
-    milestone_unlocks = process_milestone_unlocks(context.session, player)
+    owned_skill_keys = None
+    milestone_defs = None
+    milestone_stats_cache = None
+    if progression_state is not None:
+        owned_skill_keys = progression_state.get("skill_keys")
+        if owned_skill_keys is None:
+            owned_skill_keys = set(list_player_skill_keys(player))
+            progression_state["skill_keys"] = owned_skill_keys
+        milestone_defs = progression_state.get("milestone_defs")
+        if milestone_defs is None:
+            milestone_defs = get_milestone_definitions()
+            progression_state["milestone_defs"] = milestone_defs
+        milestone_stats_cache = progression_state.setdefault("milestone_stats", {})
+
+    unlocked_skills = check_and_grant_skills(
+        context.session,
+        player,
+        owned_keys=owned_skill_keys,
+    )
+    milestone_unlocks = process_milestone_unlocks(
+        context.session,
+        player,
+        milestone_definitions=milestone_defs,
+        stats_cache=milestone_stats_cache,
+        owned_skill_keys=owned_skill_keys,
+    )
     if milestone_unlocks:
         unlocked_skills.extend(entry.skill_name for entry in milestone_unlocks)
         _announce_milestones(milestone_unlocks)
@@ -271,7 +305,10 @@ def apply_scheduled_action(context: GameContext, action_type: str) -> dict:
             )
 
     context.session.add(player)
-    context.session.commit()
+    if commit:
+        context.session.commit()
+    else:
+        context.session.flush()
 
     return {
         "status": "ok",
