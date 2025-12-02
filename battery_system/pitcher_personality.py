@@ -37,7 +37,7 @@ def get_pitcher_personality(pitcher):
         p_type = 'Confident'
     return PERSONALITIES[p_type]
 
-def does_pitcher_accept(pitcher, suggested_pitch, trust_level):
+def does_pitcher_accept(pitcher, suggested_pitch, trust_level, *, dominance: float = 0.0):
     """
     AI Logic: Decides if an AI Pitcher accepts the Catcher's sign.
     """
@@ -50,6 +50,7 @@ def does_pitcher_accept(pitcher, suggested_pitch, trust_level):
     # (trust - 50) * factor -> reduces probability
     trust_mod = ((trust_level - 50) / 100.0) * personality['trust_factor']
     shake_chance -= trust_mod
+    shake_chance -= dominance * 0.05
     
     # Preference Modifier: Does the pitcher like this pitch?
     # (Simplified: If it's their best pitch (highest quality), they like it)

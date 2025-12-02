@@ -1,6 +1,6 @@
 import sys
 from ui.ui_display import Colour
-from match_engine.pitch_logic import get_arsenal, PitchResult
+from match_engine.pitch_logic import get_arsenal, PitchResult, describe_batter_tells
 
 def player_pitch_turn(pitcher, batter, state):
     """
@@ -10,6 +10,9 @@ def player_pitch_turn(pitcher, batter, state):
     print(f"\n{Colour.HEADER}--- PITCHER INTERFACE ---{Colour.RESET}")
     print(f"vs {batter.name} (Pow {batter.power} / Con {batter.contact})")
     print(f"Count: {state.balls}-{state.strikes} | Outs: {state.outs}")
+    hints = describe_batter_tells(state, batter)
+    if hints:
+        print(f"Intel: {' | '.join(hints)}")
     
     # Check runners for pickoff context
     has_runners = any(r is not None for r in state.runners)

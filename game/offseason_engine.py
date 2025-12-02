@@ -100,7 +100,7 @@ def recruit_freshmen(session: Session, target_roster: int = 18) -> int:
 
                 try:
                     player.pitch_repertoire = generate_pitch_arsenal(
-                        PseudoPlayer(stats), focus, "Overhand"
+                        PseudoPlayer(stats), focus, stats.get('arm_slot', 'Three-Quarters')
                     )
                 except Exception:
                     pass

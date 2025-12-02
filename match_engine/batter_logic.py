@@ -390,6 +390,7 @@ def start_at_bat(state):
         display_state(state, pitcher, batter)
     
     batter_tendencies = gather_behavior_tendencies(batter)
+    times_faced = state.register_plate_appearance(pitcher_id, batter_id)
     steal_checked = False
     while True:
         # time.sleep(0.5) # Pace the game
@@ -426,6 +427,7 @@ def start_at_bat(state):
             batter_trait_mods=batter_trait_mods,
             pitcher_trait_mods=pitcher_trait_mods,
             batter_tendencies=batter_tendencies,
+            times_through_order=times_faced,
         )
         tracker = _update_pitch_diagnostics(state, pitcher.id, pitch_res.outcome)
 

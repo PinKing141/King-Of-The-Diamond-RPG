@@ -22,6 +22,43 @@ from world.school_philosophy import PHILOSOPHY_MATRIX
 from game.archetypes import assign_player_archetype
 from world.coach_generation import generate_coach_for_school
 from player_roles.two_way import roll_two_way_profile
+
+
+ARM_SLOT_DISTRIBUTION = [
+    ("Overhand", 0.16),
+    ("High Three-Quarters", 0.2),
+    ("Three-Quarters", 0.22),
+    ("Low Three-Quarters", 0.16),
+    ("Sidearm", 0.12),
+    ("Low Sidearm", 0.08),
+    ("Submarine", 0.06),
+]
+
+
+def roll_arm_slot(focus_label: str) -> str:
+    focus_label = (focus_label or "balanced").lower()
+    pool = list(ARM_SLOT_DISTRIBUTION)
+
+    def _boost(targets, delta):
+        for idx, (slot, weight) in enumerate(pool):
+            if slot in targets:
+                pool[idx] = (slot, weight + delta)
+
+    if focus_label in {"pitching", "technical"}:
+        _boost({"Overhand", "High Three-Quarters"}, 0.03)
+    if focus_label in {"power", "guts"}:
+        _boost({"Low Three-Quarters", "Sidearm", "Low Sidearm"}, 0.02)
+    if focus_label in {"speed", "gamblers"}:
+        _boost({"Sidearm", "Submarine"}, 0.02)
+
+    total = sum(weight for _, weight in pool)
+    roll = random.random() * total
+    running = 0.0
+    for slot, weight in pool:
+        running += weight
+        if roll <= running:
+            return slot
+    return "Three-Quarters"
 from game.personality import roll_player_personality
 from game.player_generation import seed_negative_traits
 from game.trait_logic import seed_initial_traits
@@ -201,6 +238,7 @@ def generate_stats(position, specific_pos, focus):
         stats['breaking_ball'] = get_val(5, tag="movement")
         # Map to V2 Schema 'movement'
         stats['movement'] = stats['breaking_ball']
+        stats['arm_slot'] = roll_arm_slot(focus_label)
 
         # Batting stats for pitcher (weak)
         stats['power'] = get_val(-15, tag="power")
@@ -211,6 +249,7 @@ def generate_stats(position, specific_pos, focus):
         stats['velocity'] = 0
         stats['control'] = 10
         stats['movement'] = 0
+        stats['arm_slot'] = "Three-Quarters"
 
         stats['power'] = get_val(tag="power")
         stats['contact'] = get_val(tag="contact")
@@ -276,14 +315,15 @@ def generate_stats(position, specific_pos, focus):
 
     return stats
 
-def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Overhand"):
+def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
     # Generate PitchRepertoire objects
     arsenal = []
     
     # Fastball
     fb_choice = "4-Seam Fastball"
-    if arm_slot in ["Sidearm", "Submarine"] or style_focus == "Speed":
-        fb_choice = random.choice(["2-Seam Fastball", "Shuuto", "Sinker"])
+    side_slots = {"Sidearm", "Low Sidearm", "Submarine"}
+    if arm_slot in side_slots or style_focus == "Speed":
+        fb_choice = random.choice(["2-Seam Fastball", "Shuuto", "Sinker", "Turbo Sinker"])
         
     fb = PitchRepertoire(
         pitch_name=fb_choice,

@@ -14,9 +14,11 @@ from game.scouting_system import (
 )
 from game.game_context import GameContext
 from game.player_progression import fetch_player_milestone_tags
+from game.skill_system import trait_synergy_summary
 
 DEBUG_MODE = False 
 KNOWLEDGE_LABELS = ["Unknown", "Basic", "Detailed", "Full"]
+SYNERGY_COLUMN_WIDTH = 26
 
 GRADE_BUCKETS = [
     (0, "F"),
@@ -92,6 +94,40 @@ def fmt_stat(value, knowledge: int) -> str:
         return low_label
     return f"{low_label}-{high_label}"
 
+
+def _trim_text(text: str, width: int) -> str:
+    if width <= 1:
+        return text[:width]
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[: width - 3] + "..."
+
+
+def _format_synergy_blurb(player, knowledge: int, width: int) -> str:
+    if knowledge < 3:
+        return "--"
+    try:
+        summary = trait_synergy_summary(player)
+    except Exception:
+        return "--"
+    profile = (summary or {}).get("profile") or {}
+    if not profile:
+        base = "Balanced"
+    else:
+        highlights = sorted(profile.items(), key=lambda item: abs(item[1]), reverse=True)
+        pieces = []
+        for tag, score in highlights[:2]:
+            if not tag:
+                continue
+            label = tag.replace("_", " ").title()
+            pieces.append(f"{label} {score:+.1f}")
+        base = ", ".join(pieces) or "Balanced"
+    edge = (summary or {}).get("edge_bonus", 0.0)
+    edge_text = f" Edge {edge:+.2f}" if abs(edge) >= 0.01 else ""
+    return _trim_text(base + edge_text, width)
+
 def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING", view_mode="ACTIVE"):
     """
     Displays a formatted roster.
@@ -149,7 +185,10 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
     if not display_players:
         print(f"   (No players found in {view_mode} list)")
     else:
-        header = f" {'NO':<3} | {'POS':<4} | {'NAME':<22} | {'STS':<8} | {'KEY ATTRIBUTES':<40} | {'MILESTONES':<18}"
+        header = (
+            f" {'NO':<3} | {'POS':<4} | {'NAME':<22} | {'STS':<8} | "
+            f"{'KEY ATTRIBUTES':<36} | {'SYNERGY LEAN':<{SYNERGY_COLUMN_WIDTH}} | {'MILESTONES':<18}"
+        )
         print(header)
         print("-" * len(header))
 
@@ -187,7 +226,11 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
             else:
                 milestone_str = '--'
 
-            row_str = f" {num_str:<3} | {role:<4} | {name_display:<22} | {status:<8} | {stats_str:<40} | {milestone_str:<18}"
+            synergy_str = _format_synergy_blurb(p, knowledge, SYNERGY_COLUMN_WIDTH)
+            row_str = (
+                f" {num_str:<3} | {role:<4} | {name_display:<22} | {status:<8} | "
+                f"{stats_str:<36} | {synergy_str:<{SYNERGY_COLUMN_WIDTH}} | {milestone_str:<18}"
+            )
             print(row_str)
         
     print("="*95)

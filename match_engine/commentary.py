@@ -259,7 +259,7 @@ def display_state(state, pitcher, batter):
         b_cond = f"{Colour.GREEN}(Focused){Colour.RESET}"
 
     # Pitcher info (Arm slot might be missing in V2 schema if not generated, handle gracefully)
-    arm_slot = getattr(pitcher, 'arm_slot', 'Overhand') 
+    arm_slot = getattr(pitcher, 'arm_slot', 'Three-Quarters') 
     
     # Use 'name' or 'last_name' depending on schema. V2 uses 'name' as full name usually.
     p_name = getattr(pitcher, 'name', getattr(pitcher, 'last_name', 'Pitcher'))

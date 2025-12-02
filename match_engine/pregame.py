@@ -244,6 +244,10 @@ class MatchState:
         self.slump_boost = {}
         self.confidence_events = []
         self.confidence_story = {}
+        self.pitcher_presence = {}
+        self.pitch_sequence_memory = {}
+        self.times_through_order = {}
+        self.batter_tell_tracker = {}
         self.argument_cooldowns = {}
         self.ejections = []
         self.pinch_history = []
@@ -299,6 +303,13 @@ class MatchState:
                 "strikeouts_pitched": 0, "innings_pitched": 0.0, "pitches": 0
             }
         return self.stats[p_id]
+
+    def register_plate_appearance(self, pitcher_id: int | None, batter_id: int | None) -> int:
+        if not pitcher_id or not batter_id:
+            return 1
+        tracker = self.times_through_order.setdefault(pitcher_id, {})
+        tracker[batter_id] = tracker.get(batter_id, 0) + 1
+        return tracker[batter_id]
 
     def set_player_milestones(self, mapping: dict[int, list[dict[str, object]]]):
         self.player_milestones = mapping or {}

@@ -104,6 +104,8 @@ def ensure_player_schema():
         statements.append("ALTER TABLE players ADD COLUMN slump_timer INTEGER DEFAULT 0")
     if 'archetype' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN archetype VARCHAR DEFAULT 'steady'")
+    if 'arm_slot' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN arm_slot VARCHAR DEFAULT 'Three-Quarters'")
 
     if not statements:
         return
@@ -321,6 +323,7 @@ class Player(Base):
     control = Column(Integer, default=0)
     command = Column(Integer, default=0)
     movement = Column(Integer, default=0)
+    arm_slot = Column(String, default="Three-Quarters")
     
     fielding = Column(Integer, default=0)
     speed = Column(Integer, default=0)
