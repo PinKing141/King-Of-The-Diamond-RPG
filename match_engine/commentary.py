@@ -1,8 +1,8 @@
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from ui.ui_display import Colour
 from game.rng import get_rng
-from .batter_logic import get_recent_batters_eye_history
+from .states import EventType
 
 rng = get_rng()
 
@@ -21,6 +21,66 @@ WEATHER_ICONS = {
     "heat": "[HEAT]",
 }
 
+PITCH_SETUP_LINES = (
+    "fires another offering",
+    "changes the eye level",
+    "kicks and deals",
+    "twirls the grip, sets, and goes",
+    "comes home with intent",
+)
+
+SWING_REACTIONS = {
+    "strikeout": (
+        "got carved up with pure filth",
+        "couldn't touch it—air guitar instead of barrel",
+        "locks up as the zone freezes over",
+    ),
+    "run_scored": (
+        "delivers when it matters most",
+        "plates the run with ice in the veins",
+        "sparks the dugout with a clutch knock",
+    ),
+    "hit": (
+        "shoots it through the gap",
+        "finds grass with authority",
+        "keeps the carousel moving",
+    ),
+    "out_in_play": (
+        "rolls it over for the sure out",
+        "finds leather instead of daylight",
+        "hangs it up—defense cashes in",
+    ),
+    "walk": (
+        "spits on the edge and takes a trot",
+        "wins the mind game for ball four",
+        "earns the free pass after a grinder",
+    ),
+    "neutral": (
+        "keeps the at-bat alive",
+        "grinds through another exchange",
+        "adds another beat to the duel",
+    ),
+}
+
+DRAMA_TAGS = (
+    "",
+    f" {Colour.YELLOW}[Tense]{Colour.RESET}",
+    f" {Colour.RED}[High Stakes]{Colour.RESET}",
+    f" {Colour.BOLD}{Colour.RED}[Legendary]{Colour.RESET}",
+)
+
+
+def _inning_label(half: str, inning: int) -> str:
+    half_label = "Top" if half.lower().startswith("t") else "Bottom"
+    return f"{half_label} {inning}"
+
+
+def _drama_tag(level: Optional[int]) -> str:
+    if level is None:
+        return ""
+    idx = max(0, min(level, len(DRAMA_TAGS) - 1))
+    return DRAMA_TAGS[idx]
+
 
 def set_commentary_enabled(enabled: bool) -> None:
     """Globally enable or disable commentary generation."""
@@ -31,6 +91,154 @@ def set_commentary_enabled(enabled: bool) -> None:
 def commentary_enabled() -> bool:
     """Return True when commentary output should be produced."""
     return _COMMENTARY_ENABLED
+
+
+class CommentaryListener:
+    """EventBus subscriber that renders high-level match narration."""
+
+    def __init__(self, event_bus):
+        self.bus = event_bus
+        self._last_pitch: Optional[Dict[str, Any]] = None
+        self._last_swing: Optional[Dict[str, Any]] = None
+        self._player_names: Dict[int, str] = {}
+        self._team_names: Dict[str, str] = {"home": "Home", "away": "Away"}
+        if not event_bus:
+            return
+        event_bus.subscribe("LINEUP_READY", self._on_lineup_ready)
+        event_bus.subscribe("MATCH_STATE_CHANGE", self._on_match_state_change)
+        event_bus.subscribe("GAME_OVER", self._on_game_over)
+        event_bus.subscribe(EventType.PITCH_THROWN.value, self._on_pitch_thrown)
+        event_bus.subscribe(EventType.BATTER_SWUNG.value, self._on_batter_swung)
+        event_bus.subscribe(EventType.STRIKEOUT.value, self._on_strikeout)
+        event_bus.subscribe(EventType.PLAY_RESULT.value, self._on_play_result)
+        event_bus.subscribe(EventType.BATTERS_EYE_PROMPT.value, self._on_batters_eye_prompt)
+
+    def _on_lineup_ready(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        home = payload.get("home", {})
+        away = payload.get("away", {})
+        self._team_names["home"] = home.get("team_name") or self._team_names["home"]
+        self._team_names["away"] = away.get("team_name") or self._team_names["away"]
+        for team in (home, away):
+            for entry in team.get("lineup", []):
+                player_id = entry.get("player_id")
+                if player_id is not None:
+                    self._player_names[player_id] = entry.get("name") or self._player_names.get(player_id, "Player")
+        print("\n=== LINEUP CARD ===")
+        self._print_lineup_side(away, label="Away")
+        self._print_lineup_side(home, label="Home")
+        print("Play ball! Let the duel begin.\n")
+
+    def _print_lineup_side(self, team: Dict[str, Any], label: str) -> None:
+        name = (team.get("team_name") or label).upper()
+        print(f"{name} ({label})")
+        for entry in team.get("lineup", []):
+            slot = entry.get("slot")
+            player_name = entry.get("name", "Player")
+            position = entry.get("position", "??")
+            milestones = entry.get("milestones", [])
+            tag = f" [{' / '.join(milestones)}]" if milestones else ""
+            print(f"  {slot}. {player_name} ({position}){tag}")
+        print("")
+
+    def _on_match_state_change(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        phase = payload.get("phase")
+        if phase == "INNING_HALF":
+            inning = payload.get("inning", 1)
+            half = payload.get("half", "Top")
+            print(f"\n--- {half.upper()} OF INNING {inning} ---")
+        elif phase == "EXTRA_INNINGS":
+            inning = payload.get("inning")
+            score = f"{payload.get('away_score')}-{payload.get('home_score')}"
+            print(f"   Score knotted at {score}. Heading to extra innings ({inning + 1}).")
+        elif phase == "DRAW":
+            print("   Match declared a draw. Arms are spent, spirits remain high.")
+
+    def _on_game_over(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        home = payload.get("home_team_name", "Home")
+        away = payload.get("away_team_name", "Away")
+        home_score = payload.get("home_score", 0)
+        away_score = payload.get("away_score", 0)
+        winner = payload.get("winner_name")
+        print("\n" + "#" * 60)
+        print(f"Final Score: {away} {away_score} - {home_score} {home}")
+        if winner:
+            print(f"Winner: {Colour.gold}{winner}{Colour.RESET}")
+        else:
+            print("Result: Draw")
+        print("#" * 60 + "\n")
+
+    def _player_label(self, player_id: Optional[int], default: str) -> str:
+        if player_id is None:
+            return default
+        return self._player_names.get(player_id, default)
+
+    def _score_line(self, away_score: int, home_score: int) -> str:
+        away_name = self._team_names.get("away", "Away")
+        home_name = self._team_names.get("home", "Home")
+        return f"{away_name[:3]} {away_score} - {home_score} {home_name[:3]}"
+
+    def _on_pitch_thrown(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        self._last_pitch = payload
+        half = payload.get("half", "Top")
+        inning = payload.get("inning", 1)
+        count = f"{payload.get('balls', 0)}-{payload.get('strikes', 0)}"
+        score = self._score_line(payload.get("away_score", 0), payload.get("home_score", 0))
+        pitcher = self._player_label(payload.get("pitcher_id"), "Pitcher")
+        batter = self._player_label(payload.get("batter_id"), "Batter")
+        line = rng.choice(PITCH_SETUP_LINES)
+        inning_label = _inning_label(half, inning)
+        print(
+            f"{Colour.BLUE}[Pitch]{Colour.RESET} {inning_label} | {score} | Count {count} — {pitcher} vs {batter}, {line}."
+        )
+
+    def _on_batter_swung(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        self._last_swing = payload
+        result_type = payload.get("result_type", "neutral")
+        drama_tag = _drama_tag(payload.get("drama_level"))
+        reactions = SWING_REACTIONS.get(result_type, SWING_REACTIONS["neutral"])
+        batter = self._player_label(payload.get("batter_id"), "Batter")
+        line = rng.choice(reactions)
+        print(f"   >> {batter} {line}.{drama_tag}")
+
+    def _on_strikeout(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        batter = self._player_label(payload.get("batter_id"), "Batter")
+        pitcher = self._player_label(payload.get("pitcher_id"), "Pitcher")
+        flavor = rng.choice(STRIKEOUT_PHRASES)
+        print(f"      {Colour.CYAN}{pitcher} fans {batter}!{Colour.RESET} {flavor}")
+
+    def _on_play_result(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        description = payload.get("description", "Play resolves.")
+        runs = payload.get("runs_scored", 0)
+        drama_tag = _drama_tag(payload.get("drama_level"))
+        print(f"   >> {description}{drama_tag}")
+        if runs:
+            batting_team = self._team_names.get("away" if (payload.get("half") == "Top") else "home", "Offense")
+            print(f"   !! {Colour.gold}{runs} run(s) answer for {batting_team}!{Colour.RESET}")
+
+    def _on_batters_eye_prompt(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        options = payload.get("options", [])
+        batter = self._player_label(payload.get("batter_id"), "Batter")
+        if not options:
+            return
+        print(f"   >> Batter's Eye moment for {batter}! Choose your plan:")
+        for choice in options:
+            print(f"        [{choice.get('key')}] {choice.get('label')} — {choice.get('description')}")
 
 
 def _short_name(player) -> str:
@@ -273,6 +481,11 @@ def display_state(state, pitcher, batter):
     _render_batters_eye_panel(state)
     _announce_weather_once(state)
     _emit_contextual_notes(state, pitcher, batter)
+def get_recent_batters_eye_history(state, *, max_items: int = 3):
+    history = getattr(state, "batters_eye_history", None) or []
+    return list(history[-max_items:])
+
+
 def _render_batters_eye_panel(state):
     history = get_recent_batters_eye_history(state, max_items=3)
     if not history:

@@ -9,6 +9,7 @@ from database.setup_db import Player, School, GameState, PlayerRelationship
 from game.coach_strategy import export_mod_descriptors
 from game.player_progression import fetch_player_milestone_tags
 from game.rng import get_rng
+from core.event_bus import EventBus
 from match_engine.confidence import initialize_confidence
 from match_engine.momentum import MomentumSystem, PresenceProfile, PresenceSystem
 
@@ -184,6 +185,7 @@ class MatchState:
         *,
         home_bench: Optional[Iterable[Player]] = None,
         away_bench: Optional[Iterable[Player]] = None,
+        event_bus: EventBus | None = None,
     ):
         # Teams (Now Schools)
         self.home_team = home_team
@@ -282,6 +284,7 @@ class MatchState:
             getattr(self.away_team, "id", None): [],
         }
         self.player_lookup = {}
+        self.event_bus: EventBus = event_bus or EventBus()
         for player in self.home_roster + self.away_roster:
             if player:
                 self.player_lookup[player.id] = player
@@ -301,6 +304,7 @@ class MatchState:
         self.momentum_system = MomentumSystem(
             getattr(self.home_team, "id", None),
             getattr(self.away_team, "id", None),
+            bus=self.event_bus,
         )
         self.presence_system = PresenceSystem()
         self.pressure_index: float = 0.0
@@ -333,47 +337,6 @@ class MatchState:
         return penalty if role.lower() in {"pitcher", "batter"} else 0.0
 
     def log_aura_event(self, payload: dict[str, object]) -> None:
-
-
-    def _build_presence_profiles(state: MatchState) -> List[PresenceProfile]:
-        profiles: List[PresenceProfile] = []
-
-        def _profile_for_pitcher(pitcher, team_id: Optional[int]):
-            if not pitcher or not getattr(pitcher, "id", None):
-                return None
-            return PresenceProfile(
-                player_id=pitcher.id,
-                team_id=team_id,
-                role="ACE",
-                trust_baseline=getattr(pitcher, "trust_baseline", 50) or 50,
-            )
-
-        def _profile_for_cleanup(lineup, team_id: Optional[int]):
-            if len(lineup) < 4:
-                return None
-            cleanup = lineup[3]
-            if not cleanup or not getattr(cleanup, "id", None):
-                return None
-            return PresenceProfile(
-                player_id=cleanup.id,
-                team_id=team_id,
-                role="CLEANUP",
-                trust_baseline=getattr(cleanup, "trust_baseline", 50) or 50,
-            )
-
-        home_id = getattr(state.home_team, "id", None)
-        away_id = getattr(state.away_team, "id", None)
-
-        for profile in (
-            _profile_for_pitcher(state.home_pitcher, home_id),
-            _profile_for_pitcher(state.away_pitcher, away_id),
-            _profile_for_cleanup(state.home_lineup, home_id),
-            _profile_for_cleanup(state.away_lineup, away_id),
-        ):
-            if profile:
-                profiles.append(profile)
-
-        return profiles
         self.aura_events.append(payload)
 
     def get_stats(self, p_id):
@@ -421,6 +384,48 @@ class MatchState:
         
     def log(self, message):
         self.logs.append(message)
+
+
+def _build_presence_profiles(state: MatchState) -> List[PresenceProfile]:
+    profiles: List[PresenceProfile] = []
+
+    def _profile_for_pitcher(pitcher, team_id: Optional[int]):
+        if not pitcher or not getattr(pitcher, "id", None):
+            return None
+        return PresenceProfile(
+            player_id=pitcher.id,
+            team_id=team_id,
+            role="ACE",
+            trust_baseline=getattr(pitcher, "trust_baseline", 50) or 50,
+        )
+
+    def _profile_for_cleanup(lineup, team_id: Optional[int]):
+        if len(lineup) < 4:
+            return None
+        cleanup = lineup[3]
+        if not cleanup or not getattr(cleanup, "id", None):
+            return None
+        return PresenceProfile(
+            player_id=cleanup.id,
+            team_id=team_id,
+            role="CLEANUP",
+            trust_baseline=getattr(cleanup, "trust_baseline", 50) or 50,
+        )
+
+    home_id = getattr(state.home_team, "id", None)
+    away_id = getattr(state.away_team, "id", None)
+
+    for profile in (
+        _profile_for_pitcher(state.home_pitcher, home_id),
+        _profile_for_pitcher(state.away_pitcher, away_id),
+        _profile_for_cleanup(state.home_lineup, home_id),
+        _profile_for_cleanup(state.away_lineup, away_id),
+    ):
+        if profile:
+            profiles.append(profile)
+
+    return profiles
+
 
 def _apply_rivalry_context(db_session: Session, home_lineup, away_lineup):
     state = db_session.query(GameState).first()
@@ -554,6 +559,8 @@ def prepare_match(home_id, away_id, db_session: Session):
     
     rivalry_info = _apply_rivalry_context(db_session, home_lineup, away_lineup)
 
+    event_bus = EventBus()
+
     match_state = MatchState(
         home_team,
         away_team,
@@ -564,6 +571,7 @@ def prepare_match(home_id, away_id, db_session: Session):
         db_session,
         home_bench=home_bench,
         away_bench=away_bench,
+        event_bus=event_bus,
     )
     _attach_coach_modifiers(match_state)
     match_state.configure_presence(_build_presence_profiles(match_state))
