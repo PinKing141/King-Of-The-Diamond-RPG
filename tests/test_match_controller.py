@@ -3,12 +3,12 @@ from types import SimpleNamespace
 import pytest
 
 from core.event_bus import EventBus
-<<<<<<< HEAD
+
 from match_engine.controller import MatchController, _finalize_rivalry_context
 from world.rivals import Rival, RivalMatchContext
-=======
+
 from match_engine.controller import MatchController
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
+
 
 
 class DummyScoreboard:
@@ -72,7 +72,7 @@ def test_draw_condition_emits_draw_event():
 
     assert controller._should_continue() is False
     assert events[-1]["phase"] == "DRAW"
-<<<<<<< HEAD
+
 
 
 def test_finalize_rivalry_context_records_summary():
@@ -93,5 +93,4 @@ def test_finalize_rivalry_context_records_summary():
     assert state.rival_postgame
     assert state.rival_postgame["result"] == "hero_win"
     assert any("Akira vs Daigo" in line for line in state.logs)
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
+
