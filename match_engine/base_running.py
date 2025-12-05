@@ -1,6 +1,8 @@
 from game.rng import get_rng
-from game.scouting_system import get_scouting_info
-from game.skill_system import player_has_skill
+from world_sim.baserunning import (
+    prepare_runner_state,
+    resolve_steal_attempt as resolve_threat_steal,
+)
 
 rng = get_rng()
 
@@ -94,41 +96,32 @@ def advance_runners(state, hit_type, batter):
 
     return scored_on_play
 
-def _scouting_read_bonus(state, pitcher) -> float:
-    if not state or not getattr(state, 'db_session', None):
-        return 0.0
-    school_id = getattr(pitcher, 'school_id', None)
-    if not school_id:
-        return 0.0
-    try:
-        info = get_scouting_info(school_id, session=state.db_session)
-    except Exception:
-        return 0.0
-    knowledge = getattr(info, 'knowledge_level', 0) or 0
-    return min(12.0, knowledge * 1.5)
+def resolve_steal_attempt(
+    state,
+    runner,
+    pitcher,
+    catcher,
+    target_base,
+    *,
+    delivery_override: float | None = None,
+    pop_override: float | None = None,
+):
+    """Bridge legacy call sites into the world_sim baserunning helpers."""
 
+    if not runner:
+        return False, "No runner to steal."
 
-def resolve_steal_attempt(state, runner, pitcher, catcher, target_base):
-    """
-    Calculates if a steal is successful.
-    Returns: (bool is_safe, str description)
-    """
-    # Simple formula: Speed + Jump vs Pitcher Hold + Catcher Arm
-    speed = getattr(runner, 'speed', 50) or 50
-    jump = rng.randint(0, 20) # Jump quality
-    
-    pitcher_hold = getattr(pitcher, 'control', 50) / 2 # Pitchers with good control hold better? Or separate stat
-    catcher_arm = getattr(catcher, 'throwing', 50) # Use throwing for arm strength
-    
-    attack = speed + jump
-    defense = pitcher_hold + catcher_arm + rng.randint(0, 10)
-
-    if player_has_skill(runner, "speed_demon"):
-        scouting_bonus = _scouting_read_bonus(state, pitcher)
-        release_window = max(0.0, 65 - getattr(pitcher, 'control', 50)) * 0.35
-        attack = (attack + scouting_bonus + release_window + 8) * 1.1
-    
-    if attack > defense:
-        return True, "SAFE! Stolen Base."
-    else:
-        return False, "OUT! Caught Stealing."
+    base_lookup = {"2B": 0, "3B": 1}
+    base_index = base_lookup.get(target_base, 0)
+    threat = prepare_runner_state(state, base_index)
+    if threat is None:
+        return False, "Runner stays put."
+    outcome = resolve_threat_steal(
+        state,
+        threat=threat,
+        pitcher=pitcher,
+        catcher=catcher,
+        delivery_time=delivery_override,
+        pop_time=pop_override,
+    )
+    return outcome.success, outcome.description

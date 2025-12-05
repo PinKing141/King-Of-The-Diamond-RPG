@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -9,108 +9,12 @@ from database.setup_db import Player, School, GameState, PlayerRelationship
 from game.coach_strategy import export_mod_descriptors
 from game.player_progression import fetch_player_milestone_tags
 from game.rng import get_rng
-from match_engine.confidence import initialize_confidence
+from core.event_bus import EventBus
+from match_engine.confidence import adjust_confidence, initialize_confidence
 from match_engine.momentum import MomentumSystem, PresenceProfile, PresenceSystem
-
-
-@dataclass
-class WeatherState:
-    """Represents the shared weather context for the entire matchup."""
-
-    label: str
-    condition: str
-    precipitation: str
-    temperature_f: int
-    wind_speed_mph: float
-    wind_direction: str
-    carry_modifier: float
-    error_modifier: float
-    wild_pitch_modifier: float
-    commentary_hint: str | None = None
-
-    def describe(self) -> str:
-        base = f"{self.label} ({self.temperature_f}°F, {self.wind_speed_mph:.1f} mph {self.wind_direction})"
-        if self.precipitation != "none":
-            base += f" - {self.precipitation.title()}"
-        return base
-
-
-WIND_DIRECTIONS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-
-WEATHER_PRESETS = [
-    {
-        "label": "Crisp & Calm",
-        "condition": "clear",
-        "precipitation": "none",
-        "temp_range": (58, 70),
-        "wind_range": (0.0, 5.0),
-        "carry_modifier": 0.05,
-        "error_modifier": -0.02,
-        "wild_pitch_modifier": -0.03,
-        "weight": 0.25,
-        "commentary": "Perfect baseball weather with just a light breeze.",
-    },
-    {
-        "label": "Humid Haze",
-        "condition": "muggy",
-        "precipitation": "none",
-        "temp_range": (72, 82),
-        "wind_range": (2.0, 8.0),
-        "carry_modifier": 0.02,
-        "error_modifier": 0.0,
-        "wild_pitch_modifier": 0.01,
-        "weight": 0.2,
-        "commentary": "Heavy air could make the ball feel a little heavier off the bat.",
-    },
-    {
-        "label": "Gusty Crosswinds",
-        "condition": "windy",
-        "precipitation": "none",
-        "temp_range": (60, 75),
-        "wind_range": (10.0, 18.0),
-        "carry_modifier": -0.03,
-        "error_modifier": 0.03,
-        "wild_pitch_modifier": 0.04,
-        "weight": 0.18,
-        "commentary": "Crosswinds could wreak havoc on lofted balls and command alike.",
-    },
-    {
-        "label": "Light Drizzle",
-        "condition": "rain",
-        "precipitation": "drizzle",
-        "temp_range": (55, 68),
-        "wind_range": (4.0, 12.0),
-        "carry_modifier": -0.04,
-        "error_modifier": 0.06,
-        "wild_pitch_modifier": 0.07,
-        "weight": 0.17,
-        "commentary": "Slick conditions may test everyone's grip.",
-    },
-    {
-        "label": "Steady Rain",
-        "condition": "rain",
-        "precipitation": "steady",
-        "temp_range": (52, 65),
-        "wind_range": (6.0, 15.0),
-        "carry_modifier": -0.08,
-        "error_modifier": 0.12,
-        "wild_pitch_modifier": 0.12,
-        "weight": 0.12,
-        "commentary": "Field crews are watching puddles; expect defensive miscues.",
-    },
-    {
-        "label": "Hot & Thin Air",
-        "condition": "heat",
-        "precipitation": "none",
-        "temp_range": (85, 96),
-        "wind_range": (3.0, 10.0),
-        "carry_modifier": 0.09,
-        "error_modifier": 0.02,
-        "wild_pitch_modifier": 0.03,
-        "weight": 0.08,
-        "commentary": "Ball should really fly today but stamina will be a concern.",
-    },
-]
+from match_engine.states import EventType
+from world.rivals import get_ledger
+from world_sim.weather import WeatherProfile, generate_weather_profile
 
 
 @dataclass
@@ -123,6 +27,9 @@ class UmpireProfile:
     temperament: float  # 0 (calm) -> 1 (fiery)
     description: str | None = None
     weight: float = 1.0
+    strictness: float = 0.5  # 0 -> wide zone, 1 -> very tight
+    consistency: float = 0.7  # 0 -> chaotic, 1 -> repeatable
+    framing_factor: float = 0.35  # Higher -> catcher receiving matters more
 
 
 UMPIRE_PRESETS = [
@@ -133,6 +40,9 @@ UMPIRE_PRESETS = [
         temperament=0.45,
         description="Tight zone that rewards patient hitters.",
         weight=1.1,
+        strictness=0.75,
+        consistency=0.8,
+        framing_factor=0.25,
     ),
     UmpireProfile(
         name="Daisuke Mori",
@@ -141,6 +51,9 @@ UMPIRE_PRESETS = [
         temperament=0.65,
         description="Generous corners, especially for the home ace.",
         weight=1.0,
+        strictness=0.35,
+        consistency=0.55,
+        framing_factor=0.45,
     ),
     UmpireProfile(
         name="Haruto Sato",
@@ -149,6 +62,9 @@ UMPIRE_PRESETS = [
         temperament=0.3,
         description="Balanced caller who rarely loses his cool.",
         weight=0.9,
+        strictness=0.55,
+        consistency=0.9,
+        framing_factor=0.3,
     ),
     UmpireProfile(
         name="Mika Fujimori",
@@ -157,6 +73,9 @@ UMPIRE_PRESETS = [
         temperament=0.8,
         description="Lets the home crowd sway borderline balls into base runners.",
         weight=0.8,
+        strictness=0.45,
+        consistency=0.4,
+        framing_factor=0.5,
     ),
     UmpireProfile(
         name="Koji Nakamura",
@@ -165,6 +84,9 @@ UMPIRE_PRESETS = [
         temperament=0.55,
         description="Old-school strike zone with a subtle lean toward home pitchers.",
         weight=1.0,
+        strictness=0.65,
+        consistency=0.6,
+        framing_factor=0.3,
     ),
 ]
 
@@ -184,6 +106,8 @@ class MatchState:
         *,
         home_bench: Optional[Iterable[Player]] = None,
         away_bench: Optional[Iterable[Player]] = None,
+        event_bus: EventBus | None = None,
+        clutch_pitch_payload: Optional[Dict[str, Any]] = None,
     ):
         # Teams (Now Schools)
         self.home_team = home_team
@@ -238,6 +162,8 @@ class MatchState:
         self.rival_name = None
         self.rivalry_score = None
         self.rivalry_delta = 0.0
+        self.rival_match_context = None
+        self.rival_postgame: dict | None = None
         self.commentary_memory = set()
         self.pitcher_stress = {}
         self.catcher_settle_log = {}
@@ -247,6 +173,8 @@ class MatchState:
         self.confidence_story = {}
         self.pitcher_presence = {}
         self.pitch_sequence_memory = {}
+        self.battery_trust_cache: dict[tuple[int, int], int] = {}
+        self.battery_sync: dict[tuple[int, int], float] = {}
         self.times_through_order = {}
         self.batter_tell_tracker = {}
         self.argument_cooldowns = {}
@@ -256,8 +184,9 @@ class MatchState:
         self.pinch_history = []
         self.pitching_changes = []
         self.last_change_reason = None
+        self.last_clutch_pitch_effect: Optional[Dict[str, Any]] = None
         self.player_milestones: dict[int, list[dict[str, object]]] = {}
-        self.weather: WeatherState | None = None
+        self.weather: WeatherProfile | None = None
         self.umpire: UmpireProfile | None = None
         self.umpire_mood: float = 0.0
         self.umpire_call_tilt: dict[int | None, dict[str, int]] = {}
@@ -269,6 +198,7 @@ class MatchState:
             "offense": {"favored": 0, "squeezed": 0},
             "defense": {"favored": 0, "squeezed": 0},
         }
+        self.umpire_recent_calls: list[dict[str, object]] = []
         self.team_rosters = {
             getattr(self.home_team, "id", None): self.home_roster,
             getattr(self.away_team, "id", None): self.away_roster,
@@ -282,6 +212,14 @@ class MatchState:
             getattr(self.away_team, "id", None): [],
         }
         self.player_lookup = {}
+        self.event_bus: EventBus = event_bus or EventBus()
+        self.clutch_pitch_payload = clutch_pitch_payload
+        # Lazy import to break circular dependency with game.catcher_ai
+        def _lazy_catcher_memory():
+            from game.catcher_ai import CatcherMemory
+            return CatcherMemory()
+        self.catcher_memory = _lazy_catcher_memory()
+        self.clutch_pitch_effects: Dict[int, Dict[str, Any]] = {}
         for player in self.home_roster + self.away_roster:
             if player:
                 self.player_lookup[player.id] = player
@@ -301,6 +239,7 @@ class MatchState:
         self.momentum_system = MomentumSystem(
             getattr(self.home_team, "id", None),
             getattr(self.away_team, "id", None),
+            bus=self.event_bus,
         )
         self.presence_system = PresenceSystem()
         self.pressure_index: float = 0.0
@@ -333,47 +272,6 @@ class MatchState:
         return penalty if role.lower() in {"pitcher", "batter"} else 0.0
 
     def log_aura_event(self, payload: dict[str, object]) -> None:
-
-
-    def _build_presence_profiles(state: MatchState) -> List[PresenceProfile]:
-        profiles: List[PresenceProfile] = []
-
-        def _profile_for_pitcher(pitcher, team_id: Optional[int]):
-            if not pitcher or not getattr(pitcher, "id", None):
-                return None
-            return PresenceProfile(
-                player_id=pitcher.id,
-                team_id=team_id,
-                role="ACE",
-                trust_baseline=getattr(pitcher, "trust_baseline", 50) or 50,
-            )
-
-        def _profile_for_cleanup(lineup, team_id: Optional[int]):
-            if len(lineup) < 4:
-                return None
-            cleanup = lineup[3]
-            if not cleanup or not getattr(cleanup, "id", None):
-                return None
-            return PresenceProfile(
-                player_id=cleanup.id,
-                team_id=team_id,
-                role="CLEANUP",
-                trust_baseline=getattr(cleanup, "trust_baseline", 50) or 50,
-            )
-
-        home_id = getattr(state.home_team, "id", None)
-        away_id = getattr(state.away_team, "id", None)
-
-        for profile in (
-            _profile_for_pitcher(state.home_pitcher, home_id),
-            _profile_for_pitcher(state.away_pitcher, away_id),
-            _profile_for_cleanup(state.home_lineup, home_id),
-            _profile_for_cleanup(state.away_lineup, away_id),
-        ):
-            if profile:
-                profiles.append(profile)
-
-        return profiles
         self.aura_events.append(payload)
 
     def get_stats(self, p_id):
@@ -412,6 +310,29 @@ class MatchState:
         self.pitch_counts[pitcher_id] = self.pitch_counts.get(pitcher_id, 0) + 1
         return self.pitch_counts[pitcher_id]
 
+    def queue_clutch_pitch_payload(self, payload: Dict[str, Any]) -> None:
+        team_id = payload.get("team_id")
+        if team_id is None:
+            return
+        self.clutch_pitch_effects[team_id] = dict(payload)
+
+    def consume_clutch_pitch_effect(self, pitcher_id: Optional[int]) -> Optional[Dict[str, Any]]:
+        if not self.clutch_pitch_effects:
+            return None
+        defense_team_id = getattr(self.home_team, "id", None) if (self.top_bottom or "Top").lower().startswith("t") else getattr(self.away_team, "id", None)
+        if defense_team_id is None:
+            return None
+        team_id = defense_team_id
+        if pitcher_id is not None:
+            team_id = self.player_team_map.get(pitcher_id, team_id)
+            if team_id is None:
+                player = self.player_lookup.get(pitcher_id)
+                if player:
+                    team_id = getattr(player, "team_id", None) or getattr(player, "school_id", None)
+        if team_id is None or team_id != defense_team_id:
+            return None
+        return self.clutch_pitch_effects.pop(team_id, None)
+
     def reset_count(self):
         self.strikes = 0
         self.balls = 0
@@ -421,6 +342,48 @@ class MatchState:
         
     def log(self, message):
         self.logs.append(message)
+
+
+def _build_presence_profiles(state: MatchState) -> List[PresenceProfile]:
+    profiles: List[PresenceProfile] = []
+
+    def _profile_for_pitcher(pitcher, team_id: Optional[int]):
+        if not pitcher or not getattr(pitcher, "id", None):
+            return None
+        return PresenceProfile(
+            player_id=pitcher.id,
+            team_id=team_id,
+            role="ACE",
+            trust_baseline=getattr(pitcher, "trust_baseline", 50) or 50,
+        )
+
+    def _profile_for_cleanup(lineup, team_id: Optional[int]):
+        if len(lineup) < 4:
+            return None
+        cleanup = lineup[3]
+        if not cleanup or not getattr(cleanup, "id", None):
+            return None
+        return PresenceProfile(
+            player_id=cleanup.id,
+            team_id=team_id,
+            role="CLEANUP",
+            trust_baseline=getattr(cleanup, "trust_baseline", 50) or 50,
+        )
+
+    home_id = getattr(state.home_team, "id", None)
+    away_id = getattr(state.away_team, "id", None)
+
+    for profile in (
+        _profile_for_pitcher(state.home_pitcher, home_id),
+        _profile_for_pitcher(state.away_pitcher, away_id),
+        _profile_for_cleanup(state.home_lineup, home_id),
+        _profile_for_cleanup(state.away_lineup, away_id),
+    ):
+        if profile:
+            profiles.append(profile)
+
+    return profiles
+
 
 def _apply_rivalry_context(db_session: Session, home_lineup, away_lineup):
     state = db_session.query(GameState).first()
@@ -447,6 +410,7 @@ def _apply_rivalry_context(db_session: Session, home_lineup, away_lineup):
         "hero_school_id": hero.school_id,
         "hero_name": _display_name(hero),
         "rival_id": rival.id,
+        "rival_school_id": rival.school_id,
         "rival_name": _display_name(rival),
         "rivalry_score": rel.rivalry_score or 45,
         "delta": delta,
@@ -467,38 +431,6 @@ def _tag_lineup_slots(lineup: Iterable[Player]) -> None:
         setattr(player, "_lineup_slot", idx)
 
 
-def _weighted_pick(options: Iterable[dict[str, Any]]):
-    rng = get_rng()
-    total = sum(opt.get("weight", 1.0) for opt in options)
-    roll = rng.random() * total
-    running = 0.0
-    for option in options:
-        running += option.get("weight", 1.0)
-        if roll <= running:
-            return option
-    return options[-1]
-
-
-def _roll_weather_state() -> WeatherState:
-    preset = _weighted_pick(WEATHER_PRESETS)
-    rng = get_rng()
-    wind = rng.uniform(*preset["wind_range"])
-    temp = rng.randint(*preset["temp_range"])
-    direction = rng.choice(WIND_DIRECTIONS)
-    return WeatherState(
-        label=preset["label"],
-        condition=preset["condition"],
-        precipitation=preset["precipitation"],
-        temperature_f=temp,
-        wind_speed_mph=round(wind, 1),
-        wind_direction=direction,
-        carry_modifier=preset["carry_modifier"],
-        error_modifier=preset["error_modifier"],
-        wild_pitch_modifier=preset["wild_pitch_modifier"],
-        commentary_hint=preset.get("commentary"),
-    )
-
-
 def _roll_umpire_profile() -> UmpireProfile | None:
     if not UMPIRE_PRESETS:
         return None
@@ -512,7 +444,12 @@ def _roll_umpire_profile() -> UmpireProfile | None:
     return UMPIRE_PRESETS[-1]
 
 
-def prepare_match(home_id, away_id, db_session: Session):
+def prepare_match(
+    home_id,
+    away_id,
+    db_session: Session,
+    clutch_pitch: Optional[Dict[str, Any]] = None,
+):
     """
     Loads teams, builds lineups, selects pitchers.
     Returns a ready-to-use MatchState object.
@@ -554,6 +491,8 @@ def prepare_match(home_id, away_id, db_session: Session):
     
     rivalry_info = _apply_rivalry_context(db_session, home_lineup, away_lineup)
 
+    event_bus = EventBus()
+
     match_state = MatchState(
         home_team,
         away_team,
@@ -564,13 +503,15 @@ def prepare_match(home_id, away_id, db_session: Session):
         db_session,
         home_bench=home_bench,
         away_bench=away_bench,
+        event_bus=event_bus,
+        clutch_pitch_payload=clutch_pitch,
     )
     _attach_coach_modifiers(match_state)
     match_state.configure_presence(_build_presence_profiles(match_state))
     match_state.update_pressure_index()
     player_ids = [p.id for p in match_state.home_roster + match_state.away_roster if p and getattr(p, 'id', None)]
     match_state.set_player_milestones(fetch_player_milestone_tags(db_session, player_ids))
-    match_state.weather = _roll_weather_state()
+    match_state.weather = generate_weather_profile()
     if match_state.weather:
         description = match_state.weather.describe()
         match_state.log(f"Weather report: {description}")
@@ -588,4 +529,72 @@ def prepare_match(home_id, away_id, db_session: Session):
         match_state.rival_name = rivalry_info.get("rival_name")
         match_state.rivalry_score = rivalry_info.get("rivalry_score")
         match_state.rivalry_delta = rivalry_info.get("delta", 0.0)
+        match_state.rival_match_context = get_ledger().create_match_context(
+            rivalry_info["hero_id"],
+            rivalry_info["rival_id"],
+            hero_team_id=rivalry_info.get("hero_school_id"),
+            rival_team_id=rivalry_info.get("rival_school_id"),
+        )
+    else:
+        match_state.rival_match_context = None
+    _apply_clutch_pitch_payload(match_state)
     return match_state
+
+
+def _apply_clutch_pitch_payload(state: MatchState) -> None:
+    payload = getattr(state, "clutch_pitch_payload", None)
+    if not payload:
+        return
+
+    bus = getattr(state, "event_bus", None)
+    context = dict(payload.get("context", {}) or {})
+    start_event = {
+        "team_id": payload.get("team_id"),
+        "team_name": payload.get("team_name"),
+        "team_side": payload.get("team_side"),
+        "context": context,
+    }
+    if bus:
+        bus.publish(EventType.PITCH_MINIGAME_TRIGGER.value, start_event)
+
+    quality = float(payload.get("quality", 0.5) or 0.0)
+    quality = max(0.0, min(1.0, quality))
+    team_id = payload.get("team_id")
+    momentum_delta = int(round((quality - 0.5) * 10))
+    if momentum_delta and getattr(state, "momentum_system", None):
+        state.momentum_system.record_event(team_id, "pitch_minigame", delta=momentum_delta)
+
+    pitcher = None
+    if team_id == getattr(state.home_team, "id", None):
+        pitcher = getattr(state, "home_pitcher", None)
+    elif team_id == getattr(state.away_team, "id", None):
+        pitcher = getattr(state, "away_pitcher", None)
+
+    applied_confidence = 0
+    confidence_delta = int(round((quality - 0.5) * 12))
+    if confidence_delta and pitcher:
+        pitcher_id = getattr(pitcher, "id", None)
+        if pitcher_id:
+            adjust_confidence(state, pitcher_id, confidence_delta, reason="pitch_minigame", contagious=False)
+            applied_confidence = confidence_delta
+
+    log_message = (
+        f"Pitch minigame quality {quality:.2f} yielded momentum {momentum_delta:+} and confidence {applied_confidence:+}."
+    )
+    logs = getattr(state, "logs", None)
+    if isinstance(logs, list):
+        logs.append(log_message)
+
+    resolve_event = dict(payload)
+    resolve_event.update(
+        {
+            "quality": quality,
+            "momentum_delta": momentum_delta,
+            "confidence_delta": applied_confidence,
+            "pitcher_id": getattr(pitcher, "id", None) if pitcher else None,
+        }
+    )
+    if bus:
+        bus.publish(EventType.PITCH_MINIGAME_RESOLVE.value, resolve_event)
+
+    state.queue_clutch_pitch_payload(resolve_event)

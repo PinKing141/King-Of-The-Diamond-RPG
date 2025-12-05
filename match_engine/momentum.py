@@ -2,14 +2,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-FLOW_THRESHOLD = 5
-FLOW_BOOST_PERCENT = 0.10
+from core.event_bus import EventBus
+
+from .states import EventType
+
+METER_MIN = -20
+METER_MAX = 20
+ZONE_THRESHOLD = 10
+ZONE_BONUS = 0.05
+BASE_POINT_SCALAR = 0.01
+STRIKEOUT_POINTS = 2
+DOUBLE_PLAY_POINTS = 4
+HIT_POINT_TABLE = {"1B": 1, "2B": 2, "3B": 3, "HR": 5}
 
 MOMENTUM_EVENT_WEIGHTS: Dict[str, int] = {
-    "strikeout": 1,
-    "double_play": 3,
+    "strikeout": STRIKEOUT_POINTS,
+    "double_play": DOUBLE_PLAY_POINTS,
     "error": -2,
 }
 
@@ -62,40 +72,152 @@ class PresenceProfile:
 
 
 class MomentumSystem:
-    """Per-team tracker that enables flow-state boosts."""
+    """Tug-of-war momentum meter that reacts to EventBus traffic."""
 
-    def __init__(self, *team_ids: Optional[int]):
-        self.values: Dict[Optional[int], int] = {}
-        for team_id in team_ids:
-            if team_id is not None:
-                self.values[team_id] = 0
+    def __init__(
+        self,
+        home_team_id: Optional[int],
+        away_team_id: Optional[int],
+        *,
+        bus: Optional[EventBus] = None,
+    ) -> None:
+        self.home_team_id = home_team_id
+        self.away_team_id = away_team_id
+        self.meter: float = 0.0
+        self.bus: Optional[EventBus] = None
+        self._zone_owner: Optional[str] = None  # "home" | "away"
+        self._subscriptions: List[Tuple[str, Callable[[Dict[str, Any]], None]]] = []
+        if bus:
+            self.attach_bus(bus)
 
-    def _ensure_team(self, team_id: Optional[int]) -> None:
-        if team_id is None:
+    # -- Event wiring -------------------------------------------------
+    def attach_bus(self, bus: Optional[EventBus]) -> None:
+        if bus is self.bus:
             return
-        self.values.setdefault(team_id, 0)
+        self.detach_bus()
+        if bus is None:
+            self.bus = None
+            return
+        self.bus = bus
+        handlers = [
+            (EventType.STRIKEOUT.value, self._handle_strikeout),
+            (EventType.PLAY_RESULT.value, self._handle_play_result),
+        ]
+        for event_name, handler in handlers:
+            bus.subscribe(event_name, handler)
+        self._subscriptions = handlers
 
+    def detach_bus(self) -> None:
+        if not self.bus:
+            self._subscriptions = []
+            return
+        for event_name, handler in self._subscriptions:
+            self.bus.unsubscribe(event_name, handler)
+        self._subscriptions = []
+        self.bus = None
+
+    # -- Public API used by the rest of the engine -------------------
     def record_event(self, team_id: Optional[int], event_key: str, delta: Optional[int] = None) -> int:
-        self._ensure_team(team_id)
-        if team_id is None:
-            return 0
+        side = self._side_for_team(team_id)
+        if side is None:
+            return int(self.meter)
         change = delta if delta is not None else MOMENTUM_EVENT_WEIGHTS.get(event_key, 0)
         if change == 0:
-            return self.values.get(team_id, 0)
-        value = self.values.get(team_id, 0) + change
-        self.values[team_id] = max(-10, min(15, value))
-        return self.values[team_id]
-
-    def in_flow(self, team_id: Optional[int]) -> bool:
-        if team_id is None:
-            return False
-        return self.values.get(team_id, 0) >= FLOW_THRESHOLD
+            return int(self.meter)
+        self._apply_delta(side, change)
+        return int(self.meter)
 
     def get_multiplier(self, team_id: Optional[int]) -> float:
-        return 1.0 + (FLOW_BOOST_PERCENT if self.in_flow(team_id) else 0.0)
+        side = self._side_for_team(team_id)
+        if side is None:
+            return 1.0
+        return self.get_momentum_modifier(side)
 
-    def serialize(self) -> Dict[int, int]:
-        return {k: v for k, v in self.values.items() if k is not None}
+    def get_momentum_modifier(self, team_side: Optional[str]) -> float:
+        if team_side not in {"home", "away"}:
+            return 1.0
+        value = self.meter if team_side == "home" else -self.meter
+        if value <= 0:
+            return 1.0
+        modifier = 1.0 + (value * BASE_POINT_SCALAR)
+        if self._zone_owner == team_side:
+            modifier += ZONE_BONUS
+        return round(modifier, 3)
+
+    def serialize(self) -> Dict[str, float]:
+        return {
+            "meter": self.meter,
+            "zone": self._zone_owner or "neutral",
+        }
+
+    # -- Event handlers -----------------------------------------------
+    def _handle_strikeout(self, payload: Dict[str, Any]) -> None:
+        half = payload.get("half")
+        side = payload.get("fielding_team") or self._fielding_side_from_half(half)
+        if side:
+            self._apply_delta(side, STRIKEOUT_POINTS)
+
+    def _handle_play_result(self, payload: Dict[str, Any]) -> None:
+        batting = payload.get("batting_team") or self._batting_side_from_half(payload.get("half"))
+        fielding = payload.get("fielding_team") or self._fielding_side_from_half(payload.get("half"))
+        hit_type = (payload.get("hit_type") or "").upper()
+        double_play = bool(payload.get("double_play"))
+        error_flag = bool(payload.get("error_on_play"))
+
+        if double_play and fielding:
+            self._apply_delta(fielding, DOUBLE_PLAY_POINTS)
+        if hit_type in HIT_POINT_TABLE and batting:
+            self._apply_delta(batting, HIT_POINT_TABLE[hit_type])
+        if error_flag and fielding:
+            self._apply_delta(fielding, MOMENTUM_EVENT_WEIGHTS.get("error", -2))
+
+    # -- Internal helpers ---------------------------------------------
+    def _apply_delta(self, team_side: str, amount: int | float) -> None:
+        if not amount or team_side not in {"home", "away"}:
+            return
+        direction = 1 if team_side == "home" else -1
+        previous_meter = self.meter
+        self.meter = max(METER_MIN, min(METER_MAX, self.meter + (direction * amount)))
+        self._evaluate_zone(previous_meter)
+
+    def _evaluate_zone(self, previous_meter: float) -> None:
+        zone: Optional[str]
+        if self.meter > ZONE_THRESHOLD:
+            zone = "home"
+        elif self.meter < -ZONE_THRESHOLD:
+            zone = "away"
+        else:
+            zone = None
+        if zone == self._zone_owner:
+            return
+        self._zone_owner = zone
+        if not self.bus:
+            return
+        payload = {
+            "team_side": zone,
+            "meter": self.meter,
+            "modifier": self.get_momentum_modifier(zone) if zone else 1.0,
+        }
+        self.bus.publish(EventType.MOMENTUM_SHIFT.value, payload)
+
+    def _side_for_team(self, team_id: Optional[int]) -> Optional[str]:
+        if team_id and team_id == self.home_team_id:
+            return "home"
+        if team_id and team_id == self.away_team_id:
+            return "away"
+        return None
+
+    @staticmethod
+    def _batting_side_from_half(half: Optional[str]) -> str:
+        if (half or "Top").lower().startswith("t"):
+            return "away"
+        return "home"
+
+    @staticmethod
+    def _fielding_side_from_half(half: Optional[str]) -> str:
+        if (half or "Top").lower().startswith("t"):
+            return "home"
+        return "away"
 
 
 class PresenceSystem:
@@ -169,8 +291,6 @@ class PresenceSystem:
 
 
 __all__ = [
-    "FLOW_THRESHOLD",
-    "FLOW_BOOST_PERCENT",
     "MOMENTUM_EVENT_WEIGHTS",
     "MomentumSystem",
     "PresenceProfile",

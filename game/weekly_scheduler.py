@@ -1,9 +1,13 @@
+import json
 import time
 import sys
+import random
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from database.setup_db import Player
+from database.setup_db import Player, GameState
+from sqlalchemy.orm import object_session
 from game.constants import (
     ACTION_COSTS,
     ACTION_METADATA,
@@ -33,6 +37,48 @@ from game.weekly_scheduler_core import (
     DAYS_OF_WEEK,
     SLOTS,
     execute_schedule_core,
+)
+
+
+@dataclass(frozen=True)
+class CoachOrder:
+    key: str
+    description: str
+    requirement: Dict[str, object]
+    reward_trust: int
+    reward_ability_points: int
+
+
+COACH_ORDER_DEFS: Tuple[CoachOrder, ...] = (
+    CoachOrder(
+        key="run_50km",
+        description="Run 50km this week (plan 3 Speed drills).",
+        requirement={"type": "action_count", "actions": ["train_speed"], "count": 3},
+        reward_trust=4,
+        reward_ability_points=1,
+    ),
+    CoachOrder(
+        key="practice_pickoffs",
+        description="Practice pick-offs twice this week.",
+        requirement={
+            "type": "action_count",
+            "actions": ["train_control", "team_practice"],
+            "count": 2,
+        },
+        reward_trust=3,
+        reward_ability_points=1,
+    ),
+    CoachOrder(
+        key="bullpen_command",
+        description="Coach wants two high-intensity team reps.",
+        requirement={
+            "type": "action_count",
+            "actions": ["team_practice", "practice_match", "b_team_match"],
+            "count": 2,
+        },
+        reward_trust=5,
+        reward_ability_points=2,
+    ),
 )
 
 # --- CONSTANT HELPERS ---
@@ -81,6 +127,152 @@ def _get_active_player(context: GameContext) -> Optional[Player]:
         return None
     return context.session.get(Player, context.player_id)
 
+
+def _select_coach_order(player: Optional[Player], current_week: int) -> Optional[CoachOrder]:
+    if not player or not COACH_ORDER_DEFS:
+        return None
+    seed = (getattr(player, 'id', 0) or 0) * 97 + current_week * 31
+    rng = random.Random(seed)
+    return rng.choice(COACH_ORDER_DEFS)
+
+
+def _describe_order_requirement(order: CoachOrder) -> str:
+    requirement = order.requirement or {}
+    if requirement.get('type') == 'action_count':
+        actions = requirement.get('actions') or []
+        action_labels = ", ".join(action.replace('_', ' ').title() for action in actions)
+        count = requirement.get('count', 0)
+        return f"{count}x [{action_labels}]"
+    return "Unknown"
+
+
+def _evaluate_order_progress(order: Optional[CoachOrder], slot_results: List['SlotResult']) -> Optional[Dict[str, int]]:
+    if not order:
+        return None
+    requirement = order.requirement or {}
+    if requirement.get('type') == 'action_count':
+        actions = set(requirement.get('actions') or [])
+        progress = sum(1 for result in slot_results if result.action in actions)
+        target = int(requirement.get('count', 0))
+        return {
+            "progress": progress,
+            "target": target,
+            "completed": int(progress >= target),
+        }
+    return {"progress": 0, "target": 0, "completed": 0}
+
+
+def _calculate_schedule_order_progress(
+    order: Optional[CoachOrder], schedule_state: List[List[Optional[str]]]
+) -> Optional[Dict[str, int]]:
+    if not order:
+        return None
+    requirement = order.requirement or {}
+    if requirement.get('type') != 'action_count':
+        return None
+    actions = set(requirement.get('actions') or [])
+    target = int(requirement.get('count', 0))
+    progress = 0
+    for day_slots in schedule_state:
+        for entry in day_slots:
+            if entry in actions:
+                progress += 1
+    return {
+        "progress": progress,
+        "target": target,
+        "remaining": max(0, target - progress),
+        "completed": int(progress >= target),
+    }
+
+
+def _team_load_snapshot(player: Optional[Player]) -> Optional[Tuple[float, float]]:
+    if not player:
+        return None
+    school_id = getattr(player, "school_id", None)
+    if not school_id:
+        return None
+    roster: Optional[List[Player]] = None
+    session = object_session(player)
+    if session is not None:
+        try:
+            roster = session.query(Player).filter(Player.school_id == school_id).all()
+        except Exception:
+            roster = None
+    if not roster:
+        school = getattr(player, "school", None)
+        roster = list(getattr(school, "players", []) or []) if school else None
+    if not roster:
+        return None
+    total_fatigue = 0.0
+    total_stamina = 0.0
+    count = 0
+    for member in roster:
+        total_fatigue += float(getattr(member, "fatigue", 0) or 0)
+        total_stamina += float(getattr(member, "stamina", 0) or 0)
+        count += 1
+    if count == 0:
+        return None
+    return (total_fatigue / count, total_stamina / count)
+
+
+def _record_coach_order_result(
+    session,
+    *,
+    current_week: int,
+    player: Optional[Player],
+    coach_order: Optional[CoachOrder],
+    order_progress: Optional[Dict[str, int]],
+    reward_delta: Optional[Dict[str, int]] = None,
+) -> None:
+    """Persist the latest Coach's Orders outcome onto GameState."""
+
+    if session is None or coach_order is None or order_progress is None:
+        return
+
+    try:
+        gamestate_row = session.query(GameState).first()
+    except Exception:
+        return
+
+    if not gamestate_row:
+        return
+
+    progress_value = int(order_progress.get("progress", 0) or 0)
+    target_value = int(order_progress.get("target", 0) or 0)
+    completion_flag = bool(order_progress.get("completed")) if target_value else progress_value >= target_value
+    reward_delta = reward_delta or {}
+
+    payload = {
+        "week": int(current_week or 0),
+        "player": {
+            "id": getattr(player, "id", None),
+            "name": getattr(player, "name", None),
+            "position": getattr(player, "position", None),
+            "school_id": getattr(player, "school_id", None),
+        },
+        "order": {
+            "key": coach_order.key,
+            "description": coach_order.description,
+            "requirement": coach_order.requirement,
+            "reward_trust": coach_order.reward_trust,
+            "reward_ability_points": coach_order.reward_ability_points,
+        },
+        "progress": {
+            "value": progress_value,
+            "target": target_value,
+            "remaining": max(0, target_value - progress_value),
+        },
+        "completed": completion_flag,
+        "reward_delta": {
+            "trust": int(reward_delta.get("trust", 0) or 0),
+            "ability_points": int(reward_delta.get("ability_points", 0) or 0),
+        },
+        "timestamp": int(time.time()),
+    }
+
+    gamestate_row.last_coach_order_result = json.dumps(payload)
+    session.add(gamestate_row)
+
 # --- TRUST + PRESENTATION HELPERS ---
 
 MANDATORY_TRUST_PENALTIES = {
@@ -101,7 +293,7 @@ def _format_action_label(action: Optional[str]) -> str:
     return action.replace('_', ' ').title()
 
 
-def _print_weekly_brief(player: Player, current_week: int) -> None:
+def _print_weekly_brief(player: Player, current_week: int, coach_order: Optional[CoachOrder] = None) -> None:
     school = getattr(player, 'school', None)
     coach = getattr(school, 'coach', None) if school else None
     squad = _infer_squad_status(player)
@@ -119,8 +311,17 @@ def _print_weekly_brief(player: Player, current_week: int) -> None:
         print(f"Coach: {coach.name} | Expectations: {'First-String' if squad == SQUAD_FIRST_STRING else 'Second-String'}")
     print(f"Player: {player.name or 'You'} | Position: {player.position} | Year {player.year}")
     print(f"Fatigue: {fatigue}/100 | Morale: {morale}")
-    print(f"Coach Trust Baseline: {trust}")
+    ability_points = getattr(player, 'ability_points', 0) or 0
+    print(f"Coach Trust Baseline: {trust} | Ability Points: {ability_points}")
     print(f"Academic Standing: {academic_score} (Need {target_score}+ to stay eligible)")
+    if coach_order:
+        req_text = _describe_order_requirement(coach_order)
+        print(
+            f"Coach's Orders: {coach_order.description}"
+        )
+        print(
+            f"  Needs: {req_text} | Reward: +{coach_order.reward_trust} Trust, +{coach_order.reward_ability_points} Ability"
+        )
 
 
 def _process_skipped_penalties(
@@ -170,6 +371,9 @@ def render_planning_ui(
     current_slot_idx,
     current_fatigue,
     mandatory_schedule: Dict[Tuple[int, int], str],
+    coach_order: Optional[CoachOrder] = None,
+    order_progress: Optional[Dict[str, int]] = None,
+    team_load_snapshot: Optional[Tuple[float, float]] = None,
 ):
     """Draws the weekly calendar grid with action metadata + cursor focus."""
 
@@ -187,6 +391,29 @@ def render_planning_ui(
 
     clear_screen()
     print(f"{Colour.HEADER}=== WEEKLY PLANNING ==={Colour.RESET}")
+
+    if team_load_snapshot:
+        avg_fatigue, avg_stamina = team_load_snapshot
+        rest_lock = avg_fatigue >= 65.0 and avg_stamina <= 55.0
+        caution = avg_fatigue >= 60.0 or avg_stamina <= 58.0
+        if rest_lock:
+            badge = f"{Colour.FAIL}[REST]{Colour.RESET}"
+            status = "Optional practice locked"
+        elif caution:
+            badge = f"{Colour.WARNING}[EDGE]{Colour.RESET}"
+            status = "Near lock threshold"
+        else:
+            badge = f"{Colour.GREEN}[READY]{Colour.RESET}"
+            status = "Team cleared for optional reps"
+        print(
+            f" Team Load {badge}  Fatigue {avg_fatigue:5.1f}% | Stamina {avg_stamina:5.1f}  — {status}"
+        )
+        if not rest_lock:
+            print(
+                f"  Cushion: {max(0.0, 65.0 - avg_fatigue):4.1f} fatigue pts / {max(0.0, avg_stamina - 55.0):4.1f} stamina pts"
+            )
+        else:
+            print("  Coaches will cancel optional workouts until the roster recovers.")
 
     header = "      " + " ".join([f"{d[:3]:^6}" for d in DAYS_OF_WEEK])
     print(header)
@@ -229,6 +456,23 @@ def render_planning_ui(
                 print(
                     f"{Colour.WARNING}Coach expects {fallback_action.replace('_', ' ').title()} here.{Colour.RESET}"
                 )
+    if coach_order:
+        req_text = _describe_order_requirement(coach_order)
+        print(
+            f"Coach's Orders: {Colour.BOLD}{coach_order.description}{Colour.RESET} ({req_text})"
+        )
+        print(
+            f" Reward: +{coach_order.reward_trust} Trust / +{coach_order.reward_ability_points} Ability Points"
+        )
+        if order_progress:
+            progress = order_progress.get("progress", 0)
+            target = order_progress.get("target", 0)
+            remaining = order_progress.get("remaining", max(0, target - progress))
+            status_colour = Colour.GREEN if progress >= target and target else Colour.CYAN
+            status_label = "Completed" if progress >= target and target else f"{remaining} to go"
+            print(
+                f" Progress: {status_colour}{progress}/{target}{Colour.RESET} ({status_label})"
+            )
 
 def get_slot_choice(current_action: Optional[str]) -> Optional[str]:
     """Prompts the user for an action selection, defaulting to the current value."""
@@ -274,7 +518,7 @@ def get_slot_choice(current_action: Optional[str]) -> Optional[str]:
 
     return None
  
-def plan_week_ui(start_fatigue: int, player: Optional[Player]):
+def plan_week_ui(start_fatigue: int, player: Optional[Player], coach_order: Optional[CoachOrder] = None):
     """Interactive weekly planner that accounts for squad status + trust."""
 
     start_fatigue = start_fatigue or 0
@@ -290,9 +534,20 @@ def plan_week_ui(start_fatigue: int, player: Optional[Player]):
     day_idx = 0
     slot_idx = 0
     current_fatigue = start_fatigue
+    team_snapshot = _team_load_snapshot(player)
 
     while day_idx < 7:
-        render_planning_ui(schedule_grid, day_idx, slot_idx, current_fatigue, mandatory_schedule)
+        progress_snapshot = _calculate_schedule_order_progress(coach_order, schedule_grid)
+        render_planning_ui(
+            schedule_grid,
+            day_idx,
+            slot_idx,
+            current_fatigue,
+            mandatory_schedule,
+            coach_order,
+            progress_snapshot,
+            team_snapshot,
+        )
 
         mandatory_action = mandatory_schedule.get((day_idx, slot_idx))
         current_action = schedule_grid[day_idx][slot_idx]
@@ -345,7 +600,17 @@ def plan_week_ui(start_fatigue: int, player: Optional[Player]):
             slot_idx = 0
             day_idx += 1
 
-    render_planning_ui(schedule_grid, 7, 0, current_fatigue, mandatory_schedule)
+    final_progress = _calculate_schedule_order_progress(coach_order, schedule_grid)
+    render_planning_ui(
+        schedule_grid,
+        7,
+        0,
+        current_fatigue,
+        mandatory_schedule,
+        coach_order,
+        final_progress,
+        team_snapshot,
+    )
     input(f"\n{Colour.GREEN}Schedule Complete. Press Enter to Execute.{Colour.RESET}")
 
     return schedule_grid, skipped_mandatory
@@ -358,7 +623,7 @@ def execute_schedule(context: GameContext, schedule_grid, current_week):
         execution = execute_schedule_core(context, schedule_grid, current_week)
     except ValueError as err:
         print(f"Execution aborted: {err}")
-        return
+        return None
 
     grouped = defaultdict(list)
     for result in execution.results:
@@ -379,6 +644,16 @@ def execute_schedule(context: GameContext, schedule_grid, current_week):
                     f"{k}+{round(v,2)}" for k, v in details["stat_changes"].items()
                 )
                 print(f"      Stats: {stat_fragment}")
+            xp_details = details.get("xp_gains") or {}
+            if xp_details:
+                xp_fragment = ", ".join(
+                    f"{k}+{round(v,2)}xp" for k, v in xp_details.items()
+                )
+                print(f"      XP: {xp_fragment}")
+            breakthrough = details.get("breakthrough")
+            if breakthrough:
+                stat_label = breakthrough['stat'].replace('_', ' ').title()
+                print(f"      🔥 Breakthrough in {stat_label}!")
 
             if slot_result.opponent_name:
                 matchup = slot_result.opponent_name
@@ -393,6 +668,8 @@ def execute_schedule(context: GameContext, schedule_grid, current_week):
                     )
             if slot_result.error:
                 print(f"      {Colour.WARNING}{slot_result.error}{Colour.RESET}")
+
+    return execution
 
 
 def start_week(context: GameContext, current_week: int) -> None:
@@ -421,7 +698,8 @@ def start_week(context: GameContext, current_week: int) -> None:
     trigger_random_event(context, current_week)
 
     player = _get_active_player(context)
-    _print_weekly_brief(player, current_week)
+    coach_order = _select_coach_order(player, current_week)
+    _print_weekly_brief(player, current_week, coach_order)
 
     if exam_summary:
         print(
@@ -438,11 +716,44 @@ def start_week(context: GameContext, current_week: int) -> None:
     input("\nPress Enter to open the planning board...")
 
     start_fatigue = player.fatigue or 0
-    schedule_grid, skipped_mandatory = plan_week_ui(start_fatigue, player)
+    schedule_grid, skipped_mandatory = plan_week_ui(start_fatigue, player, coach_order)
 
-    execute_schedule(context, schedule_grid, current_week)
+    execution = execute_schedule(context, schedule_grid, current_week)
+    if not execution:
+        return
 
     player = _get_active_player(context)
+    order_progress = _evaluate_order_progress(coach_order, execution.results)
+    reward_delta = {"trust": 0, "ability_points": 0}
+    if coach_order and order_progress:
+        completed = bool(order_progress.get("completed"))
+        progress = order_progress.get("progress", 0)
+        target = order_progress.get("target", 0)
+        if completed:
+            trust_gain = coach_order.reward_trust
+            ability_gain = coach_order.reward_ability_points
+            old_trust = player.trust_baseline or 50
+            player.trust_baseline = min(100, old_trust + trust_gain)
+            player.ability_points = (player.ability_points or 0) + ability_gain
+            session.add(player)
+            reward_delta = {"trust": trust_gain, "ability_points": ability_gain}
+            print(
+                f"\n{Colour.GREEN}Coach's Orders complete!{Colour.RESET} Trust +{trust_gain}, Ability Points +{ability_gain}."
+            )
+        else:
+            print(
+                f"\n{Colour.WARNING}Coach's Orders incomplete.{Colour.RESET} Progress {progress}/{target}."
+            )
+
+        _record_coach_order_result(
+            session,
+            current_week=current_week,
+            player=player,
+            coach_order=coach_order,
+            order_progress=order_progress,
+            reward_delta=reward_delta,
+        )
+
     penalty_payload = _process_skipped_penalties(context, player, skipped_mandatory)
     if penalty_payload:
         session.add(player)

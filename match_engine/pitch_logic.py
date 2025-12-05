@@ -1,15 +1,32 @@
 from types import SimpleNamespace
+from typing import Any, Dict, Optional
 
 from database.setup_db import PitchRepertoire, session_scope
 from match_engine.pitch_definitions import PITCH_TYPES, ARM_SLOT_MODIFIERS
 from game.rng import get_rng
 from game.skill_system import player_has_skill
+from battery_system.battery_trust import adjust_battery_sync, get_battery_sync
 
 rng = get_rng()
 
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _weather_effects(state):
+    weather = getattr(state, "weather", None)
+    return getattr(weather, "effects", None)
+
+
+def _weather_adjusted_pitch_count(state, pitcher_id: Optional[int]) -> int:
+    if not state or not pitcher_id:
+        return 0
+    base = getattr(state, "pitch_counts", {}).get(pitcher_id, 0)
+    effects = _weather_effects(state)
+    scalar = getattr(effects, "stamina_drain_scalar", 1.0) if effects else 1.0
+    scalar = max(0.75, min(1.5, scalar))
+    return int(round(base * scalar))
 
 
 def _get_pitcher_presence(state, pitcher_id):
@@ -275,6 +292,60 @@ def _record_umpire_bias(state, favored_role: str) -> None:
         tracker[field] += 1
 
 
+def _call_noise_window(umpire) -> float:
+    temperament = getattr(umpire, "temperament", 0.5) or 0.5
+    consistency = getattr(umpire, "consistency", 0.7) or 0.7
+    base = 0.25 + temperament * 0.2
+    spread = base * (1.6 - max(0.0, min(1.0, consistency)))
+    return max(0.05, spread)
+
+
+def _catcher_receiving_score(catcher) -> float:
+    if not catcher:
+        return 0.0
+    fielding = getattr(catcher, "fielding", 55) or 55
+    leadership = getattr(catcher, "catcher_leadership", 50) or 50
+    discipline = getattr(catcher, "discipline", 50) or 50
+    throwing = getattr(catcher, "throwing", 50) or 50
+    composite = (fielding * 0.45) + (leadership * 0.3) + (discipline * 0.15) + (throwing * 0.1)
+    normalized = (composite - 55.0) / 25.0
+    return max(-1.0, min(1.0, normalized))
+
+
+def _framing_adjustment(state, umpire, base_score: float, location: str) -> float:
+    factor = getattr(umpire, "framing_factor", 0.0) or 0.0
+    if not factor:
+        return 0.0
+    catcher = get_current_catcher(state)
+    score = _catcher_receiving_score(catcher)
+    if not score:
+        return 0.0
+    leverage = max(0.0, 1.4 - abs(base_score))
+    if leverage <= 0:
+        return 0.0
+    return leverage * score * factor
+
+
+def _log_umpire_call(state, call: str, default: str, flipped: bool, location: str) -> None:
+    ledger = getattr(state, "umpire_recent_calls", None)
+    if ledger is None:
+        ledger = []
+        state.umpire_recent_calls = ledger
+    entry = {
+        "inning": getattr(state, "inning", 0),
+        "half": getattr(state, "top_bottom", "Top"),
+        "call": call,
+        "default": default,
+        "flipped": flipped,
+        "location": location,
+        "balls": getattr(state, "balls", 0),
+        "strikes": getattr(state, "strikes", 0),
+    }
+    ledger.append(entry)
+    if len(ledger) > 12:
+        del ledger[0]
+
+
 class PitchResult:
     def __init__(self, pitch_name, location, outcome, description, velocity=0):
         self.pitch_name = pitch_name
@@ -290,6 +361,37 @@ class PitchResult:
         self.count_before: tuple[int, int] = (0, 0)
         self.full_count: bool = False
         self.guess_payload: dict | None = None
+        self.battery_call: dict | None = None
+        self.bunt_intent = None
+
+
+def _record_catcher_memory(state, batter_id: Optional[int], result: PitchResult) -> None:
+    memory = getattr(state, "catcher_memory", None)
+    if not memory or not hasattr(memory, "record"):
+        return
+    outcome_flag = _memory_outcome_tag(result)
+    if not outcome_flag:
+        return
+    try:
+        memory.record(batter_id, result.pitch_name, outcome=outcome_flag, location=result.location)
+    except Exception:
+        # Memory logging is non-critical; swallow unexpected errors.
+        return
+
+
+def _memory_outcome_tag(result: PitchResult) -> Optional[str]:
+    if result.outcome == "Strike":
+        if result.description == "Swinging Miss":
+            return "whiff"
+        return "strike"
+    if result.outcome == "Ball":
+        return "ball"
+    if result.outcome == "Foul":
+        return "chase" if result.location == "Chase" else "strike"
+    if result.outcome == "InPlay":
+        quality = getattr(result, "contact_quality", 0)
+        return "hard_contact" if quality >= 35 else "weak_contact"
+    return None
 
 
 def _maybe_flag_wild_pitch(result, state, pitcher):
@@ -297,8 +399,10 @@ def _maybe_flag_wild_pitch(result, state, pitcher):
     if result.outcome != "Ball" or not any(state.runners):
         return
     control = getattr(pitcher, 'control', 50) or 50
-    fatigue = max(0, state.pitch_counts.get(pitcher.id, 0) - 85)
+    fatigue = max(0, _weather_adjusted_pitch_count(state, getattr(pitcher, 'id', None)) - 85)
     weather_push = getattr(weather, 'wild_pitch_modifier', 0.0) if weather else 0.0
+    effects = _weather_effects(state)
+    slip_bonus = getattr(effects, 'ball_slip_chance', 0.0) if effects else 0.0
     base = max(0.0, (60 - control) * 0.0025)
     fatigue_bonus = fatigue * 0.001
     chance = base + fatigue_bonus
@@ -306,6 +410,8 @@ def _maybe_flag_wild_pitch(result, state, pitcher):
         chance += weather_push * 1.2
     else:
         chance += weather_push * 0.6
+    if slip_bonus:
+        chance += slip_bonus * 0.8
     chance = max(0.0, min(0.35, chance))
     if rng.random() < chance:
         result.description = "Wild Pitch"
@@ -401,6 +507,30 @@ def _adjust_umpire_mood(state, delta: float) -> None:
     state.umpire_mood = max(-0.6, min(0.6, mood))
 
 
+def _apply_clutch_bonus(control: float, movement: float, velocity: float, quality: float) -> tuple[float, float, float, str]:
+    swing = quality - 0.5
+    control += swing * 36.0
+    movement += swing * 12.0
+    velocity += swing * 4.0
+    special = ""
+    if quality >= 0.9:
+        control += 8.0
+        movement += 6.0
+        special = "clutch_paint"
+    elif quality <= 0.2:
+        control -= 10.0
+        movement -= 4.0
+        special = "clutch_miss"
+    return control, movement, velocity, special
+
+
+def _consume_clutch_pitch_effect(state, pitcher_id: Optional[int]) -> Optional[Dict[str, Any]]:
+    consumer = getattr(state, "consume_clutch_pitch_effect", None)
+    if not callable(consumer):
+        return None
+    return consumer(pitcher_id)
+
+
 def _call_with_umpire_bias(state, location: str) -> tuple[str, bool]:
     """Return the called outcome (Strike/Ball) and whether it defied the default zone."""
     default = "Strike" if location == "Zone" else "Ball"
@@ -410,15 +540,19 @@ def _call_with_umpire_bias(state, location: str) -> tuple[str, bool]:
     pitcher_is_home = getattr(state, "top_bottom", "Top") == "Top"
     zone_bias = getattr(umpire, "zone_bias", 0.0) or 0.0
     home_bias = getattr(umpire, "home_bias", 0.0) or 0.0
-    temperament = getattr(umpire, "temperament", 0.5) or 0.5
     mood = getattr(state, "umpire_mood", 0.0) or 0.0
 
-    base = 1.3 if location == "Zone" else -1.3
+    strictness = getattr(umpire, "strictness", 0.5) or 0.5
+    tightness = (strictness - 0.5) * 0.8
+    base = 1.15 + tightness
+    if location != "Zone":
+        base = -base
     base -= zone_bias
     if home_bias:
         base += home_bias if pitcher_is_home else -home_bias
     base += mood
-    swing = 0.25 + temperament * 0.2
+    base += _framing_adjustment(state, umpire, base, location)
+    swing = _call_noise_window(umpire)
     base += rng.uniform(-swing, swing)
     call = "Strike" if base >= 0 else "Ball"
     flipped = call != default
@@ -427,9 +561,11 @@ def _call_with_umpire_bias(state, location: str) -> tuple[str, bool]:
         favored_role = "defense" if call == "Strike" else "offense"
         _record_umpire_bias(state, favored_role)
         drift = -0.05 if call == "Strike" else 0.07
-        _adjust_umpire_mood(state, drift)
+        consistency = getattr(umpire, "consistency", 0.7) or 0.7
+        _adjust_umpire_mood(state, drift * (1.05 - (consistency * 0.3)))
     else:
         _adjust_umpire_mood(state, mood * -0.15)
+    _log_umpire_call(state, call, default, flipped, location)
     return call, flipped
 
 def get_arsenal(pitcher_id):
@@ -512,6 +648,29 @@ def resolve_pitch(
     shakes = getattr(negotiated, 'shakes', 0)
     trust_snapshot = getattr(negotiated, 'trust', 55) or 55
     forced_call = bool(getattr(negotiated, 'forced', False))
+    catcher_id = getattr(catcher, 'id', None)
+
+    battery_context = {}
+    previous_call = getattr(state, "last_battery_call", None)
+    if isinstance(previous_call, dict):
+        battery_context.update(previous_call)
+    battery_context.update(
+        {
+            "pitcher_id": pitcher_id,
+            "catcher_id": catcher_id,
+            "batter_id": batter_id,
+            "pitch_name": getattr(pitch, "pitch_name", getattr(pitch, "name", None)),
+            "location": location,
+            "intent": getattr(negotiated, "intent", "Normal"),
+            "shakes": shakes,
+            "trust": trust_snapshot,
+            "forced": forced_call,
+        }
+    )
+    battery_sync_value = battery_context.get("sync")
+    if battery_sync_value is None:
+        battery_sync_value = get_battery_sync(state, pitcher_id, catcher_id)
+        battery_context["sync"] = battery_sync_value
 
     # --- 2. PITCH PHYSICS ---
     p_def = PITCH_TYPES.get(pitch.pitch_name, PITCH_TYPES["4-Seam Fastball"])
@@ -535,15 +694,16 @@ def resolve_pitch(
     tto_stage = max(0, times_through_order - 1)
     
     # Fatigue Calculation
-    p_count = state.pitch_counts.get(pitcher.id, 0)
+    adj_pitch_count = _weather_adjusted_pitch_count(state, pitcher_id)
     fatigue_penalty = 0
     control_penalty = 0
     
-    if p_count > 80: fatigue_penalty = (p_count - 80) * 0.2
-    if p_count > 100: fatigue_penalty += (p_count - 100) * 0.5
-    if p_count > 90: control_penalty = (p_count - 90) * 0.5
+    if adj_pitch_count > 80: fatigue_penalty = (adj_pitch_count - 80) * 0.2
+    if adj_pitch_count > 100: fatigue_penalty += (adj_pitch_count - 100) * 0.5
+    if adj_pitch_count > 90: control_penalty = (adj_pitch_count - 90) * 0.5
     
     weather = getattr(state, 'weather', None)
+    weather_effects = _weather_effects(state)
 
     # Final Values
     base_velocity = (getattr(pitcher, 'velocity', 0) or 0) + pitcher_trait_mods.get('velocity', 0)
@@ -562,6 +722,8 @@ def resolve_pitch(
     effective_control = (base_control * slot_mods['control_penalty_mult']) - control_penalty
     if weather:
         effective_control -= weather.wild_pitch_modifier * 60
+    if weather_effects and weather_effects.ball_slip_chance:
+        effective_control -= weather_effects.ball_slip_chance * 35
     pitch_confidence = get_confidence(state, pitcher.id)
     effective_control += pitch_confidence * 0.25
     velocity += pitch_confidence * 0.05
@@ -575,14 +737,18 @@ def resolve_pitch(
     if shakes:
         tension = shakes * max(0.8, (65 - trust_snapshot) / 10.0)
         tension *= 1.0 - (dominance * 0.05)
-        effective_control -= tension * 1.5
-        effective_movement -= tension * 0.5
+        sync_buffer = max(0.6, 1.0 - (battery_sync_value * 0.08))
+        effective_control -= tension * 1.5 * sync_buffer
+        effective_movement -= tension * 0.5 * sync_buffer
     elif trust_snapshot > 65:
-        effective_control += (trust_snapshot - 65) * 0.15
-        effective_movement += (trust_snapshot - 65) * 0.05
+        sync_bonus = 1.0 + max(0.0, battery_sync_value) * 0.08
+        effective_control += (trust_snapshot - 65) * 0.15 * sync_bonus
+        effective_movement += (trust_snapshot - 65) * 0.05 * sync_bonus
 
     if forced_call:
-        effective_control -= 3
+        forced_penalty = 3 + max(0.0, -battery_sync_value) * 0.5
+        effective_control -= forced_penalty
+        effective_movement -= forced_penalty * 0.2
 
     flow_offense = _flow_multiplier(state, _offense_team_id(state))
     flow_defense = _flow_multiplier(state, _defense_team_id(state))
@@ -606,6 +772,23 @@ def resolve_pitch(
         effective_movement *= control_factor
         velocity *= max(0.6, 1.0 - pitcher_pressure * 0.5)
 
+    clutch_effect = _consume_clutch_pitch_effect(state, pitcher_id)
+    if clutch_effect:
+        quality = float(clutch_effect.get("quality", 0.5) or 0.0)
+        effective_control, effective_movement, velocity, special = _apply_clutch_bonus(
+            effective_control,
+            effective_movement,
+            velocity,
+            quality,
+        )
+        clutch_effect["special"] = special
+        clutch_effect["applied_inning"] = getattr(state, "inning", 1)
+        if isinstance(getattr(state, "logs", None), list):
+            state.logs.append(
+                f"[Showtime] {clutch_effect.get('team_name', 'Pitcher')} rides quality {quality:.2f} ({clutch_effect.get('feedback')})."
+            )
+        state.last_clutch_pitch_effect = dict(clutch_effect)
+
     # --- 3. BATTER REACTION ---
     
     # Apply mods (from User Choice or AI buffs)
@@ -615,6 +798,22 @@ def resolve_pitch(
     base_contact = getattr(batter, 'contact', 50) or 50
     base_contact += batter_trait_mods.get('contact', 0)
     contact_stat = base_contact + batter_mods.get('contact_mod', 0)
+
+    rivalry_ctx = getattr(state, "rival_match_context", None)
+    if rivalry_ctx and batter_id:
+        rival_bonus = rivalry_ctx.recognition_bonus(batter_id, pitch.pitch_name)
+        if rival_bonus:
+            eye_stat *= 1.0 + rival_bonus
+            contact_stat *= 1.0 + rival_bonus
+            memo_key = f"rival_bonus_{batter_id}"
+            memory = getattr(state, "commentary_memory", None)
+            if isinstance(memory, set) and memo_key not in memory:
+                memory.add(memo_key)
+                logs = getattr(state, "logs", None)
+                if isinstance(logs, list):
+                    logs.append(
+                        f"[Rivals] {getattr(batter, 'last_name', getattr(batter, 'name', 'Rival'))} refuses to chase that {pitch.pitch_name} again."
+                    )
 
     guess_payload = batter_mods.get('guess_payload')
     guess_match = _guess_matches(guess_payload, p_def, location) if guess_payload else None
@@ -640,10 +839,53 @@ def resolve_pitch(
             batter_mods['power_mod'] = batter_mods.get('power_mod', 0) - 25
         guess_payload['result'] = 'fooled'
 
+    def _apply_battery_feedback(res_obj: PitchResult) -> None:
+        if not battery_context:
+            return
+        pitcher_key = battery_context.get("pitcher_id")
+        catcher_key = battery_context.get("catcher_id")
+        if not pitcher_key or not catcher_key:
+            return
+        delta = 0.0
+        if res_obj.outcome == "Strike":
+            delta += 0.12
+            if res_obj.description == "Swinging Miss":
+                delta += 0.08
+        elif res_obj.outcome == "Ball":
+            delta -= 0.12
+        elif res_obj.outcome == "Foul":
+            delta += 0.05 if res_obj.location == "Chase" else -0.02
+        elif res_obj.outcome == "InPlay":
+            quality = getattr(res_obj, "contact_quality", 0)
+            delta += 0.1 if quality < 20 else -0.2
+        if battery_context.get("forced"):
+            delta -= 0.25
+        elif battery_context.get("shakes"):
+            delta -= 0.05 * battery_context["shakes"]
+        else:
+            delta += 0.05
+        if not delta:
+            return
+        new_sync = adjust_battery_sync(state, pitcher_key, catcher_key, delta)
+        battery_context["sync"] = new_sync
+        res_obj.battery_call = dict(battery_context)
+        setattr(state, "last_battery_call", dict(battery_context))
+
     def _finalize_result(res_obj: PitchResult) -> PitchResult:
         _annotate_result(res_obj, count_snapshot)
         if guess_payload:
             res_obj.guess_payload = dict(guess_payload)
+        if battery_context:
+            battery_context.update(
+                {
+                    "outcome": res_obj.outcome,
+                    "result_description": res_obj.description,
+                }
+            )
+            res_obj.battery_call = dict(battery_context)
+            setattr(state, "last_battery_call", dict(battery_context))
+        _record_catcher_memory(state, batter_id, res_obj)
+        _apply_battery_feedback(res_obj)
         return res_obj
 
     if flow_offense != 1.0:
@@ -690,6 +932,9 @@ def resolve_pitch(
             chase_bar += sequence_penalty * 0.5
             if reaction < chase_bar:
                 should_swing = True
+
+    if batter_mods.get("force_swing") or batter_mods.get("bunt_flag"):
+        should_swing = True
             
     # --- 4. RESOLVE OUTCOME ---
     
@@ -778,6 +1023,8 @@ def resolve_pitch(
         # Attach dynamic attributes for ball_in_play logic
         res.contact_quality = contact_quality
         res.power_mod = batter_mods.get('power_mod', 0) # Pass power mod along
+        if 'bunt_intent' in batter_mods:
+            res.bunt_intent = batter_mods['bunt_intent']
         _note_batter_behavior(
             state,
             batter_id,

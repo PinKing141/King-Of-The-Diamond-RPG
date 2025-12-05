@@ -2,3 +2,4 @@
 # Initializes the world package.
 from .school_philosophy import get_philosophy, PHILOSOPHY_MATRIX
 from .coach_generation import generate_coach_for_school
+from .rivals import get_ledger, Rival, RivalMatchContext

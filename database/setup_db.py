@@ -1,3 +1,7 @@
+import os
+import sys
+import time
+import gc
 import sqlalchemy
 from datetime import datetime, timezone
 from sqlalchemy import (
@@ -16,8 +20,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, synonym
 from sqlalchemy import inspect
 from contextlib import contextmanager
-import sys
-import os
 
 # Add parent directory to path to find config.py
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,6 +30,7 @@ db_dir = os.path.dirname(DB_PATH)
 if not os.path.exists(db_dir):
     os.makedirs(db_dir)
 
+# Create engine globally but we might need to dispose it for deletion
 engine = create_engine(f"sqlite:///{DB_PATH}")
 Base = declarative_base()
 
@@ -54,6 +57,46 @@ def close_all_sessions():
     SessionLocal.close_all()
 
 
+def safe_delete_db(db_path):
+    """
+    Forces the database connection to close and deletes the file.
+    Retries up to 3 times to handle Windows file locking lag.
+    """
+    if not os.path.exists(db_path):
+        return
+
+    print(f"Attempting to delete: {db_path}")
+    
+    # 0. Close internal SQLAlchemy sessions and dispose engine connection pool
+    close_all_sessions()
+    
+    # DISPOSE THE ENGINE: This releases the file lock held by the connection pool
+    global engine
+    engine.dispose()
+
+    # 1. Force Python to clean up any lingering connection objects
+    gc.collect()
+    
+    # 2. Retry loop for Windows file system lag
+    for i in range(5): # Increased retries to 5
+        try:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+            print("Database deleted successfully.")
+            
+            # Re-create engine after deletion if we plan to rebuild immediately
+            # (Note: create_database() usually re-uses the global engine, 
+            # so we just need to ensure the file is gone first)
+            return
+        except PermissionError:
+            print(f"File locked. Retrying in 1 second... ({i+1}/5)")
+            time.sleep(1.0)
+            # Try aggressive GC again
+            gc.collect()
+            
+    print(f"CRITICAL: Could not delete {db_path}. Please delete it manually.")
+
+
 def ensure_gamestate_schema():
     """Add new columns to gamestate table when upgrading existing saves."""
     inspector = inspect(engine)
@@ -64,6 +107,17 @@ def ensure_gamestate_schema():
     if 'active_player_id' not in columns:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE gamestate ADD COLUMN active_player_id INTEGER"))
+    statements = []
+    if 'last_error_summary' not in columns:
+        statements.append("ALTER TABLE gamestate ADD COLUMN last_error_summary TEXT")
+    if 'last_coach_order_result' not in columns:
+        statements.append("ALTER TABLE gamestate ADD COLUMN last_coach_order_result TEXT")
+    if 'last_telemetry_blob' not in columns:
+        statements.append("ALTER TABLE gamestate ADD COLUMN last_telemetry_blob TEXT")
+    if statements:
+        with engine.begin() as conn:
+            for stmt in statements:
+                conn.execute(text(stmt))
 
 
 def ensure_player_schema():
@@ -98,6 +152,8 @@ def ensure_player_schema():
         statements.append("ALTER TABLE players ADD COLUMN loyalty INTEGER DEFAULT 50")
     if 'volatility' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN volatility INTEGER DEFAULT 50")
+    if 'determination' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN determination INTEGER DEFAULT 50")
     if 'morale' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN morale INTEGER DEFAULT 60")
     if 'slump_timer' not in columns:
@@ -106,6 +162,10 @@ def ensure_player_schema():
         statements.append("ALTER TABLE players ADD COLUMN archetype VARCHAR DEFAULT 'steady'")
     if 'arm_slot' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN arm_slot VARCHAR DEFAULT 'Three-Quarters'")
+    if 'ability_points' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN ability_points INTEGER DEFAULT 0")
+    if 'training_xp' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN training_xp TEXT DEFAULT '{}'")
 
     if not statements:
         return
@@ -202,6 +262,8 @@ def ensure_game_schema():
     _add('umpire_squeezed_home', 'INTEGER')
     _add('umpire_favored_away', 'INTEGER')
     _add('umpire_squeezed_away', 'INTEGER')
+    _add('error_summary', 'TEXT')
+    _add('rivalry_summary', 'TEXT')
 
     if not statements:
         return
@@ -306,6 +368,7 @@ class Player(Base):
     drive = Column(Integer, default=50)
     loyalty = Column(Integer, default=50)
     volatility = Column(Integer, default=50)
+    determination = Column(Integer, default=50)
     morale = Column(Integer, default=60)
     slump_timer = Column(Integer, default=0)
     archetype = Column(String, default="steady")
@@ -336,6 +399,8 @@ class Player(Base):
     injury_status = Column(String, default="Healthy")
     injury_days = Column(Integer, default=0)
     conditioning = Column(Integer, default=50)
+    ability_points = Column(Integer, default=0)
+    training_xp = Column(Text, default="{}")
 
     school = relationship("School", back_populates="players")
     pitch_repertoire = relationship("PitchRepertoire", back_populates="player")
@@ -444,6 +509,8 @@ class Game(Base):
     umpire_squeezed_home = Column(Integer, default=0)
     umpire_favored_away = Column(Integer, default=0)
     umpire_squeezed_away = Column(Integer, default=0)
+    error_summary = Column(Text, nullable=True)
+    rivalry_summary = Column(Text, nullable=True)
 
     home_school = relationship("School", foreign_keys=[home_school_id], back_populates="games_home")
     away_school = relationship("School", foreign_keys=[away_school_id], back_populates="games_away")
@@ -563,11 +630,25 @@ class GameState(Base):
     current_month = Column(Integer)
     current_year = Column(Integer)
     active_player_id = Column(Integer, nullable=True)
+    last_error_summary = Column(Text, nullable=True)
+    last_coach_order_result = Column(Text, nullable=True)
+    last_telemetry_blob = Column(Text, nullable=True)
 
 
 # Aliases
 Team = School
 Performance = PlayerGameStats
+
+
+# Ensure critical schema migrations run when the module loads so legacy
+# saves pick up new progression columns without requiring a manual script.
+ensure_player_schema()
+ensure_player_skill_schema()
+ensure_player_milestone_schema()
+ensure_gamestate_schema()
+ensure_coach_schema()
+ensure_game_schema()
+ensure_game_stats_schema()
 
 
 # ============================================================

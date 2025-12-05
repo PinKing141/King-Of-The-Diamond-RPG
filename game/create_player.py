@@ -301,6 +301,10 @@ def commit_player_to_db(session: Session, data) -> int:
     clean_stats.setdefault('drive', traits['drive'])
     clean_stats.setdefault('loyalty', traits['loyalty'])
     clean_stats.setdefault('volatility', traits['volatility'])
+    determination_seed = traits['drive'] + random.randint(-6, 6)
+    clean_stats.setdefault('determination', max(30, min(95, determination_seed)))
+    clean_stats.setdefault('ability_points', 0)
+    clean_stats.setdefault('training_xp', '{}')
 
     p = Player(
         first_name=data['first_name'],

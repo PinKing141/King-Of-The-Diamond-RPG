@@ -1,10 +1,34 @@
 """Helpers that manage catcher-pitcher trust dynamics."""
 
+from __future__ import annotations
+
+from typing import Dict, Optional, Tuple
+
 from database.setup_db import BatteryTrust, session_scope
 
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _ensure_cache(container) -> Optional[Dict[Tuple[int, int], int]]:
+    if container is None:
+        return None
+    cache = getattr(container, "battery_trust_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(container, "battery_trust_cache", cache)
+    return cache
+
+
+def _ensure_sync_tracker(container) -> Optional[Dict[Tuple[int, int], float]]:
+    if container is None:
+        return None
+    tracker = getattr(container, "battery_sync", None)
+    if tracker is None:
+        tracker = {}
+        setattr(container, "battery_sync", tracker)
+    return tracker
 
 
 def _get_or_create_trust_record(session, pitcher_id, catcher_id):
@@ -28,11 +52,12 @@ def get_trust(pitcher_id, catcher_id):
 def update_trust(pitcher_id, catcher_id, delta):
     """Modify the stored trust value and clamp it between 0 and 100."""
     if not pitcher_id or not catcher_id or not delta:
-        return
+        return None
     with session_scope() as session:
         rec = _get_or_create_trust_record(session, pitcher_id, catcher_id)
         rec.trust = max(0, min(100, rec.trust + delta))
         session.commit()
+        return rec.trust
 
 
 def update_trust_after_at_bat(pitcher_id, catcher_id, result_type):
@@ -46,7 +71,8 @@ def update_trust_after_at_bat(pitcher_id, catcher_id, result_type):
         delta = -1
 
     if delta != 0:
-        update_trust(pitcher_id, catcher_id, delta)
+        return update_trust(pitcher_id, catcher_id, delta)
+    return None
 
 
 def adjust_confidence_delta_for_battery(pitcher, catcher, delta: float) -> float:
@@ -78,3 +104,83 @@ def adjust_confidence_delta_for_battery(pitcher, catcher, delta: float) -> float
         scale = 1.0 - (loyalty_factor * 0.30) - (trust_factor * 0.15) + (volatility_factor * 0.45)
 
     return delta * _clamp(scale, 0.35, 1.75)
+
+
+def get_trust_snapshot(container, pitcher_id: Optional[int], catcher_id: Optional[int], default: int = 50) -> int:
+    """Fetch trust once per game and reuse it via the provided cache container."""
+
+    if not pitcher_id or not catcher_id:
+        return default
+    cache = _ensure_cache(container)
+    key = (pitcher_id, catcher_id)
+    if cache is not None and key in cache:
+        return cache[key]
+    value = get_trust(pitcher_id, catcher_id)
+    if cache is not None:
+        cache[key] = value
+    return value
+
+
+def set_trust_snapshot(container, pitcher_id: Optional[int], catcher_id: Optional[int], trust_value: Optional[int]) -> None:
+    if not pitcher_id or not catcher_id or trust_value is None:
+        return
+    cache = _ensure_cache(container)
+    if cache is None:
+        return
+    cache[(pitcher_id, catcher_id)] = int(_clamp(trust_value, 0, 100))
+
+
+def apply_plate_result_to_trust(
+    container,
+    pitcher_id: Optional[int],
+    catcher_id: Optional[int],
+    *,
+    result_type: Optional[str],
+    hit_type: Optional[str] = None,
+) -> Optional[int]:
+    """Translate a plate appearance summary into a trust adjustment and persist it."""
+
+    token = _plate_result_token(result_type, hit_type)
+    if not token:
+        return None
+    new_value = update_trust_after_at_bat(pitcher_id, catcher_id, token)
+    if new_value is not None:
+        set_trust_snapshot(container, pitcher_id, catcher_id, new_value)
+    return new_value
+
+
+def _plate_result_token(result_type: Optional[str], hit_type: Optional[str]) -> Optional[str]:
+    if not result_type:
+        return None
+    normalized = result_type.lower()
+    if normalized == "strikeout":
+        return "K"
+    if normalized == "walk":
+        return "BB"
+    if hit_type:
+        code = hit_type.upper()
+        if code in {"1B", "2B", "3B", "HR"}:
+            return code
+    return None
+
+
+def get_battery_sync(container, pitcher_id: Optional[int], catcher_id: Optional[int]) -> float:
+    if not pitcher_id or not catcher_id:
+        return 0.0
+    tracker = _ensure_sync_tracker(container)
+    if tracker is None:
+        return 0.0
+    return tracker.get((pitcher_id, catcher_id), 0.0)
+
+
+def adjust_battery_sync(container, pitcher_id: Optional[int], catcher_id: Optional[int], delta: float) -> float:
+    if not pitcher_id or not catcher_id or not delta:
+        return get_battery_sync(container, pitcher_id, catcher_id)
+    tracker = _ensure_sync_tracker(container)
+    if tracker is None:
+        return 0.0
+    key = (pitcher_id, catcher_id)
+    new_value = tracker.get(key, 0.0) + delta
+    new_value = _clamp(new_value, -5.0, 5.0)
+    tracker[key] = new_value
+    return new_value

@@ -1,7 +1,8 @@
+import json
 import logging
 import os
 import random
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .health_system import check_injury_risk, apply_injury, get_performance_modifiers
 from database.setup_db import Player
@@ -37,6 +38,98 @@ def _apply_temp_training_bonuses(context: GameContext, stat_gains: dict):
     multiplier = 1 + bonus.get('multiplier', 0.0)
     for stat in stat_gains:
         stat_gains[stat] *= multiplier
+
+
+XP_TRACKED_STATS = {
+    'control',
+    'velocity',
+    'stamina',
+    'movement',
+    'power',
+    'contact',
+    'speed',
+    'fielding',
+    'throwing',
+    'command',
+}
+BREAKTHROUGH_BASE_CHANCE = 0.01
+BREAKTHROUGH_SCALE = 0.0004
+BREAKTHROUGH_MIN = 0.005
+BREAKTHROUGH_MAX = 0.08
+
+
+def _xp_threshold(stat_value: Optional[float]) -> float:
+    value = stat_value or 0.0
+    return max(3.0, 3.0 + (value / 20.0))
+
+
+def _load_training_xp(player: Player) -> dict:
+    raw = getattr(player, 'training_xp', None)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    cleaned = {}
+    for key, value in data.items():
+        try:
+            cleaned[key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return cleaned
+
+
+def _save_training_xp(player: Player, payload: dict) -> None:
+    if not payload:
+        player.training_xp = '{}'
+        return
+    # Round stored floats to reduce noise in the save file.
+    snapshot = {k: round(v, 4) for k, v in payload.items() if v > 0}
+    player.training_xp = json.dumps(snapshot)
+
+
+def _apply_training_xp(player: Player, xp_gains: dict) -> Tuple[dict, dict]:
+    pool = _load_training_xp(player)
+    level_ups = {}
+    for stat, gain in xp_gains.items():
+        current_value = (getattr(player, stat, 0) or 0)
+        total_xp = pool.get(stat, 0.0) + gain
+        threshold = _xp_threshold(current_value)
+        applied_levels = 0
+        while total_xp >= threshold:
+            total_xp -= threshold
+            current_value += 1
+            applied_levels += 1
+            threshold = _xp_threshold(current_value)
+        pool[stat] = total_xp
+        if applied_levels:
+            setattr(player, stat, current_value)
+            level_ups[stat] = applied_levels
+    return level_ups, pool
+
+
+def _maybe_trigger_breakthrough(player: Player, xp_gains: dict, xp_pool: dict) -> Optional[dict]:
+    if not xp_gains:
+        return None
+    determination = getattr(player, 'determination', None)
+    if determination is None:
+        determination = getattr(player, 'drive', 50) or 50
+    chance = BREAKTHROUGH_BASE_CHANCE + max(0.0, determination - 50) * BREAKTHROUGH_SCALE
+    chance = max(BREAKTHROUGH_MIN, min(BREAKTHROUGH_MAX, chance))
+    roll = random.random()
+    if roll > chance:
+        return None
+    focus_stat = max(xp_gains.items(), key=lambda item: item[1])[0]
+    current_value = (getattr(player, focus_stat, 0) or 0) + 1
+    setattr(player, focus_stat, current_value)
+    xp_pool[focus_stat] = 0.0
+    return {
+        "stat": focus_stat,
+        "new_value": current_value,
+        "chance": chance,
+        "roll": roll,
+    }
 
 
 def apply_scheduled_action(
@@ -238,16 +331,40 @@ def apply_scheduled_action(
     new_fatigue = max(0, min(100, fatigue + fatigue_change))
     player.fatigue = new_fatigue
 
+    xp_gains: dict = {}
+    applied_stat_changes: dict = {}
+
     for stat, value in stat_gains.items():
         variance = random.uniform(0.9, 1.1)
         final_value = value * variance
-        current = getattr(player, stat, 0) or 0
-        setattr(player, stat, current + final_value)
+        if stat in XP_TRACKED_STATS:
+            xp_gains[stat] = xp_gains.get(stat, 0.0) + final_value
+        else:
+            current = getattr(player, stat, 0) or 0
+            setattr(player, stat, current + final_value)
+            applied_stat_changes[stat] = applied_stat_changes.get(stat, 0) + final_value
 
     if 'academic_skill' in stat_gains:
         player.academic_skill = int(round(clamp(player.academic_skill or 0, 25, 110)))
     if 'test_score' in stat_gains:
         player.test_score = int(round(clamp(player.test_score or 0, 0, 100)))
+
+    level_ups: dict = {}
+    breakthrough_event: Optional[dict] = None
+    if xp_gains:
+        level_ups, xp_pool = _apply_training_xp(player, xp_gains)
+        breakthrough_event = _maybe_trigger_breakthrough(player, xp_gains, xp_pool)
+        _save_training_xp(player, xp_pool)
+
+    if level_ups and PROGRESSION_DEBUG:
+        logger.info("Training session yielded level ups: %s", level_ups)
+    if breakthrough_event:
+        event_text = f"Breakthrough! Your {breakthrough_event['stat'].replace('_', ' ').title()} surges forward."
+        summary = f"{summary} {event_text}".strip()
+
+    if level_ups:
+        for stat, amount in level_ups.items():
+            applied_stat_changes[stat] = applied_stat_changes.get(stat, 0) + amount
 
     if slump_timer > 0:
         resolved = decay_slump(player)
@@ -314,7 +431,9 @@ def apply_scheduled_action(
         "status": "ok",
         "message": summary,
         "fatigue_change": fatigue_change,
-        "stat_changes": stat_gains,
+        "stat_changes": applied_stat_changes,
+        "xp_gains": xp_gains,
+        "breakthrough": breakthrough_event,
         "new_fatigue": new_fatigue,
         "skills_unlocked": unlocked_skills,
         "milestones": milestone_unlocks,

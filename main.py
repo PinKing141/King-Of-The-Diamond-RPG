@@ -2,6 +2,7 @@ import sys
 import os
 import time
 
+from core.event_bus import EventBus
 from database.setup_db import create_database, GameState, School, Player, get_session
 from ui.ui_display import Colour, clear_screen
 from game.weekly_scheduler import start_week
@@ -13,9 +14,15 @@ from game.season_engine import run_end_of_season_logic
 from game.training_logic import run_training_camp_event
 from game.save_manager import show_save_menu 
 from game.game_context import GameContext
+from game.analytics import initialise_analytics
+from match_engine.controller import MatchController
+from match_engine.commentary import CommentaryListener
 
 # Ensure database tables exist
 create_database()
+
+# Event bus + analytics initialisation
+GLOBAL_EVENT_BUS = initialise_analytics(EventBus())
 
 # -----------------------------------------------------
 # UI
@@ -362,8 +369,11 @@ def run_game_loop():
 # MAIN ENTRY
 # -----------------------------------------------------
 
-if __name__ == "__main__":
+def main():
     try:
         main_menu()
     except KeyboardInterrupt:
         print("\n\nGame Exited.")
+
+if __name__ == "__main__":
+    main()

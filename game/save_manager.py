@@ -1,3 +1,4 @@
+import json
 import os
 import glob
 import sqlite3
@@ -34,6 +35,76 @@ def _gamestate_present():
     finally:
         session.close()
 
+
+def _safe_json_load(value):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _read_gamestate_metadata(db_path):
+    if not os.path.exists(db_path):
+        return {}
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT current_week, current_month, current_year, last_error_summary, last_coach_order_result, last_telemetry_blob FROM gamestate LIMIT 1"
+        ).fetchone()
+        if not row:
+            return {}
+        return {
+            "current_week": row["current_week"],
+            "current_month": row["current_month"],
+            "current_year": row["current_year"],
+            "last_error_summary": _safe_json_load(row["last_error_summary"]),
+            "last_coach_order_result": _safe_json_load(row["last_coach_order_result"]),
+            "last_telemetry_blob": _safe_json_load(row["last_telemetry_blob"]),
+        }
+    except sqlite3.OperationalError:
+        return {}
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _format_slot_preview(meta):
+    if not meta:
+        return ""
+    parts = []
+    week = meta.get("current_week")
+    year = meta.get("current_year")
+    if week:
+        label = f"Week {week}"
+        if year:
+            label += f" / Year {year}"
+        parts.append(label)
+    order = meta.get("last_coach_order_result") or {}
+    if order:
+        order_info = order.get("order") or {}
+        name = order_info.get("description") or order_info.get("key")
+        progress = order.get("progress") or {}
+        if name:
+            status = "DONE" if order.get("completed") else f"{progress.get('value', 0)}/{progress.get('target', 0)}"
+            reward = order.get("reward_delta") or {}
+            reward_bits = []
+            if reward.get("trust"):
+                reward_bits.append(f"Trust+{reward['trust']}")
+            if reward.get("ability_points"):
+                reward_bits.append(f"AP+{reward['ability_points']}")
+            reward_text = f" [{', '.join(reward_bits)}]" if reward_bits else ""
+            parts.append(f"Coach Order: {status} - {name}{reward_text}")
+    errors = meta.get("last_error_summary") or {}
+    if errors:
+        home_errors = len(errors.get("home", []) or [])
+        away_errors = len(errors.get("away", []) or [])
+        parts.append(f"Errors H:{home_errors} / A:{away_errors}")
+    return " | ".join(parts)
+
 def get_save_slots():
     """
     Returns a list of dictionaries containing info about available save slots.
@@ -55,11 +126,14 @@ def get_save_slots():
         mod_time = os.path.getmtime(f_path)
         date_str = datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M')
         
+        metadata = _read_gamestate_metadata(f_path)
         slots.append({
             "slot": slot_num,
             "path": f_path,
             "date": date_str,
-            "filename": filename
+            "filename": filename,
+            "metadata": metadata,
+            "preview": _format_slot_preview(metadata),
         })
     
     # Sort by slot number
@@ -126,6 +200,9 @@ def show_save_menu(mode="SAVE"):
             if i in existing_slots:
                 info = existing_slots[i]
                 print(f" {i}. Slot {i}  [{info['date']}]")
+                preview = info.get("preview") or _format_slot_preview(info.get("metadata"))
+                if preview:
+                    print(f"    {preview}")
             else:
                 print(f" {i}. Slot {i}  [Empty]")
                 

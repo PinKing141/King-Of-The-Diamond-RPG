@@ -122,5 +122,29 @@
         "response": "We'll see how calm you are with runners on."
       }
     ]
+  },
+  {
+    "id": "crowd_chanting_hero",
+    "speaker": "Announcer",
+    "text": "The crowd is chanting your name as you stare in for the sign. They can feel the moment tilting your way.",
+    "options": [
+      {
+        "text": "Soak it in, then attack.",
+        "effects": {"morale": 2},
+        "response": "You breathe deep, letting the roar turn into rhythm."
+      }
+    ]
+  },
+  {
+    "id": "crowd_deadly_silent",
+    "speaker": "Announcer",
+    "text": "The stadium is deadly silent. Every fan is frozen, waiting to see if you can flip the script in the bottom of the ninth.",
+    "options": [
+      {
+        "text": "Silence helps me focus.",
+        "effects": {"discipline": 2},
+        "response": "You nod once. The only sound left is your heartbeat."
+      }
+    ]
   }
 ]

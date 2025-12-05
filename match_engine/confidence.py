@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Iterable, List, Optional, Tuple
 from battery_system.battery_trust import adjust_confidence_delta_for_battery
 from game.skill_system import player_has_skill
+from match_engine.telemetry import capture_confidence_swing
 
 CONFIDENCE_MIN = -100
 CONFIDENCE_MAX = 100
@@ -144,6 +145,7 @@ def adjust_confidence(state, player_id: int, delta: float, *, reason: Optional[s
     if actual_delta:
         _record_confidence_story(state, player_id, actual_delta, reason)
         _queue_confidence_event(state, player_id, actual_delta, reason)
+        capture_confidence_swing(state, player_id, actual_delta, reason=reason)
 
     if contagious and actual_delta != 0:
         _propagate(state, player_id, actual_delta, reason)

@@ -1,19 +1,430 @@
-"""Bridging helpers for running simulated matches in various modes."""
+"""Event-driven match simulation utilities and legacy bridge helpers."""
 from __future__ import annotations
 
 import os
 import sys
 from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from database.setup_db import Game, session_scope
-from game.coach_strategy import consume_strategy_mods
+from core.event_bus import EventBus
+from match_engine.batter_logic import AtBatStateMachine
+from match_engine.pitch_logic import get_current_catcher
+from match_engine.states import EventType, MatchState
+from player_roles import batter_controls as batter_ui
+from battery_system.battery_trust import apply_plate_result_to_trust
 
-from .controller import run_match as engine_run_match
+from .momentum import MomentumSystem
+
+
+@dataclass
+class BatterChoice:
+    """Represents a Batter's Eye selection."""
+
+    key: str
+    label: str
+    action: str
+    mods: Dict[str, int]
+    guess_payload: Optional[Dict[str, Any]] = None
+    description: str = ""
+
+
+@dataclass
+class MatchupContext:
+    """Snapshot of the matchup context before the pitch is resolved."""
+
+    inning: int
+    half: str
+    pitcher: Any
+    batter: Any
+    lineup_attr: str
+    balls: int
+    strikes: int
+    outs_before: int
+    home_score: int
+    away_score: int
+    batter_stats: Dict[str, int]
+    pitcher_stats: Dict[str, int]
+    is_human: bool
+
+
+@dataclass
+class PlayOutcome:
+    """Public summary describing how a play resolved."""
+
+    inning: int
+    half: str
+    batter_id: Optional[int]
+    pitcher_id: Optional[int]
+    outs_recorded: int
+    runs_scored: int
+    description: str
+    result_type: str
+    half_complete: bool
+    drama_level: int
+    batting_team: str
+    fielding_team: str
+    hit_type: Optional[str] = None
+    double_play: bool = False
+    error_on_play: bool = False
+    error_type: Optional[str] = None
+    error_position: Optional[str] = None
+
+
+class MatchSimulation:
+    """Single at-bat micro state machine that publishes EventBus updates."""
+
+    _CHOICE_LIBRARY: Dict[str, BatterChoice] = {
+        "fastball": BatterChoice(
+            key="fastball",
+            label="Sit on Fastball",
+            action="Power",
+            mods={"contact_mod": -5, "power_mod": 15, "eye_mod": -5},
+            guess_payload={"kind": "family", "value": "fastball", "label": "Fastball", "source": "user"},
+            description="Adds lift vs heat; risky if the pitcher spins it.",
+        ),
+        "breaker": BatterChoice(
+            key="breaker",
+            label="Sit on Breaking",
+            action="Contact",
+            mods={"contact_mod": 12, "power_mod": -10, "eye_mod": -4},
+            guess_payload={"kind": "family", "value": "breaker", "label": "Breaking Ball", "source": "user"},
+            description="Stay back and shoot the gap when spin hangs.",
+        ),
+        "react": BatterChoice(
+            key="react",
+            label="React",
+            action="Normal",
+            mods={"contact_mod": 0, "power_mod": 0, "eye_mod": 0},
+            guess_payload=None,
+            description="Trust your eyes and play it straight.",
+        ),
+    }
+
+    def __init__(
+        self,
+        state,
+        *,
+        bus: Optional[EventBus] = None,
+        human_team_ids: Optional[Sequence[int]] = None,
+        agency_adapter: Optional[Callable[[MatchupContext], str]] = None,
+    ) -> None:
+        self.state = state
+        self.bus = bus or EventBus()
+        self.loop_state: MatchState = MatchState.WAITING_FOR_PITCH
+        self.human_team_ids = {team_id for team_id in (human_team_ids or []) if team_id is not None}
+        self.agency_adapter = agency_adapter
+        self.awaiting_player_choice: bool = False
+        self._current_matchup: Optional[MatchupContext] = None
+        self._pending_choice: Optional[BatterChoice] = None
+        self._pending_choice_options: List[Dict[str, str]] = []
+
+    def step(self) -> Optional[PlayOutcome]:
+        """Advance the simulation by a single action tick."""
+
+        if self._current_matchup is None:
+            self._current_matchup = self._build_matchup()
+            if self._current_matchup is None:
+                return None
+
+        if self._current_matchup.is_human and not self._pending_choice:
+            if not self.awaiting_player_choice:
+                if self._maybe_apply_agent_choice():
+                    return None
+                self._prompt_player_choice()
+            return None
+
+        outcome = self._execute_matchup()
+        self._current_matchup = None
+        self._pending_choice = None
+        self.awaiting_player_choice = False
+        self._pending_choice_options.clear()
+        self.loop_state = MatchState.WAITING_FOR_PITCH
+        return outcome
+
+    def submit_player_choice(self, choice_key: str) -> None:
+        """Accept a Batter's Eye selection from a human player."""
+
+        if choice_key not in self._CHOICE_LIBRARY:
+            raise ValueError(f"Unknown Batter's Eye choice '{choice_key}'.")
+        self._pending_choice = self._CHOICE_LIBRARY[choice_key]
+        self.awaiting_player_choice = False
+
+    def pending_choice_options(self) -> Sequence[Dict[str, str]]:
+        return tuple(self._pending_choice_options)
+
+    def _build_matchup(self) -> Optional[MatchupContext]:
+        lineup_attr = "away_lineup" if self.state.top_bottom == "Top" else "home_lineup"
+        lineup = getattr(self.state, lineup_attr, None) or []
+        if not lineup:
+            return None
+        batter = lineup[0]
+        pitcher = self.state.home_pitcher if self.state.top_bottom == "Top" else self.state.away_pitcher
+        batter_id = getattr(batter, "id", None)
+        pitcher_id = getattr(pitcher, "id", None)
+        return MatchupContext(
+            inning=self.state.inning,
+            half=self.state.top_bottom,
+            pitcher=pitcher,
+            batter=batter,
+            lineup_attr=lineup_attr,
+            balls=self.state.balls,
+            strikes=self.state.strikes,
+            outs_before=self.state.outs,
+            home_score=self.state.home_score,
+            away_score=self.state.away_score,
+            batter_stats=self.state.get_stats(batter_id).copy(),
+            pitcher_stats=self.state.get_stats(pitcher_id).copy(),
+            is_human=self._is_user_controlled(batter),
+        )
+
+    def _maybe_apply_agent_choice(self) -> bool:
+        if not self.agency_adapter or self._current_matchup is None:
+            return False
+        choice_key = self.agency_adapter(self._current_matchup)
+        if not choice_key:
+            return False
+        self.submit_player_choice(choice_key)
+        return True
+
+    def _prompt_player_choice(self) -> None:
+        if self._current_matchup is None:
+            return
+        self.awaiting_player_choice = True
+        self._pending_choice_options = [
+            {
+                "key": choice.key,
+                "label": choice.label,
+                "description": choice.description,
+            }
+            for choice in self._CHOICE_LIBRARY.values()
+        ]
+        payload = {
+            "inning": self._current_matchup.inning,
+            "half": self._current_matchup.half,
+            "batter_id": getattr(self._current_matchup.batter, "id", None),
+            "options": self._pending_choice_options,
+        }
+        self.bus.publish(EventType.BATTERS_EYE_PROMPT.value, payload)
+
+    def _execute_matchup(self) -> PlayOutcome:
+        assert self._current_matchup is not None
+        matchup = self._current_matchup
+        batter_choice = self._pending_choice if matchup.is_human else None
+        self.loop_state = MatchState.PITCH_FLIGHT
+        self.bus.publish(
+            EventType.PITCH_THROWN.value,
+            {
+                "inning": matchup.inning,
+                "half": matchup.half,
+                "pitcher_id": getattr(matchup.pitcher, "id", None),
+                "batter_id": getattr(matchup.batter, "id", None),
+                "balls": matchup.balls,
+                "strikes": matchup.strikes,
+                "home_score": matchup.home_score,
+                "away_score": matchup.away_score,
+            },
+        )
+        with self._override_player_input(batter_choice):
+            AtBatStateMachine(self.state).run()
+        outcome = self._summarize_outcome(matchup)
+        self._update_battery_trust(matchup.pitcher, outcome)
+        batting_side = self._batting_side(matchup.half)
+        fielding_side = self._fielding_side(matchup.half)
+        batting_team_id = self._team_id_for_side(batting_side)
+        fielding_team_id = self._team_id_for_side(fielding_side)
+        swing_payload = {
+            "inning": outcome.inning,
+            "half": outcome.half,
+            "batter_id": outcome.batter_id,
+            "pitcher_id": outcome.pitcher_id,
+            "result_type": outcome.result_type,
+            "drama_level": outcome.drama_level,
+            "batting_team": batting_side,
+            "fielding_team": fielding_side,
+            "batting_team_id": batting_team_id,
+            "fielding_team_id": fielding_team_id,
+        }
+        self.loop_state = MatchState.CONTACT_MOMENT
+        self.bus.publish(EventType.BATTER_SWUNG.value, swing_payload)
+        if outcome.result_type == "strikeout":
+            self.bus.publish(EventType.STRIKEOUT.value, swing_payload)
+        self.loop_state = MatchState.PLAY_RESOLUTION
+        play_detail = getattr(self.state, "latest_play_detail", None) or {}
+        self.bus.publish(
+            EventType.PLAY_RESULT.value,
+            {
+                "inning": outcome.inning,
+                "half": outcome.half,
+                "outs_recorded": outcome.outs_recorded,
+                "runs_scored": outcome.runs_scored,
+                "description": outcome.description,
+                "drama_level": outcome.drama_level,
+                "batting_team": batting_side,
+                "fielding_team": fielding_side,
+                "batting_team_id": batting_team_id,
+                "fielding_team_id": fielding_team_id,
+                "hit_type": play_detail.get("hit_type"),
+                "double_play": bool(play_detail.get("double_play")),
+                "error_on_play": bool(play_detail.get("error_on_play")),
+                "error_type": play_detail.get("error_type"),
+                "error_position": play_detail.get("error_position"),
+            },
+        )
+        self._rotate_lineup(matchup.lineup_attr)
+        return outcome
+
+    def _summarize_outcome(self, matchup: MatchupContext) -> PlayOutcome:
+        batter_id = getattr(matchup.batter, "id", None)
+        pitcher_id = getattr(matchup.pitcher, "id", None)
+        batter_stats_after = self.state.get_stats(batter_id)
+        pitcher_stats_after = self.state.get_stats(pitcher_id)
+        strikeout_delta = pitcher_stats_after["strikeouts_pitched"] - matchup.pitcher_stats["strikeouts_pitched"]
+        hit_delta = batter_stats_after["hits"] - matchup.batter_stats["hits"]
+        walk_delta = batter_stats_after["walks"] - matchup.batter_stats["walks"]
+        offense_runs = (
+            self.state.away_score - matchup.away_score
+            if matchup.half == "Top"
+            else self.state.home_score - matchup.home_score
+        )
+        outs_recorded = max(0, self.state.outs - matchup.outs_before)
+        batting_side = self._batting_side(matchup.half)
+        fielding_side = self._fielding_side(matchup.half)
+        play_detail = getattr(self.state, "latest_play_detail", None) or {}
+        hit_type = play_detail.get("hit_type")
+        double_play = bool(play_detail.get("double_play"))
+        error_flag = bool(play_detail.get("error_on_play"))
+        error_type = play_detail.get("error_type")
+        error_position = play_detail.get("error_position")
+        result_type = "neutral"
+        description = play_detail.get("description")
+        if strikeout_delta > 0:
+            result_type = "strikeout"
+            description = "Blown away on strikes."
+        elif double_play:
+            result_type = "double_play"
+            description = description or "Defenders turn two in style."
+        elif offense_runs > 0:
+            result_type = "run_scored"
+            description = description or f"{offense_runs} run(s) score."
+        elif hit_delta > 0:
+            result_type = "hit"
+            description = description or "Base hit keeps momentum alive."
+        elif outs_recorded > 0:
+            result_type = "out_in_play"
+            description = description or "Defense records the out."
+        elif walk_delta > 0:
+            result_type = "walk"
+            description = "Patient trip to first."
+        description = description or "Batter reaches safely."
+        drama_level = self._compute_drama_level()
+        half_complete = self.state.outs >= 3 or self._home_walkoff_ready()
+        return PlayOutcome(
+            inning=self.state.inning,
+            half=self.state.top_bottom,
+            batter_id=batter_id,
+            pitcher_id=pitcher_id,
+            outs_recorded=outs_recorded,
+            runs_scored=offense_runs,
+            description=description,
+            result_type=result_type,
+            half_complete=half_complete,
+            drama_level=drama_level,
+            batting_team=batting_side,
+            fielding_team=fielding_side,
+            hit_type=hit_type,
+            double_play=double_play,
+            error_on_play=error_flag,
+            error_type=error_type,
+            error_position=error_position,
+        )
+
+    def _update_battery_trust(self, pitcher, outcome: PlayOutcome) -> None:
+        catcher = get_current_catcher(self.state)
+        pitcher_id = getattr(pitcher, "id", None)
+        catcher_id = getattr(catcher, "id", None)
+        if not pitcher_id or not catcher_id:
+            return
+        apply_plate_result_to_trust(
+            self.state,
+            pitcher_id,
+            catcher_id,
+            result_type=outcome.result_type,
+            hit_type=outcome.hit_type,
+        )
+
+    def _batting_side(self, half: Optional[str] = None) -> str:
+        label = (half or self.state.top_bottom or "Top").lower()
+        return "away" if label.startswith("t") else "home"
+
+    def _fielding_side(self, half: Optional[str] = None) -> str:
+        return "home" if self._batting_side(half) == "away" else "away"
+
+    def _team_id_for_side(self, side: Optional[str]) -> Optional[int]:
+        if side == "home":
+            return getattr(self.state.home_team, "id", None)
+        if side == "away":
+            return getattr(self.state.away_team, "id", None)
+        return None
+
+    def _rotate_lineup(self, lineup_attr: str) -> None:
+        lineup = getattr(self.state, lineup_attr, None)
+        if not lineup or len(lineup) <= 1:
+            return
+        lineup[:] = lineup[1:] + lineup[:1]
+
+    def _compute_drama_level(self) -> int:
+        inning = self.state.inning
+        score_gap = abs(self.state.home_score - self.state.away_score)
+        level = 0
+        if inning >= 7:
+            level += 1
+        if score_gap <= 2:
+            level += 1
+        if inning >= 9 and score_gap <= 1:
+            level += 1
+        return min(level, 3)
+
+    @contextmanager
+    def _override_player_input(self, choice: Optional[BatterChoice]):
+        if not choice or not (self._current_matchup and self._current_matchup.is_human):
+            yield
+            return
+
+        original = batter_ui.player_bat_turn
+
+        def _proxy(*_):  # pragma: no cover - executed via gameplay
+            mods = dict(choice.mods)
+            if choice.guess_payload:
+                mods["guess_payload"] = dict(choice.guess_payload)
+            return choice.action, mods
+
+        batter_ui.player_bat_turn = _proxy
+        try:
+            yield
+        finally:
+            batter_ui.player_bat_turn = original
+
+    def _is_user_controlled(self, player: Any) -> bool:
+        team_id = getattr(player, "team_id", getattr(player, "school_id", None))
+        if getattr(player, "is_user_controlled", False):
+            return True
+        if team_id is None:
+            return False
+        return team_id in self.human_team_ids
+
+    def _home_walkoff_ready(self) -> bool:
+        return (
+            self.state.top_bottom == "Bot"
+            and self.state.inning >= 9
+            and self.state.home_score > self.state.away_score
+        )
 
 
 @contextmanager
 def _suppress_print():
     """Temporarily silence stdout for background simulations."""
+
     original_stdout = sys.stdout
     devnull = open(os.devnull, "w", encoding="utf-8")
     try:
@@ -26,6 +437,9 @@ def _suppress_print():
 
 def _fetch_latest_score(home_id: int, away_id: int, tournament_name: str) -> str:
     """Read the latest game for the two teams and optionally tag the tournament."""
+
+    from database.setup_db import Game, session_scope
+
     score_str = "0 - 0"
     try:
         with session_scope() as session:
@@ -45,22 +459,32 @@ def _fetch_latest_score(home_id: int, away_id: int, tournament_name: str) -> str
             if tournament_name != "Practice Match" and game.tournament != tournament_name:
                 game.tournament = tournament_name
                 session.commit()
-    except Exception as exc:  # pragma: no cover - defensive logging
-        print(f"Error retrieving match result: {exc}")
+    except Exception:
         return "Error"
 
     return score_str
 
 
-def _simulate_match(home_team, away_team, tournament_name: str, *, silent: bool, fast: bool):
-    """Shared runner used by both traditional and fast simulations."""
+def _simulate_match(
+    home_team,
+    away_team,
+    tournament_name: str,
+    *,
+    silent: bool,
+    fast: bool,
+    clutch_pitch: Optional[Dict[str, Any]] = None,
+):
+    from database.setup_db import session_scope
+    from game.coach_strategy import consume_strategy_mods
+    from .controller import run_match as engine_run_match
+
     if fast:
-        winner = engine_run_match(home_team.id, away_team.id, fast=True)
+        winner = engine_run_match(home_team.id, away_team.id, fast=True, clutch_pitch=clutch_pitch)
     elif silent:
         with _suppress_print():
-            winner = engine_run_match(home_team.id, away_team.id)
+            winner = engine_run_match(home_team.id, away_team.id, clutch_pitch=clutch_pitch)
     else:
-        winner = engine_run_match(home_team.id, away_team.id)
+        winner = engine_run_match(home_team.id, away_team.id, clutch_pitch=clutch_pitch)
 
     score_str = _fetch_latest_score(home_team.id, away_team.id, tournament_name)
     with session_scope() as session:
@@ -69,14 +493,43 @@ def _simulate_match(home_team, away_team, tournament_name: str, *, silent: bool,
     return winner, score_str
 
 
-def sim_match(home_team, away_team, tournament_name: str = "Practice Match", silent: bool = False):
+def sim_match(
+    home_team,
+    away_team,
+    tournament_name: str = "Practice Match",
+    *,
+    silent: bool = False,
+    clutch_pitch: Optional[Dict[str, Any]] = None,
+):
     """Legacy bridge for running a match with optional suppressed commentary."""
-    return _simulate_match(home_team, away_team, tournament_name, silent=silent, fast=False)
+
+    return _simulate_match(
+        home_team,
+        away_team,
+        tournament_name,
+        silent=silent,
+        fast=False,
+        clutch_pitch=clutch_pitch,
+    )
 
 
-def sim_match_fast(home_team, away_team, tournament_name: str = "Practice Match"):
+def sim_match_fast(
+    home_team,
+    away_team,
+    tournament_name: str = "Practice Match",
+    *,
+    clutch_pitch: Optional[Dict[str, Any]] = None,
+):
     """High-throughput simulation that skips commentary generation entirely."""
-    return _simulate_match(home_team, away_team, tournament_name, silent=False, fast=True)
+
+    return _simulate_match(
+        home_team,
+        away_team,
+        tournament_name,
+        silent=False,
+        fast=True,
+        clutch_pitch=clutch_pitch,
+    )
 
 
-__all__ = ["sim_match", "sim_match_fast"]
+__all__ = ["MatchSimulation", "PlayOutcome", "sim_match", "sim_match_fast"]
