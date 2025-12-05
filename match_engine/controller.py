@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
-<<<<<<< HEAD
+
 import json
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
+
 
 from core.event_bus import EventBus
 
@@ -16,20 +15,19 @@ from .commentary import CommentaryListener, commentary_enabled, set_commentary_e
 from .scoreboard import Scoreboard
 from .manager_ai import manage_team_between_innings
 from .confidence import get_confidence_summary
-<<<<<<< HEAD
+
 from .telemetry import ensure_collector, flush_telemetry
 from database.setup_db import get_session, Game, GameState, Performance, ensure_game_schema
-=======
+
 from database.setup_db import get_session, Game, Performance, ensure_game_schema
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
+
 from game.personality_effects import evaluate_postgame_slumps
 from game.relationship_manager import apply_confidence_relationships
 from .states import MatchState
 from .batter_logic import AtBatStateMachine
-<<<<<<< HEAD
+
 from ui.ui_display import render_box_score_panel
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
+
 
 def save_game_results(state):
     """
@@ -156,9 +154,6 @@ def _rotate_lineup(lineup: List[Any]) -> List[Any]:
     if not lineup:
         return lineup
     return lineup[1:] + lineup[:1]
-
-<<<<<<< HEAD
-=======
 
 @dataclass
 class MatchContext:
@@ -424,7 +419,6 @@ class MatchController:
     def _emit(self, event_name: str, payload: Optional[Dict[str, Any]] = None) -> None:
         if self.bus:
             self.bus.publish(event_name, payload or {})
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 
 def _finalize_rivalry_context(state, winner_team_id: Optional[int]) -> None:
     ctx = getattr(state, "rival_match_context", None)
@@ -796,25 +790,15 @@ def run_match(
         if not state:
             return None # Error handling
         CommentaryListener(getattr(state, "event_bus", None))
-<<<<<<< HEAD
         if not hasattr(state, "telemetry_store_in_db"):
             state.telemetry_store_in_db = True
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         scoreboard = Scoreboard()
         controller = MatchController(state, scoreboard)
-        
         winner = controller.start_game()
-
-<<<<<<< HEAD
         if not fast:
             render_box_score_panel(scoreboard, state)
-
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         if winner:
             save_game_results(state)
-
             # Make sure downstream callers can inspect winner attributes after
             # this function closes the session.
             try:
@@ -822,7 +806,6 @@ def run_match(
                 db_session.expunge(winner)
             except Exception:
                 pass
-        
         return winner
     finally:
         set_commentary_enabled(previous_commentary)
