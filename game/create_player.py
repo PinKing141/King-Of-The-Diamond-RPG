@@ -347,6 +347,7 @@ def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Option
         entry = PitchRepertoire(
             player_id=player.id,
             pitch_name=name,
+            pitch_type=name, # Using name as type if no mapping
             quality=quality,
             break_level=break_level,
         )
@@ -378,15 +379,19 @@ def create_hero(session: Session) -> Optional[int]:
         # STEP 0: NAME ENTRY
         if step == 0:
             _print_option("Player Identity")
-            print(f"First Name : {data['first_name']}")
-            print(f"Last Name  : {data['last_name']}")
+            
+            # --- FIX: Avoid double prompts by only showing current if set ---
+            if data['first_name'] or data['last_name']:
+                print(f"Current: {data['first_name']} {data['last_name']}")
             print("Enter new values or leave blank to keep current.")
+            
             first = input("First Name: ").strip()
             if first:
                 data['first_name'] = first
             last = input("Last Name: ").strip()
             if last:
                 data['last_name'] = last
+            
             if not data['first_name']:
                 print("First name is required.")
                 time.sleep(1)
@@ -395,6 +400,7 @@ def create_hero(session: Session) -> Optional[int]:
                 print("Last name is required.")
                 time.sleep(1)
                 continue
+            
             confirm = input("Continue with this name? (y/n): ").strip().lower()
             if confirm == 'y':
                 step += 1

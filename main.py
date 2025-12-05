@@ -287,6 +287,7 @@ def run_game_loop():
             # -----------------------------------------
             # WORLD SIM EVENTS
             # -----------------------------------------
+            print(f"{Colour.dim}Simulating world matches...{Colour.RESET}")
             simulate_background_matches(user_school_id)
 
             # -----------------------------------------
@@ -328,6 +329,7 @@ def run_game_loop():
             # -----------------------------------------
             context.refresh_session()
             context.set_player(user_player.id, user_school_id)
+            print(f"{Colour.dim}Opening schedule...{Colour.RESET}")
             start_week(context, current_week)
 
             # -----------------------------------------
