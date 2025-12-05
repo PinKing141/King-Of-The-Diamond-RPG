@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from typing import Optional
 
@@ -10,6 +11,56 @@ SCOUTING_PACKAGES = {
     "basic": {"cost": 40000, "knowledge_gain": 1, "recruit_roll_bonus": 0},
     "advanced": {"cost": 80000, "knowledge_gain": 2, "recruit_roll_bonus": 1},
     "elite": {"cost": 150000, "knowledge_gain": 3, "recruit_roll_bonus": 2},
+}
+
+PREFECTURE_REGION = {
+    "Hokkaido": "Hokkaido",
+    "Aomori": "Tohoku",
+    "Iwate": "Tohoku",
+    "Miyagi": "Tohoku",
+    "Akita": "Tohoku",
+    "Yamagata": "Tohoku",
+    "Fukushima": "Tohoku",
+    "Ibaraki": "Kanto",
+    "Tochigi": "Kanto",
+    "Gunma": "Kanto",
+    "Saitama": "Kanto",
+    "Chiba": "Kanto",
+    "Tokyo": "Kanto",
+    "Kanagawa": "Kanto",
+    "Niigata": "Chubu",
+    "Toyama": "Chubu",
+    "Ishikawa": "Chubu",
+    "Fukui": "Chubu",
+    "Yamanashi": "Chubu",
+    "Nagano": "Chubu",
+    "Gifu": "Chubu",
+    "Shizuoka": "Chubu",
+    "Aichi": "Chubu",
+    "Mie": "Kansai",
+    "Shiga": "Kansai",
+    "Kyoto": "Kansai",
+    "Osaka": "Kansai",
+    "Hyogo": "Kansai",
+    "Nara": "Kansai",
+    "Wakayama": "Kansai",
+    "Tottori": "Chugoku",
+    "Shimane": "Chugoku",
+    "Okayama": "Chugoku",
+    "Hiroshima": "Chugoku",
+    "Yamaguchi": "Chugoku",
+    "Tokushima": "Shikoku",
+    "Kagawa": "Shikoku",
+    "Ehime": "Shikoku",
+    "Kochi": "Shikoku",
+    "Fukuoka": "Kyushu",
+    "Saga": "Kyushu",
+    "Nagasaki": "Kyushu",
+    "Kumamoto": "Kyushu",
+    "Oita": "Kyushu",
+    "Miyazaki": "Kyushu",
+    "Kagoshima": "Kyushu",
+    "Okinawa": "Kyushu",
 }
 
 
@@ -33,6 +84,70 @@ class ScoutingActionResult:
     tier: Optional[str] = None
     knowledge_gained: int = 0
     recruit_roll_bonus: int = 0
+    network_scope: Optional[str] = None
+    network_rating: Optional[int] = None
+
+
+def _decode_network(payload) -> dict:
+    if not payload:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    try:
+        return json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _pref_region(prefecture: Optional[str]) -> str:
+    if not prefecture:
+        return "Unknown"
+    return PREFECTURE_REGION.get(prefecture, "Unknown")
+
+
+def _scouting_scope(user: Optional[School], target: Optional[School]) -> str:
+    if not user or not target:
+        return "National"
+    if getattr(user, 'geo_location_id', None) and user.geo_location_id == getattr(target, 'geo_location_id', None):
+        return "Local"
+    if user.prefecture and target.prefecture and user.prefecture == target.prefecture:
+        return "Local"
+    if _pref_region(user.prefecture) == _pref_region(target.prefecture):
+        return "Regional"
+    if target.prefecture:
+        return "National"
+    return "International"
+
+
+def _network_modifiers(user: Optional[School], target: Optional[School]):
+    scope = _scouting_scope(user, target)
+    network = _decode_network(getattr(user, 'scouting_network', None) if user else None)
+    rating = network.get(scope)
+    fallback_keys = ("National", "Regional", "Local", "International")
+    if rating is None:
+        for key in fallback_keys:
+            if key in network:
+                rating = network[key]
+                break
+    rating = rating if rating is not None else 50
+    rating = max(25.0, min(95.0, float(rating)))
+    reach_delta = (rating - 50.0) / 50.0
+    cost_multiplier = max(0.65, min(1.25, 1.0 - reach_delta * 0.25))
+    knowledge_multiplier = max(0.75, min(1.4, 1.0 + reach_delta * 0.35))
+    recruit_bonus = 1 if rating >= 80 else 0
+    return scope, int(round(rating)), cost_multiplier, knowledge_multiplier, recruit_bonus
+
+
+def describe_network_advantage(user: Optional[School], target: Optional[School]) -> dict:
+    """Return a structured preview of scouting reach modifiers for UI/telemetry."""
+    scope, rating, cost_mult, knowledge_mult, recruit_bonus = _network_modifiers(user, target)
+    return {
+        "scope": scope,
+        "rating": rating,
+        "cost_multiplier": round(cost_mult, 2),
+        "knowledge_multiplier": round(knowledge_mult, 2),
+        "recruit_bonus": recruit_bonus,
+    }
 
 
 def get_scouting_info(school_id: int, session=None) -> ScoutingInfoData:
@@ -75,6 +190,8 @@ def perform_scout_action(
     target = session.get(School, target_school_id)
     user_budget = user.budget if user else None
     target_id = target.id if target else target_school_id
+    scope_label = None
+    network_rating = None
 
     if not package:
         return ScoutingActionResult(
@@ -87,6 +204,8 @@ def perform_scout_action(
             budget_before=user_budget,
             budget_after=user_budget,
             tier=tier,
+            network_scope=scope_label,
+            network_rating=network_rating,
         )
 
     package_cost = cost_yen if cost_yen is not None else package["cost"]
@@ -104,7 +223,14 @@ def perform_scout_action(
             budget_before=user_budget,
             budget_after=user_budget,
             tier=tier_key,
+            network_scope=scope_label,
+            network_rating=network_rating,
         )
+
+    scope_label, network_rating, cost_multiplier, knowledge_multiplier, network_recruit_bonus = _network_modifiers(user, target)
+    package_cost = max(1, int(round(package_cost * cost_multiplier)))
+    knowledge_gain = max(1, int(round(knowledge_gain * knowledge_multiplier)))
+    recruit_bonus += network_recruit_bonus
 
     scout_data = session.get(ScoutingData, target.id)
     if not scout_data:
@@ -124,6 +250,8 @@ def perform_scout_action(
             budget_before=user.budget,
             budget_after=user.budget,
             tier=tier_key,
+            network_scope=scope_label,
+            network_rating=network_rating,
         )
 
     if scout_data.knowledge_level >= MAX_KNOWLEDGE_LEVEL:
@@ -137,6 +265,8 @@ def perform_scout_action(
             budget_before=user.budget,
             budget_after=user.budget,
             tier=tier_key,
+            network_scope=scope_label,
+            network_rating=network_rating,
         )
 
     knowledge_after = min(
@@ -156,6 +286,8 @@ def perform_scout_action(
             budget_before=user.budget,
             budget_after=user.budget,
             tier=tier_key,
+            network_scope=scope_label,
+            network_rating=network_rating,
         )
 
     starting_budget = user.budget
@@ -178,4 +310,6 @@ def perform_scout_action(
         tier=tier_key,
         knowledge_gained=applied_gain,
         recruit_roll_bonus=recruit_bonus,
+        network_scope=scope_label,
+        network_rating=network_rating,
     )

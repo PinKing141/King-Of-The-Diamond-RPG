@@ -2,7 +2,7 @@ import sys
 import os
 import random
 import time
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -75,7 +75,7 @@ MIN_PITCHES = 1
 MAX_PITCHES = 4
 
 _PREFECTURE_CACHE: Optional[List[str]] = None
-_CITY_CACHE: Dict[str, List[str]] = {}
+_CITY_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 
 
 def _reset_hometown_cache() -> None:
@@ -105,7 +105,7 @@ def get_prefecture_catalog(session: Session) -> List[str]:
     return _PREFECTURE_CACHE
 
 
-def _load_cities_for_prefecture(session: Session, prefecture: str) -> List[str]:
+def _load_cities_for_prefecture(session: Session, prefecture: str) -> List[Dict[str, Any]]:
     cached = _CITY_CACHE.get(prefecture)
     if cached is not None:
         return cached
@@ -125,24 +125,47 @@ def _load_cities_for_prefecture(session: Session, prefecture: str) -> List[str]:
             .order_by(func.count(School.id).desc(), func.lower(School.city_name))
             .all()
         )
-        city_names = [row[0] for row in rows if row[0]]
+        city_rows: List[Dict[str, Any]] = []
+        for idx, row in enumerate(rows, start=1):
+            city_name = row[0]
+            if not city_name:
+                continue
+            city_rows.append({
+                "name": city_name,
+                "school_count": row[1],
+                "ordinal": idx,
+            })
     except Exception as exc:
         print(f"City lookup failed for {prefecture}: {exc}")
-        city_names = []
+        city_rows = []
 
-    _CITY_CACHE[prefecture] = city_names
-    return city_names
+    _CITY_CACHE[prefecture] = city_rows
+    return city_rows
+
+def _render_city_directory(prefecture: str, cities: List[Dict[str, Any]], columns: int = 3) -> None:
+    if not cities:
+        print(f"No registered baseball schools for {prefecture} yet.")
+        return
+
+    col_width = FRAME_WIDTH // max(columns, 1)
+    for idx, entry in enumerate(cities, start=1):
+        label = f"{idx:>2}. {entry['name']} ({entry['school_count']})"
+        print(label.ljust(col_width), end="")
+        if idx % columns == 0:
+            print()
+    if len(cities) % columns != 0:
+        print()
+    print(f"Cities with active programs: {len(cities)}")
 
 
-def get_city_matches(session: Session, prefecture: str, search_term: str = "") -> List[str]:
+def get_city_matches(session: Session, prefecture: str, search_term: str = "") -> List[Dict[str, Any]]:
     cities = _load_cities_for_prefecture(session, prefecture)
     if not cities:
         return []
 
     term = search_term.strip().lower()
-    filtered = [c for c in cities if term in c.lower()] if term else cities
-    limited = filtered[:20]
-    return [f"{prefecture} — {city}" for city in limited]
+    filtered = [c for c in cities if term in c['name'].lower()] if term else cities
+    return filtered[:20]
 
 
 def _bar(value: Optional[int], width: int = 20) -> str:
@@ -598,7 +621,13 @@ def create_hero(session: Session) -> Optional[int]:
                     break
                 filtered = [p for p in prefectures if filter_text in p.lower()] or prefectures
                 for idx, pref in enumerate(filtered, start=1):
-                    print(f" {idx:>2}. {pref}")
+                    cities_preview = _load_cities_for_prefecture(session, pref)
+                    city_count = len(cities_preview)
+                    sample_names = ", ".join(entry['name'] for entry in cities_preview[:2])
+                    preview = f"{city_count} cities"
+                    if sample_names:
+                        preview += f": {sample_names}"
+                    print(f" {idx:>2}. {pref} [{preview}]")
                 choice = input("Choice #: ").strip()
                 if not choice.isdigit():
                     continue
@@ -612,37 +641,69 @@ def create_hero(session: Session) -> Optional[int]:
                 continue
             data['prefecture_choice'] = selected_pref
 
+            city_rows = _load_cities_for_prefecture(session, selected_pref)
+            if not city_rows:
+                print("No active cities registered in this prefecture yet. Using prefecture only.")
+                data['hometown'] = selected_pref
+                step += 1
+                selected_pref = None
+                continue
+
+            show_directory = True
             while True:
-                _print_option(f"{selected_pref}: enter city keyword (blank lists popular). 0=Back")
-                city_term = input("City Search: ").strip()
-                if city_term == '0':
+                if show_directory:
+                    _print_option(f"{selected_pref}: cities with baseball schools (Enter to refresh, 0=Back)")
+                    _render_city_directory(selected_pref, city_rows)
+                    print("Type a city number, enter text to search, or 'P' to use the prefecture only.")
+                    show_directory = False
+
+                city_input = input("City #: ").strip()
+                if city_input == '':
+                    show_directory = True
+                    continue
+                if city_input == '0':
                     selected_pref = None
                     data['prefecture_choice'] = None
                     break
-                matches = get_city_matches(session, selected_pref, city_term)
-                if not matches:
-                    print("No cities found. Use prefecture only?")
-                    if input("Use prefecture only (y/n): ").lower() == 'y':
-                        data['hometown'] = selected_pref
+                if city_input.lower() in {'p', 'pref'}:
+                    data['hometown'] = selected_pref
+                    step += 1
+                    selected_pref = None
+                    break
+                if city_input.isdigit():
+                    idx_choice = int(city_input)
+                    if 1 <= idx_choice <= len(city_rows):
+                        entry = city_rows[idx_choice - 1]
+                        data['hometown'] = f"{selected_pref} — {entry['name']}"
                         step += 1
+                        selected_pref = None
                         break
+                    print("Invalid city number. Press Enter to see the list again.")
                     continue
-                print("\nSelect City:")
-                print(" 0. Use prefecture only")
-                for i, m in enumerate(matches, start=1):
-                    print(f" {i}. {m}")
-                choice = input("Choice: ").strip()
+
+                matches = get_city_matches(session, selected_pref, city_input)
+                if not matches:
+                    print("No cities match that keyword. Press Enter to show the directory again.")
+                    continue
+
+                print("\nMatching Cities:")
+                for i, match in enumerate(matches, start=1):
+                    label = f"{match['name']} ({match['school_count']}) [#{match['ordinal']}]"
+                    print(f" {i}. {label}")
+                choice = input("Choice (Enter to continue searching): ").strip()
+                if not choice:
+                    continue
                 if not choice.isdigit():
                     continue
                 pick = int(choice)
-                if pick == 0:
-                    data['hometown'] = selected_pref
-                    step += 1
-                    break
                 if 1 <= pick <= len(matches):
-                    data['hometown'] = matches[pick - 1]
+                    entry = matches[pick - 1]
+                    data['hometown'] = f"{selected_pref} — {entry['name']}"
                     step += 1
+                    selected_pref = None
                     break
+                print("Invalid selection.")
+
             if not selected_pref:
                 continue
 

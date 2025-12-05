@@ -134,7 +134,7 @@ def ensure_player_schema():
     if 'height_potential' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN height_potential INTEGER DEFAULT 180")
     if 'growth_tag' not in columns:
-        statements.append("ALTER TABLE players ADD COLUMN growth_tag VARCHAR DEFAULT 'Normal'")
+        statements.append("ALTER TABLE players ADD COLUMN growth_tag VARCHAR DEFAULT 'late_bloomer'")
     if 'weight_kg' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN weight_kg INTEGER DEFAULT 72")
     if 'is_two_way' not in columns:
@@ -204,8 +204,18 @@ def ensure_coach_schema():
         statements.append("ALTER TABLE coaches ADD COLUMN loyalty INTEGER DEFAULT 50")
     if 'volatility' not in columns:
         statements.append("ALTER TABLE coaches ADD COLUMN volatility INTEGER DEFAULT 50")
+    if 'archetype' not in columns:
+        statements.append("ALTER TABLE coaches ADD COLUMN archetype VARCHAR DEFAULT 'TRADITIONALIST'")
+    if 'scouting_ability' not in columns:
+        statements.append("ALTER TABLE coaches ADD COLUMN scouting_ability INTEGER DEFAULT 50")
 
     if not statements:
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE coaches SET drive = COALESCE(drive, 50)"))
+            conn.execute(text("UPDATE coaches SET loyalty = COALESCE(loyalty, 50)"))
+            conn.execute(text("UPDATE coaches SET volatility = COALESCE(volatility, 50)"))
+            conn.execute(text("UPDATE coaches SET archetype = COALESCE(archetype, 'TRADITIONALIST')"))
+            conn.execute(text("UPDATE coaches SET scouting_ability = COALESCE(scouting_ability, 50)"))
         return
 
     with engine.begin() as conn:
@@ -214,6 +224,8 @@ def ensure_coach_schema():
         conn.execute(text("UPDATE coaches SET drive = COALESCE(drive, 50)"))
         conn.execute(text("UPDATE coaches SET loyalty = COALESCE(loyalty, 50)"))
         conn.execute(text("UPDATE coaches SET volatility = COALESCE(volatility, 50)"))
+        conn.execute(text("UPDATE coaches SET archetype = COALESCE(archetype, 'TRADITIONALIST')"))
+        conn.execute(text("UPDATE coaches SET scouting_ability = COALESCE(scouting_ability, 50)"))
 
 
 def ensure_game_stats_schema():
@@ -249,7 +261,6 @@ def ensure_game_schema():
     _add('weather_label', 'VARCHAR')
     _add('weather_condition', 'VARCHAR')
     _add('weather_precip', 'VARCHAR')
-    _add('weather_temperature_f', 'INTEGER')
     _add('weather_wind_speed', 'FLOAT')
     _add('weather_wind_direction', 'VARCHAR')
     _add('weather_summary', 'TEXT')
@@ -284,13 +295,26 @@ def ensure_school_schema():
         statements.append("ALTER TABLE schools ADD COLUMN city_name VARCHAR")
     if 'geo_location_id' not in columns:
         statements.append("ALTER TABLE schools ADD COLUMN geo_location_id INTEGER")
+    if 'scouting_network' not in columns:
+        statements.append("ALTER TABLE schools ADD COLUMN scouting_network TEXT DEFAULT '{\"Local\": 50}'")
+    if 'current_era' not in columns:
+        statements.append("ALTER TABLE schools ADD COLUMN current_era VARCHAR DEFAULT 'REBUILDING'")
+    if 'era_momentum' not in columns:
+        statements.append("ALTER TABLE schools ADD COLUMN era_momentum INTEGER DEFAULT 0")
 
     if not statements:
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE schools SET scouting_network = COALESCE(scouting_network, '{\"Local\": 50}')"))
+            conn.execute(text("UPDATE schools SET current_era = COALESCE(current_era, 'REBUILDING')"))
+            conn.execute(text("UPDATE schools SET era_momentum = COALESCE(era_momentum, 0)"))
         return
 
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+        conn.execute(text("UPDATE schools SET scouting_network = COALESCE(scouting_network, '{\"Local\": 50}')"))
+        conn.execute(text("UPDATE schools SET current_era = COALESCE(current_era, 'REBUILDING')"))
+        conn.execute(text("UPDATE schools SET era_momentum = COALESCE(era_momentum, 0)"))
 
 
 def ensure_geolocation_schema():
@@ -333,6 +357,9 @@ class School(Base):
     prestige = Column(Integer, default=0)
 
     budget = Column(Integer, default=500000)
+    scouting_network = Column(Text, default='{"Local": 50}')
+    current_era = Column(String, default="REBUILDING")
+    era_momentum = Column(Integer, default=0)
 
     # Philosophy data
     philosophy = Column(String)
@@ -375,6 +402,8 @@ class Coach(Base):
     drive = Column(Integer, default=50)
     loyalty = Column(Integer, default=50)
     volatility = Column(Integer, default=50)
+    archetype = Column(String, default="TRADITIONALIST")
+    scouting_ability = Column(Integer, default=50)
 
     school = relationship("School", back_populates="coach")
 

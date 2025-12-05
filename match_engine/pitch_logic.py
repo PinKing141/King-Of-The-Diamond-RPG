@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 from database.setup_db import PitchRepertoire, session_scope
 from match_engine.pitch_definitions import PITCH_TYPES, ARM_SLOT_MODIFIERS
 from game.rng import get_rng
+from game.mechanics import get_or_create_profile, mechanics_adjustment_for_pitch
 from game.skill_system import player_has_skill
 from battery_system.battery_trust import adjust_battery_sync, get_battery_sync
 
@@ -363,6 +364,7 @@ class PitchResult:
         self.guess_payload: dict | None = None
         self.battery_call: dict | None = None
         self.bunt_intent = None
+        self.mechanics_tags: tuple[str, ...] = ()
 
 
 def _record_catcher_memory(state, batter_id: Optional[int], result: PitchResult) -> None:
@@ -630,6 +632,7 @@ def resolve_pitch(
     pitcher_id = getattr(pitcher, 'id', None)
     batter_id = getattr(batter, 'id', None)
     count_snapshot = (state.balls, state.strikes)
+    psychology_engine = getattr(state, "psychology_engine", None)
 
     # --- 1. PITCH SELECTION (BATTERY NEGOTIATION) ---
     catcher = get_current_catcher(state)
@@ -674,9 +677,20 @@ def resolve_pitch(
 
     # --- 2. PITCH PHYSICS ---
     p_def = PITCH_TYPES.get(pitch.pitch_name, PITCH_TYPES["4-Seam Fastball"])
+
+    mechanics_profile = None
+    mechanics_tags: tuple[str, ...] = ()
+    mechanics_deception = 0.0
+    perception_penalty = 0.0
+    try:
+        mechanics_profile = get_or_create_profile(state, pitcher)
+    except Exception:
+        mechanics_profile = None
     
     # Arm Slot Mods
     arm_slot = getattr(pitcher, 'arm_slot', 'Three-Quarters')
+    if mechanics_profile and getattr(mechanics_profile, "arm_slot", None):
+        arm_slot = mechanics_profile.arm_slot
     slot_mods = ARM_SLOT_MODIFIERS.get(arm_slot, ARM_SLOT_MODIFIERS["Three-Quarters"])
     slot_group = slot_mods.get('group', 'Neutral')
     plane = p_def.get('plane', 'ride')
@@ -720,6 +734,14 @@ def resolve_pitch(
 
     base_control = (getattr(pitcher, 'control', 50) or 50) + pitcher_trait_mods.get('control', 0)
     effective_control = (base_control * slot_mods['control_penalty_mult']) - control_penalty
+    if mechanics_profile:
+        mech_adj = mechanics_adjustment_for_pitch(mechanics_profile, p_def, location=location)
+        velocity += mech_adj.velocity_bonus
+        effective_control += mech_adj.control_bonus
+        effective_movement *= mech_adj.movement_scalar
+        mechanics_deception = mech_adj.deception_bonus
+        perception_penalty = mech_adj.perception_penalty
+        mechanics_tags = mech_adj.tags
     if weather:
         effective_control -= weather.wild_pitch_modifier * 60
     if weather_effects and weather_effects.ball_slip_chance:
@@ -790,6 +812,12 @@ def resolve_pitch(
         state.last_clutch_pitch_effect = dict(clutch_effect)
 
     # --- 3. BATTER REACTION ---
+    pitcher_psych = psychology_engine.pitcher_modifiers(pitcher_id) if psychology_engine else None
+    batter_psych = psychology_engine.batter_modifiers(batter_id) if psychology_engine else None
+    if pitcher_psych:
+        effective_control += pitcher_psych.control_bonus
+        effective_movement += pitcher_psych.movement_bonus
+        velocity += pitcher_psych.velocity_bonus
     
     # Apply mods (from User Choice or AI buffs)
     base_eye = getattr(batter, 'eye', getattr(batter, 'discipline', 50)) or 50
@@ -798,6 +826,9 @@ def resolve_pitch(
     base_contact = getattr(batter, 'contact', 50) or 50
     base_contact += batter_trait_mods.get('contact', 0)
     contact_stat = base_contact + batter_mods.get('contact_mod', 0)
+    if batter_psych:
+        eye_stat *= batter_psych.eye_scalar
+        contact_stat *= batter_psych.contact_scalar
 
     rivalry_ctx = getattr(state, "rival_match_context", None)
     if rivalry_ctx and batter_id:
@@ -886,6 +917,11 @@ def resolve_pitch(
             setattr(state, "last_battery_call", dict(battery_context))
         _record_catcher_memory(state, batter_id, res_obj)
         _apply_battery_feedback(res_obj)
+        if mechanics_tags:
+            res_obj.mechanics_tags = tuple(mechanics_tags)
+        if psychology_engine:
+            leverage = 1.0 + max(0.0, getattr(state, "pressure_index", 0.0)) / 10.0
+            psychology_engine.record_pitch(pitcher_id, batter_id, res_obj, leverage=leverage)
         return res_obj
 
     if flow_offense != 1.0:
@@ -902,7 +938,7 @@ def resolve_pitch(
         contact_stat *= 1.1
         batter_mods['power_mod'] = batter_mods.get('power_mod', 0) + 5
     
-    reaction = eye_stat + rng.randint(-10, 10)
+    reaction = eye_stat + rng.randint(-10, 10) - perception_penalty
     bat_control = contact_stat + rng.randint(-15, 15)
     batter_conf = get_confidence(state, batter.id)
     reaction += batter_conf * 0.2
@@ -972,7 +1008,7 @@ def resolve_pitch(
         return result
 
     # CASE B: SWING
-    hit_difficulty = effective_movement
+    hit_difficulty = effective_movement + mechanics_deception
     if location == "Chase": hit_difficulty += 30
     if velocity > 150: hit_difficulty += 10
     hit_difficulty += tunneling_bonus

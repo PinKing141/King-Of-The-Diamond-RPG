@@ -93,6 +93,50 @@ AUTO_SCHEDULE_TEMPLATE: Tuple[Tuple[str, str, str], ...] = (
 
 SMART_SIM_FATIGUE_CAP = 92
 
+ERA_PRESSURE_WEIGHTS = {
+    "DYNASTY": 1.35,
+    "ASCENDING": 1.15,
+    "STABLE": 1.0,
+    "RETOOLING": 0.9,
+    "REBUILDING": 0.75,
+}
+
+ERA_REWARD_WEIGHTS = {
+    "DYNASTY": 1.15,
+    "ASCENDING": 1.05,
+    "STABLE": 1.0,
+    "RETOOLING": 0.95,
+    "REBUILDING": 0.9,
+}
+
+
+def _era_profile(school) -> Tuple[str, int]:
+    if not school:
+        return "STABLE", 0
+    label = (getattr(school, 'current_era', 'STABLE') or 'STABLE').upper()
+    momentum = int(getattr(school, 'era_momentum', 0) or 0)
+    return label, momentum
+
+
+def _era_pressure_multiplier(school) -> float:
+    label, momentum = _era_profile(school)
+    base = ERA_PRESSURE_WEIGHTS.get(label, 1.0)
+    return max(0.6, min(1.5, base + momentum * 0.01))
+
+
+def _era_reward_multiplier(school) -> float:
+    label, momentum = _era_profile(school)
+    base = ERA_REWARD_WEIGHTS.get(label, 1.0)
+    return max(0.7, min(1.4, base + momentum * 0.005))
+
+
+def _effective_order_rewards(coach_order: Optional[CoachOrder], school) -> tuple[int, int]:
+    if not coach_order:
+        return 0, 0
+    trust_mult = _era_reward_multiplier(school)
+    trust_reward = max(1, int(round(coach_order.reward_trust * trust_mult))) if coach_order.reward_trust else 0
+    return trust_reward, coach_order.reward_ability_points
+
 
 def _summarize_execution(current_week: int, execution) -> WeekSummary:
     summary = WeekSummary(week_number=current_week)
@@ -328,6 +372,8 @@ def _print_weekly_brief(player: Player, current_week: int, coach_order: Optional
     print(f"{Colour.HEADER}=== WEEK {current_week}: TRAINING PREP ==={Colour.RESET}")
     if school:
         print(f"School: {school.name} ({school.prefecture})")
+        era_label, era_momentum = _era_profile(school)
+        print(f"Era Status: {era_label.title()} (Momentum {era_momentum:+d})")
     if coach:
         print(f"Coach: {coach.name} | Expectations: {'First-String' if squad == SQUAD_FIRST_STRING else 'Second-String'}")
     print(f"Player: {player.name or 'You'} | Position: {player.position} | Year {player.year}")
@@ -337,11 +383,12 @@ def _print_weekly_brief(player: Player, current_week: int, coach_order: Optional
     print(f"Academic Standing: {academic_score} (Need {target_score}+ to stay eligible)")
     if coach_order:
         req_text = _describe_order_requirement(coach_order)
+        effective_trust, effective_ability = _effective_order_rewards(coach_order, school)
         print(
             f"Coach's Orders: {coach_order.description}"
         )
         print(
-            f"  Needs: {req_text} | Reward: +{coach_order.reward_trust} Trust, +{coach_order.reward_ability_points} Ability"
+            f"  Needs: {req_text} | Reward: +{effective_trust} Trust, +{effective_ability} Ability"
         )
 
 
@@ -358,6 +405,9 @@ def _process_skipped_penalties(
     for slot in skipped:
         expected = slot.get("expected")
         trust_penalty += MANDATORY_TRUST_PENALTIES.get(expected, DEFAULT_TRUST_PENALTY)
+
+    pressure_multiplier = _era_pressure_multiplier(getattr(player, 'school', None))
+    trust_penalty = max(1, int(round(trust_penalty * pressure_multiplier))) if trust_penalty else 0
 
     morale_penalty = min(MAX_MORALE_PENALTY, MORALE_PENALTY_PER_SKIP * len(skipped))
     old_trust = player.trust_baseline or 50
@@ -443,8 +493,7 @@ def _finalize_week_outcomes(
         progress = order_progress.get("progress", 0)
         target = order_progress.get("target", 0)
         if completed:
-            trust_gain = coach_order.reward_trust
-            ability_gain = coach_order.reward_ability_points
+            trust_gain, ability_gain = _effective_order_rewards(coach_order, getattr(player, 'school', None))
             old_trust = player.trust_baseline or 50
             player.trust_baseline = min(100, old_trust + trust_gain)
             player.ability_points = (player.ability_points or 0) + ability_gain
@@ -603,6 +652,7 @@ def render_planning_ui(
     coach_order: Optional[CoachOrder] = None,
     order_progress: Optional[Dict[str, int]] = None,
     team_load_snapshot: Optional[Tuple[float, float]] = None,
+    school=None,
 ):
     """Draws the weekly calendar grid with action metadata + cursor focus."""
 
@@ -690,8 +740,9 @@ def render_planning_ui(
         print(
             f"Coach's Orders: {Colour.BOLD}{coach_order.description}{Colour.RESET} ({req_text})"
         )
+        effective_trust, effective_ability = _effective_order_rewards(coach_order, school)
         print(
-            f" Reward: +{coach_order.reward_trust} Trust / +{coach_order.reward_ability_points} Ability Points"
+            f" Reward: +{effective_trust} Trust / +{effective_ability} Ability Points"
         )
         if order_progress:
             progress = order_progress.get("progress", 0)
@@ -776,6 +827,7 @@ def plan_week_ui(start_fatigue: int, player: Optional[Player], coach_order: Opti
             coach_order,
             progress_snapshot,
             team_snapshot,
+            getattr(player, 'school', None),
         )
 
         mandatory_action = mandatory_schedule.get((day_idx, slot_idx))
@@ -839,6 +891,7 @@ def plan_week_ui(start_fatigue: int, player: Optional[Player], coach_order: Opti
         coach_order,
         final_progress,
         team_snapshot,
+        getattr(player, 'school', None),
     )
     input(f"\n{Colour.GREEN}Schedule Complete. Press Enter to Execute.{Colour.RESET}")
 

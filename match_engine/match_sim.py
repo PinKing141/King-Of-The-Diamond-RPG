@@ -240,6 +240,9 @@ class MatchSimulation:
         with self._override_player_input(batter_choice):
             AtBatStateMachine(self.state).run()
         outcome = self._summarize_outcome(matchup)
+        psych = getattr(self.state, "psychology_engine", None)
+        if psych:
+            psych.record_plate_outcome(outcome)
         self._update_battery_trust(matchup.pitcher, outcome)
         batting_side = self._batting_side(matchup.half)
         fielding_side = self._fielding_side(matchup.half)
@@ -268,6 +271,9 @@ class MatchSimulation:
             {
                 "inning": outcome.inning,
                 "half": outcome.half,
+                 "pitcher_id": outcome.pitcher_id,
+                 "batter_id": outcome.batter_id,
+                 "result_type": outcome.result_type,
                 "outs_recorded": outcome.outs_recorded,
                 "runs_scored": outcome.runs_scored,
                 "description": outcome.description,

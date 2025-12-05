@@ -1,7 +1,10 @@
+import math
 import random
 import sys
 import os
 import sqlite3
+import json
+import unicodedata
 import pykakasi 
 import traceback
 from collections import defaultdict
@@ -94,8 +97,291 @@ prefecture_counts = {
     "Kagoshima": 70, "Okinawa": 60
 }
 
+
+def _slug_text(text: str) -> str:
+    if not text:
+        return ""
+    decomposed = unicodedata.normalize('NFKD', text)
+    stripped = ''.join(ch for ch in decomposed if not unicodedata.combining(ch))
+    cleaned = ''.join(ch for ch in stripped if ch.isalnum())
+    return cleaned.lower()
+
+
+SLUG_TO_PREF = {_slug_text(name): name for name in prefecture_counts.keys()}
+_PREF_SUFFIXES = ("to", "dou", "do", "fu", "ken")
+
+
+def _resolve_prefecture_name(raw: str) -> str:
+    if not raw:
+        return None
+    slug = _slug_text(raw)
+    if slug in SLUG_TO_PREF:
+        return SLUG_TO_PREF[slug]
+    for suffix in _PREF_SUFFIXES:
+        if slug.endswith(suffix):
+            base = slug[: -len(suffix)]
+            if base in SLUG_TO_PREF:
+                return SLUG_TO_PREF[base]
+    return None
+
+
+def _shuffle_name_sets():
+    random.shuffle(ELITE_PREFIXES)
+    random.shuffle(ELITE_SUFFIXES)
+
+
+def _register_school_name(name: str) -> str:
+    candidate = " ".join(name.split())
+    if not candidate:
+        return None
+    lowered = candidate.lower()
+    if lowered in BANNED_SCHOOL_NAMES:
+        return None
+    if candidate in used_school_names:
+        return None
+    used_school_names.add(candidate)
+    return candidate
+
+
+def _city_base_label(prefecture: str, city_name: str, *, allow_prefecture=False) -> str:
+    if city_name:
+        return city_name
+    if prefecture in MEGA_PREFECTURES and not allow_prefecture:
+        if random.random() < 0.01:
+            return prefecture
+        return f"{prefecture} Metro"
+    return city_name or prefecture
+
+
+def roll_school_archetype() -> str:
+    roll = random.randint(1, 100)
+    if roll <= 20:
+        return "elite"
+    if roll <= 60:
+        return "regional"
+    return "specialist"
+
+
+def _clamp_rating(value: float, low: int = 5, high: int = 99) -> int:
+    return max(low, min(high, int(round(value))))
+
+
+ERA_MOMENTUM_RANGES = {
+    "DYNASTY": (8, 18),
+    "ASCENDING": (3, 12),
+    "STABLE": (-3, 4),
+    "REBUILDING": (-12, 2),
+    "RETOOLING": (-6, 6),
+}
+
+
+def _reach_multiplier(budget: int) -> float:
+    # Normalize wide budget ranges (50k - 1m) into a 0.4 - 1.6 window.
+    return min(1.6, max(0.4, budget / 400_000))
+
+
+def _build_scouting_network(prestige: int, philosophy: dict) -> dict:
+    budget = philosophy.get('budget', 120_000)
+    reach = _reach_multiplier(budget)
+    focus = (philosophy.get('focus') or 'balanced').lower()
+
+    def _jitter(base, delta):
+        return _clamp_rating(base + random.randint(-delta, delta))
+
+    network = {
+        "Local": _jitter(prestige + 15, 5),
+        "Regional": _jitter(prestige - 2 + reach * 18, 6),
+        "National": _jitter(prestige - 12 + reach * 22, 7),
+        "International": _jitter(prestige - 25 + reach * 26, 9),
+    }
+
+    if focus in {"pitching", "battery", "technical"}:
+        network["National"] = _clamp_rating(network["National"] + 4)
+        network["International"] = _clamp_rating(network["International"] + 4)
+    if focus in {"balanced", "mental"}:
+        network["Local"] = _clamp_rating(network["Local"] + 3)
+    if focus in {"speed", "stamina"}:
+        network["Regional"] = _clamp_rating(network["Regional"] + 3)
+
+    return network
+
+
+def _determine_school_era(philosophy_name: str, prestige: int) -> tuple[str, int]:
+    if philosophy_name == "Fallen Giant":
+        state = "RETOOLING"
+    elif prestige >= 85:
+        state = random.choice(("DYNASTY", "DYNASTY", "ASCENDING"))
+    elif prestige >= 70:
+        state = random.choice(("ASCENDING", "ASCENDING", "STABLE"))
+    elif prestige >= 55:
+        state = random.choice(("STABLE", "ASCENDING", "RETOOLING"))
+    elif prestige >= 40:
+        state = random.choice(("REBUILDING", "STABLE", "RETOOLING"))
+    else:
+        state = "REBUILDING"
+
+    momentum_range = ERA_MOMENTUM_RANGES[state]
+    return state, random.randint(*momentum_range)
+
+
+def seed_school_meta(philosophy_name: str, philosophy_data: dict, prestige: int) -> tuple[str, str, int]:
+    network = _build_scouting_network(prestige, philosophy_data)
+    era_label, momentum = _determine_school_era(philosophy_name, prestige)
+    return json.dumps(network), era_label, momentum
+
+
+def _build_elite_name(prefecture: str) -> str:
+    for _ in range(60):
+        prefix = random.choice(ELITE_PREFIXES)
+        suffix = random.choice(ELITE_SUFFIXES)
+        base = f"{prefix}{suffix}".title()
+        if base.lower() in BANNED_SCHOOL_NAMES:
+            continue
+        tag = random.choice(ELITE_SCHOOL_TAGS)
+        candidate = f"{base} {tag}"
+        unique = _register_school_name(candidate)
+        if unique:
+            return unique
+    return _register_school_name(f"{prefecture} Premier Academy")
+
+
+def _build_regional_name(prefecture: str, city: str) -> str:
+    base = _city_base_label(prefecture, city)
+    directions = random.sample(REGIONAL_DIRECTIONS, len(REGIONAL_DIRECTIONS))
+    endings = random.sample(REGIONAL_ENDINGS, len(REGIONAL_ENDINGS))
+    for direction in directions:
+        tag = random.choice(endings)
+        candidate = f"{base} {direction} {tag}"
+        unique = _register_school_name(candidate)
+        if unique:
+            return unique
+
+    numbers = random.sample(REGIONAL_NUMBER_TAGS, len(REGIONAL_NUMBER_TAGS))
+    for eng, jp in numbers:
+        label = random.choice((eng, jp))
+        tag = random.choice(endings)
+        candidate = f"{base} {label} {tag}"
+        unique = _register_school_name(candidate)
+        if unique:
+            return unique
+
+    fallback = f"{base} Regional High"
+    return _register_school_name(fallback)
+
+
+def _build_specialist_name(prefecture: str, city: str) -> str:
+    base = _city_base_label(prefecture, city)
+    for _ in range(40):
+        type_en, type_jp = random.choice(SPECIALIST_TYPES)
+        descriptor = random.choice((type_en, type_jp))
+        ending = random.choice(SPECIALIST_ENDINGS)
+        candidate = f"{base} {descriptor} {ending}"
+        unique = _register_school_name(candidate)
+        if unique:
+            return unique
+    return _register_school_name(f"{base} Vocational High")
+
+
+def generate_school_name(prefecture: str, city: str, archetype: str) -> str:
+    if archetype == "elite":
+        result = _build_elite_name(prefecture)
+    elif archetype == "regional":
+        result = _build_regional_name(prefecture, city)
+    else:
+        result = _build_specialist_name(prefecture, city)
+
+    if result:
+        return result
+    # Final fallback with random code to avoid duplicates
+    fallback = f"{prefecture} {random.choice(['Frontier', 'Harmony', 'Summit'])} High"
+    return _register_school_name(fallback) or f"{prefecture} Frontier High #{random.randint(100, 999)}"
+
+
+def plan_city_distribution(prefecture: str, total_slots: int, cache) -> list:
+    locations = cache.get(prefecture, [])
+    if not locations:
+        return [(None, total_slots)]
+
+    weights = []
+    for loc in locations:
+        population = max(loc.population or 5000, 5000)
+        jitter = random.uniform(0.85, 1.15)
+        weights.append(population * jitter)
+
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        even_share = max(total_slots // max(len(locations), 1), 1)
+        return [(loc, even_share) for loc in locations]
+
+    exact_counts = [(w / total_weight) * total_slots for w in weights]
+    floor_counts = [max(0, int(math.floor(val))) for val in exact_counts]
+    assigned = sum(floor_counts)
+    remaining = max(total_slots - assigned, 0)
+
+    remainders = [val - math.floor(val) for val in exact_counts]
+    order = sorted(range(len(locations)), key=lambda idx: remainders[idx], reverse=True)
+    idx = 0
+    while remaining > 0 and order:
+        target = order[idx % len(order)]
+        floor_counts[target] += 1
+        remaining -= 1
+        idx += 1
+
+    distribution = []
+    for loc, count in zip(locations, floor_counts):
+        if count > 0:
+            distribution.append((loc, count))
+
+    if not distribution:
+        # Ensure at least one location is used
+        top = max(locations, key=lambda l: l.population or 0)
+        distribution.append((top, total_slots))
+
+    return distribution
+
+
+def expand_city_slots(distribution: list, total_slots: int) -> list:
+    queue = []
+    for loc, count in distribution:
+        queue.extend([loc] * count)
+    if len(queue) < total_slots:
+        queue.extend([None] * (total_slots - len(queue)))
+    random.shuffle(queue)
+    return queue[:total_slots]
+
 # --- DATABASE CONNECTIONS ---
 kks = pykakasi.kakasi()
+
+
+ELITE_PREFIXES = [
+    "Sei", "Ten", "Haku", "Gin", "Ou", "Ryu", "Ko", "Gou",
+    "Ren", "Ka", "Sen", "Mori", "Shin", "Gaku", "Chi", "Mei",
+]
+ELITE_SUFFIXES = [
+    "do", "zan", "in", "kaku", "dai", "nan", "hoku", "kan",
+    "hara", "saki", "yama", "mi",
+]
+ELITE_SCHOOL_TAGS = ["Academy", "Gakuin", "Institute", "Prep", "High"]
+
+REGIONAL_DIRECTIONS = ["East", "West", "North", "South", "Central"]
+REGIONAL_NUMBER_TAGS = [
+    ("First", "Dai-Ichi"),
+    ("Second", "Dai-Ni"),
+    ("Third", "Dai-San"),
+]
+REGIONAL_ENDINGS = ["High", "Public", "Prefectural"]
+
+SPECIALIST_TYPES = [
+    ("Tech", "Kogyo"),
+    ("Commercial", "Shogyo"),
+    ("Maritime", "Marine"),
+    ("Arts", "Geijutsu"),
+    ("Agricultural", "Nogyo"),
+]
+SPECIALIST_ENDINGS = ["Institute", "Academy", "High"]
+
+BANNED_SCHOOL_NAMES = {name.lower() for name in ("Seido", "Inashiro", "Yakushi", "Ichidaisan")}
+MEGA_PREFECTURES = {"Tokyo", "Osaka", "Kanagawa"}
 
 
 def _row_value(row, *keys, default=None):
@@ -161,12 +447,20 @@ def import_city_catalog(session):
     seen = set()
     batch = []
     inserted = 0
+    unknown_prefectures = set()
 
     try:
         for row in cur.fetchall():
-            prefecture = _row_value(row, 'admin_name', 'prefecture')
+            prefecture_raw = _row_value(row, 'admin_name', 'prefecture')
             city_ascii = _row_value(row, 'city_ascii', 'city')
-            if not prefecture or not city_ascii:
+            prefecture = _resolve_prefecture_name(prefecture_raw)
+            if city_ascii:
+                city_ascii = city_ascii.strip()
+            if not city_ascii:
+                continue
+            if not prefecture:
+                if prefecture_raw:
+                    unknown_prefectures.add(prefecture_raw.strip())
                 continue
 
             key = (prefecture.lower(), city_ascii.lower())
@@ -208,6 +502,10 @@ def import_city_catalog(session):
     finally:
         conn.close()
 
+    if unknown_prefectures:
+        sample = sorted(list(unknown_prefectures))[:5]
+        print(f"Skipped {len(unknown_prefectures)} city rows with unknown prefectures: {', '.join(sample)}")
+
     print(f"Imported {inserted} city records into GeoLocation table.")
 
 
@@ -222,21 +520,6 @@ def build_location_cache(session):
         cache[loc.prefecture].append(loc)
     return cache
 
-
-def choose_location(prefecture: str, cache) -> GeoLocation:
-    options = cache.get(prefecture)
-    if not options:
-        return None
-
-    weights = []
-    for loc in options:
-        population = max(loc.population or 1, 1)
-        divisor = 1 + (loc.school_count or 0)
-        weights.append(population / divisor)
-
-    pick = random.choices(options, weights=weights, k=1)[0]
-    pick.school_count = (pick.school_count or 0) + 1
-    return pick
 
 try:
     name_db_conn = sqlite3.connect(NAME_DB_PATH) if os.path.exists(NAME_DB_PATH) else None
@@ -460,43 +743,6 @@ def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
     return arsenal
 
 used_school_names = set()
-_school_name_bases = defaultdict(int)
-school_types = ["High School", "Academy", "Tech", "Commercial", "Gakuen"]
-directions = ["East", "West", "North", "South", "Central"]
-
-def generate_school_name(prefecture, city):
-    """
-    Generates unique school names. Includes fail-safe counter to prevent infinite loops.
-    """
-    attempts = 0
-    while True:
-        attempts += 1
-        pattern = random.randint(1, 4)
-        
-        if pattern == 1:
-            base_name = f"{city} {random.choice(school_types)}"
-        elif pattern == 2:
-            base_name = f"{prefecture} {random.choice(directions)} {random.choice(school_types)}"
-        elif pattern == 3:
-            base_name = f"{city} {random.choice(directions)} {random.choice(school_types)}"
-        else:
-            base_name = f"{prefecture} {random.choice(school_types)}"
-
-        count = _school_name_bases[base_name]
-        suffix = f" No.{count + 1}" if count else ""
-        name = f"{base_name}{suffix}"
-
-        if name not in used_school_names:
-            used_school_names.add(name)
-            _school_name_bases[base_name] += 1
-            return name
-
-        if attempts > 25:
-            fallback = f"{base_name} #{random.randint(100, 999)}"
-            if fallback not in used_school_names:
-                used_school_names.add(fallback)
-                _school_name_bases[base_name] += 1
-                return fallback
 
 def populate_world():
     with session_scope() as session:
@@ -517,156 +763,156 @@ def populate_world():
         locations_by_pref = build_location_cache(session)
 
         used_school_names.clear()
-        _school_name_bases.clear()
 
         print(f"--- SYSTEM: GENERATING JAPAN (Scale: {SCALE_FACTOR}) ---")
         total_schools = 0
         archetype_keys = list(PHILOSOPHY_MATRIX.keys())
         weights = [PHILOSOPHY_MATRIX[k].get('weight', 1) for k in archetype_keys]
+        _shuffle_name_sets()
 
         for pref, count in prefecture_counts.items():
-            print(f"Processing: {pref}...", end=" ")
-            num_schools = max(6, int(count * SCALE_FACTOR))
-            
-            # Districts logic (Used for count, but not stored in DB)
-            districts = [pref]
-            if pref in ["Tokyo", "Hokkaido"]:
-                num_schools = int(num_schools / 2)
-                if pref == "Tokyo": districts = ["East Tokyo", "West Tokyo"]
-                else: districts = ["North Hokkaido", "South Hokkaido"]
+            target = max(6, int(count * SCALE_FACTOR))
+            distribution = plan_city_distribution(pref, target, locations_by_pref)
+            slot_queue = expand_city_slots(distribution, target)
 
+            print(f"Processing: {pref} ({len(slot_queue)} slots)...", end=" ")
             schools_in_pref = 0
-            for current_district in districts:
-                for _ in range(num_schools):
-                    try:
-                        phil_name = random.choices(archetype_keys, weights=weights, k=1)[0]
-                        data = PHILOSOPHY_MATRIX[phil_name]
-                        
-                        location = choose_location(pref, locations_by_pref)
-                        city_label = (location.city_name if location else pref).strip()
-                        s_name = generate_school_name(pref, city_label)
-                        
-                        # REVAMPED BUDGET: Multiplier for realism (e.g. Budget 100 -> 10,000,000 Yen)
-                        # Base is roughly 1-5 million yen for equipment/travel
-                        # Rich schools get 20-50m
-                        base_budget_yen = data.get('budget', 50000) * 100 
-                        # Add variance
-                        final_budget = int(base_budget_yen * random.uniform(0.8, 1.2))
-                        
-                        school = School(
-                            name=s_name,
-                            prefecture=pref,
-                            city_name=city_label,
-                            geo_location_id=location.id if location else None,
-                            prestige=random.randint(20, 80),
-                            budget=final_budget,
-                            philosophy=phil_name,
-                            focus=data.get('focus', 'Balanced'),
-                            training_style=data.get('training_style', 'Modern')
-                        )
-                        session.add(school)
-                        session.flush() # Get ID
-                        schools_in_pref += 1
-                        total_schools += 1
-                        
-                        # Generate Coach (V2)
-                        coach = generate_coach_for_school(school)
-                        session.add(coach)
 
-                        # Generate Players
-                        roster_players = []
-                        
-                        positions_needed = [
-                            "Pitcher", "Pitcher", "Pitcher", "Pitcher",
-                            "Catcher", "Catcher",
-                            "1B", "2B", "3B", "SS",
-                            "LF", "CF", "RF",
-                            "Infielder", "Outfielder", "Infielder", "Outfielder", "Utility"
-                        ]
-                        
-                        for spec_pos in positions_needed:
-                            broad_pos = spec_pos
-                            if spec_pos in ["1B", "2B", "3B", "SS", "Utility"]: broad_pos = "Infielder"
-                            if spec_pos in ["LF", "CF", "RF"]: broad_pos = "Outfielder"
-                            
-                            stats = generate_stats(broad_pos, spec_pos, data.get('focus', 'Balanced'))
-                            l_name, f_name = get_random_english_name('M')
-                            
-                            # SAFETY FILTER: Only pass stats that exist as columns
-                            valid_cols = {c.key for c in Player.__table__.columns}
-                            
-                            p_data = {
-                                "school_id": school.id,
-                                "name": f"{l_name} {f_name}",
-                                "first_name": f_name, 
-                                "last_name": l_name,
-                                "year": random.choices([1, 2, 3], weights=[30, 40, 30])[0],
-                                "position": broad_pos,
-                                "role": "BENCH",
-                                **{k: v for k, v in stats.items() if k in valid_cols}
-                            }
-                            traits = roll_player_personality(school)
-                            p_data['drive'] = traits['drive']
-                            p_data['loyalty'] = traits['loyalty']
-                            p_data['volatility'] = traits['volatility']
-                            
-                            player = Player(**p_data)
-                            assign_player_archetype(player, school, position=spec_pos)
-                            
-                            # Arsenal Generation (Pitchers only)
-                            class PseudoPlayer:
-                                def __init__(self, s):
-                                    self.control = s.get('control', 50)
-                                    self.movement = s.get('movement', 50)
-                            
-                            if broad_pos == "Pitcher":
-                                arsenal = generate_pitch_arsenal(PseudoPlayer(stats), data.get('focus'), "Overhand")
-                                player.pitch_repertoire = arsenal
-                            
-                            roster_players.append(player)
-                        
-                        # Assign Roles
-                        pitchers = [p for p in roster_players if p.position == "Pitcher"]
-                        fielders = [p for p in roster_players if p.position != "Pitcher"]
-                        
-                        pitchers.sort(key=lambda x: x.velocity + x.control, reverse=True)
-                        fielders.sort(key=lambda x: x.contact + x.power + x.fielding, reverse=True)
-                        
-                        if pitchers:
-                            pitchers[0].jersey_number = 1
-                            pitchers[0].role = "ACE"
-                            pitchers[0].is_starter = True
-                            
-                        used_nums = {1}
-                        for i, f in enumerate(fielders[:8]):
-                            num = i + 2
-                            f.jersey_number = num
-                            f.is_starter = True
-                            f.role = "STARTER"
-                            used_nums.add(num)
-                            
-                        bench = pitchers[1:] + fielders[8:]
-                        next_num = 10
-                        for b in bench:
-                            b.jersey_number = next_num
-                            b.role = "BENCH"
-                            if b.position == "Pitcher": b.role = "RELIEVER"
-                            next_num += 1
-                        
-                        session.add_all(roster_players)
-                        session.flush()
-                        seed_initial_traits(session, roster_players)
-                        seed_negative_traits(session, roster_players)
-                        
-                        # Visual progress
-                        if schools_in_pref % 10 == 0:
-                            print(".", end="", flush=True)
-                    
-                    except Exception as e:
-                        if os.getenv("POPULATE_DEBUG"):
-                            import traceback
-                            traceback.print_exc()
-                        continue
+            for location in slot_queue:
+                try:
+                    phil_name = random.choices(archetype_keys, weights=weights, k=1)[0]
+                    data = PHILOSOPHY_MATRIX[phil_name]
+
+                    archetype = roll_school_archetype()
+                    city_label = (location.city_name if location else pref).strip()
+                    school_name = generate_school_name(pref, city_label, archetype)
+
+                    if location:
+                        location.school_count = (location.school_count or 0) + 1
+
+                    base_budget_yen = data.get('budget', 50_000) * 100
+                    final_budget = int(base_budget_yen * random.uniform(0.8, 1.2))
+
+                    prestige_low, prestige_high = data.get('prestige_range', (25, 80))
+                    prestige = random.randint(int(prestige_low), int(prestige_high))
+                    network_blob, era_state, era_momentum = seed_school_meta(phil_name, data, prestige)
+
+                    school = School(
+                        name=school_name,
+                        prefecture=pref,
+                        city_name=city_label,
+                        geo_location_id=location.id if location else None,
+                        prestige=prestige,
+                        budget=final_budget,
+                        philosophy=phil_name,
+                        focus=data.get('focus', 'Balanced'),
+                        training_style=data.get('training_style', 'Modern'),
+                        seniority_weight=data.get('seniority_bias', 0.5),
+                        trust_weight=data.get('trust_weight', 0.5),
+                        stats_weight=data.get('stats_weight', 0.5),
+                        injury_tolerance=data.get('injury_tolerance', 0.0),
+                        scouting_network=network_blob,
+                        current_era=era_state,
+                        era_momentum=era_momentum,
+                    )
+                    session.add(school)
+                    session.flush()
+                    schools_in_pref += 1
+                    total_schools += 1
+
+                    coach = generate_coach_for_school(school)
+                    session.add(coach)
+
+                    roster_players = []
+                    positions_needed = [
+                        "Pitcher", "Pitcher", "Pitcher", "Pitcher",
+                        "Catcher", "Catcher",
+                        "1B", "2B", "3B", "SS",
+                        "LF", "CF", "RF",
+                        "Infielder", "Outfielder", "Infielder", "Outfielder", "Utility"
+                    ]
+
+                    for spec_pos in positions_needed:
+                        broad_pos = spec_pos
+                        if spec_pos in ["1B", "2B", "3B", "SS", "Utility"]:
+                            broad_pos = "Infielder"
+                        if spec_pos in ["LF", "CF", "RF"]:
+                            broad_pos = "Outfielder"
+
+                        stats = generate_stats(broad_pos, spec_pos, data.get('focus', 'Balanced'))
+                        l_name, f_name = get_random_english_name('M')
+
+                        valid_cols = {c.key for c in Player.__table__.columns}
+
+                        p_data = {
+                            "school_id": school.id,
+                            "name": f"{l_name} {f_name}",
+                            "first_name": f_name,
+                            "last_name": l_name,
+                            "year": random.choices([1, 2, 3], weights=[30, 40, 30])[0],
+                            "position": broad_pos,
+                            "role": "BENCH",
+                            **{k: v for k, v in stats.items() if k in valid_cols}
+                        }
+                        traits = roll_player_personality(school)
+                        p_data['drive'] = traits['drive']
+                        p_data['loyalty'] = traits['loyalty']
+                        p_data['volatility'] = traits['volatility']
+
+                        player = Player(**p_data)
+                        assign_player_archetype(player, school, position=spec_pos)
+
+                        class PseudoPlayer:
+                            def __init__(self, s):
+                                self.control = s.get('control', 50)
+                                self.movement = s.get('movement', 50)
+
+                        if broad_pos == "Pitcher":
+                            arsenal = generate_pitch_arsenal(PseudoPlayer(stats), data.get('focus'), "Overhand")
+                            player.pitch_repertoire = arsenal
+
+                        roster_players.append(player)
+
+                    pitchers = [p for p in roster_players if p.position == "Pitcher"]
+                    fielders = [p for p in roster_players if p.position != "Pitcher"]
+
+                    pitchers.sort(key=lambda x: x.velocity + x.control, reverse=True)
+                    fielders.sort(key=lambda x: x.contact + x.power + x.fielding, reverse=True)
+
+                    if pitchers:
+                        pitchers[0].jersey_number = 1
+                        pitchers[0].role = "ACE"
+                        pitchers[0].is_starter = True
+
+                    used_nums = {1}
+                    for i, f in enumerate(fielders[:8]):
+                        num = i + 2
+                        f.jersey_number = num
+                        f.is_starter = True
+                        f.role = "STARTER"
+                        used_nums.add(num)
+
+                    bench = pitchers[1:] + fielders[8:]
+                    next_num = 10
+                    for b in bench:
+                        b.jersey_number = next_num
+                        b.role = "BENCH"
+                        if b.position == "Pitcher":
+                            b.role = "RELIEVER"
+                        next_num += 1
+
+                    session.add_all(roster_players)
+                    session.flush()
+                    seed_initial_traits(session, roster_players)
+                    seed_negative_traits(session, roster_players)
+
+                    if schools_in_pref % 25 == 0:
+                        print(".", end="", flush=True)
+
+                except Exception as e:
+                    if os.getenv("POPULATE_DEBUG"):
+                        traceback.print_exc()
+                    continue
 
             session.commit()
             print(f" Done. ({schools_in_pref} Schools)")

@@ -4,7 +4,7 @@ import time
 import random
 
 from core.event_bus import EventBus
-from database.setup_db import create_database, GameState, School, Player, get_session
+from database.setup_db import create_database, GameState, School, Player, get_session, safe_delete_db
 from ui.ui_display import Colour, clear_screen, render_weekly_dashboard
 from game.weekly_scheduler import start_week, run_week_automatic
 from world_sim.tournament_sim import run_koshien_tournament, run_spring_koshien
@@ -198,7 +198,7 @@ def rebuild_world_database():
 
     if os.path.exists(DB_PATH):
         try:
-            os.remove(DB_PATH)
+            safe_delete_db(DB_PATH)
         except OSError as exc:
             print(f"{Colour.FAIL}Could not delete save: {exc}{Colour.RESET}")
             time.sleep(1)

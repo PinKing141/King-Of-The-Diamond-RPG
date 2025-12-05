@@ -1,4 +1,5 @@
 import random
+import json
 import sqlite3
 import os
 import pykakasi
@@ -12,6 +13,82 @@ from game.personality import roll_coach_personality
 
 # Initialize converter
 kks = pykakasi.kakasi()
+
+ARCHETYPE_BY_STYLE = {
+    "spirit": "MOTIVATOR",
+    "modern": "INNOVATOR",
+    "technical": "SCIENTIST",
+    "hybrid": "BALANCED",
+    "traditional": "TRADITIONALIST",
+}
+
+FOCUS_ARCHETYPE_RULES = [
+    ({"pitching", "battery", "ace"}, "TALENT_ENGINEER"),
+    ({"power", "core"}, "SLUGGER_GURU"),
+    ({"speed", "stamina", "guts"}, "TACTICIAN"),
+    ({"balanced", "mental"}, "MENTOR"),
+]
+
+DEFAULT_COACH_ARCHETYPE = "TRADITIONALIST"
+
+
+def _decode_scouting_network(payload):
+    if not payload:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    try:
+        return json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _infer_coach_archetype(school):
+    style = (getattr(school, 'training_style', '') or '').lower()
+    if style in ARCHETYPE_BY_STYLE:
+        return ARCHETYPE_BY_STYLE[style]
+
+    focus = (getattr(school, 'focus', '') or '').lower()
+    for buckets, label in FOCUS_ARCHETYPE_RULES:
+        if focus in buckets:
+            return label
+
+    return DEFAULT_COACH_ARCHETYPE
+
+
+def _roll_scouting_ability(school):
+    network = _decode_scouting_network(getattr(school, 'scouting_network', None))
+    local = network.get('Local', 50)
+    regional = network.get('Regional', 40)
+    national = network.get('National', 30)
+    international = network.get('International', 20)
+
+    reach_score = (local * 0.4) + (regional * 0.6) + (national * 0.8) + international
+    prestige = getattr(school, 'prestige', 50) or 50
+    base = 35 + (prestige * 0.35) + (reach_score * 0.2)
+
+    era = (getattr(school, 'current_era', '') or '').upper()
+    if era == "DYNASTY":
+        base += 8
+    elif era == "ASCENDING":
+        base += 4
+    elif era == "REBUILDING":
+        base -= 4
+    elif era == "RETOOLING":
+        base -= 1
+
+    base += (getattr(school, 'era_momentum', 0) or 0) * 0.4
+
+    style = (getattr(school, 'training_style', '') or '').lower()
+    if style == "modern":
+        base += 3
+    elif style == "technical":
+        base += 2
+    elif style == "spirit":
+        base -= 2
+
+    noise = random.randint(-5, 5)
+    return int(max(30, min(95, round(base + noise))))
 
 def generate_coach_for_school(school):
     """
@@ -53,6 +130,8 @@ def generate_coach_for_school(school):
     coach_name_str = generate_coach_name_from_db()
 
     traits = roll_coach_personality(school)
+    coach_archetype = _infer_coach_archetype(school)
+    scouting_rating = _roll_scouting_ability(school)
 
     new_coach = Coach(
         school_id=school.id,
@@ -68,6 +147,8 @@ def generate_coach_for_school(school):
         drive=traits['drive'],
         loyalty=traits['loyalty'],
         volatility=traits['volatility'],
+        archetype=coach_archetype,
+        scouting_ability=scouting_rating,
     )
     
     return new_coach

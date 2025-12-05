@@ -13,6 +13,9 @@ from core.event_bus import EventBus
 from match_engine.confidence import adjust_confidence, initialize_confidence
 from match_engine.momentum import MomentumSystem, PresenceProfile, PresenceSystem
 from match_engine.states import EventType
+from match_engine.psychology import PsychologyEngine
+from match_engine.dugout_listener import DugoutListener
+from game.mechanics import get_or_create_profile
 from world.rivals import get_ledger
 from world_sim.weather import WeatherProfile, generate_weather_profile
 
@@ -177,6 +180,9 @@ class MatchState:
         self.battery_sync: dict[tuple[int, int], float] = {}
         self.times_through_order = {}
         self.batter_tell_tracker = {}
+        self.pitcher_mechanics: dict[int, object] = {}
+        self.psychology_engine = None
+        self.dugout_listener = None
         self.argument_cooldowns = {}
         self.batters_eye_history: list[dict[str, object]] = []
         self.defensive_shift: str = "normal"
@@ -537,6 +543,21 @@ def prepare_match(
         )
     else:
         match_state.rival_match_context = None
+    match_state.psychology_engine = PsychologyEngine(match_state, bus=event_bus)
+    match_state.dugout_listener = DugoutListener(
+        match_state,
+        bus=event_bus,
+        psychology=match_state.psychology_engine,
+    )
+    for starter in (match_state.home_pitcher, match_state.away_pitcher):
+        if not starter:
+            continue
+        profile = get_or_create_profile(match_state, starter)
+        display_name = getattr(starter, "last_name", getattr(starter, "name", "Pitcher"))
+        match_state.log(
+            f"Mechanics scout: {display_name} showcases the {profile.signature} form "
+            f"({profile.arm_slot}, tempo {profile.tempo:.2f})."
+        )
     _apply_clutch_pitch_payload(match_state)
     return match_state
 

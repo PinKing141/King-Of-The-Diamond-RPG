@@ -11,6 +11,7 @@ from game.scouting_system import (
     perform_scout_action,
     SCOUTING_PACKAGES,
     MAX_KNOWLEDGE_LEVEL,
+    describe_network_advantage,
 )
 from game.game_context import GameContext
 from game.player_progression import fetch_player_milestone_tags
@@ -103,9 +104,13 @@ def format_scouting_result_message(result):
         gain_text = f"+{gain} level" if gain == 1 else f"+{gain} levels"
         bonus = result.recruit_roll_bonus or 0
         bonus_text = f" Recruit potential bonus +{bonus}." if bonus > 0 else ""
+        scope_text = ""
+        if result.network_scope:
+            rating = result.network_rating or 0
+            scope_text = f" Network reach: {result.network_scope.title()} (Rating {rating})."
         return (
             f"{tier_label} scouting complete! Knowledge {gain_text}, now {lvl}. "
-            f"Cost: ¥{result.cost_yen:,}. Remaining budget: ¥{remaining:,}.{bonus_text}"
+            f"Cost: ¥{result.cost_yen:,}. Remaining budget: ¥{remaining:,}.{bonus_text}{scope_text}"
         )
 
     return "Scouting action could not be processed."
@@ -171,13 +176,28 @@ def _maybe_purchase_scouting(session, user_school, target_school, current_info):
 
     package_keys = list(SCOUTING_PACKAGES.keys())
     print(f"\n{Colour.CYAN}[ACTION] Purchase additional intel?{Colour.RESET}")
+    reach = describe_network_advantage(user_school, target_school)
+    reach_label = reach['scope'].title()
+    print(
+        f" Network Reach: {reach_label} (Rating {reach['rating']}) | Cost x{reach['cost_multiplier']:.2f}"
+        f" | Knowledge x{reach['knowledge_multiplier']:.2f}"
+    )
+    if reach['recruit_bonus']:
+        print(f" Bonus: Network adds +{reach['recruit_bonus']} recruit potential.")
     for idx, key in enumerate(package_keys, start=1):
         pkg = SCOUTING_PACKAGES[key]
-        gain = pkg['knowledge_gain']
+        base_gain = pkg['knowledge_gain']
+        gain = max(1, int(round(base_gain * reach['knowledge_multiplier'])))
         gain_text = f"+{gain} lvl" if gain == 1 else f"+{gain} lvls"
-        bonus = pkg['recruit_roll_bonus']
-        bonus_text = f", Recruit +{bonus}" if bonus > 0 else ""
-        cost = f"¥{pkg['cost']:,}"
+        package_bonus = pkg['recruit_roll_bonus']
+        bonus_bits = []
+        if package_bonus:
+            bonus_bits.append(f"Package +{package_bonus}")
+        if reach['recruit_bonus']:
+            bonus_bits.append(f"Network +{reach['recruit_bonus']}")
+        bonus_text = f", Recruit {'/'.join(bonus_bits)}" if bonus_bits else ""
+        effective_cost = int(round(pkg['cost'] * reach['cost_multiplier']))
+        cost = f"¥{effective_cost:,}"
         print(f"  {idx}. {key.title():<10}{cost:<12} ({gain_text}{bonus_text})")
     print("  0. Cancel")
 
@@ -203,6 +223,7 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
     clear_screen()
     
     user_p = session.get(Player, active_player_id) if active_player_id else None
+    user_school = session.get(School, user_p.school_id) if user_p else None
     is_my_team = (user_p and user_p.school_id == school.id)
     
     knowledge = 3 if is_my_team else 0
@@ -306,14 +327,29 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
     if not is_my_team and knowledge < MAX_KNOWLEDGE_LEVEL:
         package_keys = list(SCOUTING_PACKAGES.keys())
         print(f"{Colour.CYAN}[ACTION] Purchase Scouting Intel{Colour.RESET}")
+        reach = describe_network_advantage(user_school, school) if user_school else None
+        if reach:
+            print(
+                f" Network Reach: {reach['scope'].title()} (Rating {reach['rating']}) |"
+                f" Cost x{reach['cost_multiplier']:.2f} | Knowledge x{reach['knowledge_multiplier']:.2f}"
+            )
+            if reach['recruit_bonus']:
+                print(f" Bonus: Network adds +{reach['recruit_bonus']} recruit potential.")
         for idx, key in enumerate(package_keys, start=1):
             pkg = SCOUTING_PACKAGES[key]
             gain = pkg['knowledge_gain']
+            gain = max(1, int(round(gain * (reach['knowledge_multiplier'] if reach else 1.0))))
             gain_text = f"+{gain} lvl" if gain == 1 else f"+{gain} lvls"
-            bonus = pkg['recruit_roll_bonus']
-            bonus_text = f", Recruit +{bonus}" if bonus > 0 else ""
+            package_bonus = pkg['recruit_roll_bonus']
+            bonus_bits = []
+            if package_bonus:
+                bonus_bits.append(f"Package +{package_bonus}")
+            if reach and reach['recruit_bonus']:
+                bonus_bits.append(f"Network +{reach['recruit_bonus']}")
+            bonus_text = f", Recruit {'/'.join(bonus_bits)}" if bonus_bits else ""
+            effective_cost = int(round(pkg['cost'] * (reach['cost_multiplier'] if reach else 1.0)))
             print(
-                f"  {idx}. {key.title():<8} (¥{pkg['cost']:,}, {gain_text}{bonus_text})"
+                f"  {idx}. {key.title():<8} (¥{effective_cost:,}, {gain_text}{bonus_text})"
             )
         print("  0. Cancel")
 
@@ -322,7 +358,6 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
             pick = int(choice)
             if 1 <= pick <= len(package_keys):
                 tier_key = package_keys[pick - 1]
-                user_school = session.get(School, user_p.school_id)
                 result = perform_scout_action(session, user_school.id, school.id, tier=tier_key)
                 print(format_scouting_result_message(result))
                 if result.success:
