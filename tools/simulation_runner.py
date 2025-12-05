@@ -105,7 +105,12 @@ class SimulationRunner:
         for idx in range(1, games + 1):
             with session_scope() as session:
                 home, away = self._random_school_pair(session)
-            winner, score = match_sim.sim_match_fast(home, away, tournament_name="Ghost Game")
+            winner, score = match_sim.resolve_match(
+                home,
+                away,
+                tournament_name="Ghost Game",
+                mode="fast",
+            )
             key = getattr(winner, "name", "Draw") if winner else "Draw"
             results[key] += 1
             if idx % 25 == 0:

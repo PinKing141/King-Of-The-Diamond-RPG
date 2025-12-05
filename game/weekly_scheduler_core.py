@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import random
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from database.setup_db import Team
@@ -83,6 +84,89 @@ class ScheduleExecution:
     warnings: List[str]
 
 
+@dataclass
+class WeekSummary:
+    """Aggregated post-week view consumed by UI, analytics, and auto-play."""
+
+    week_number: int
+    stat_gains: Dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    xp_gains: Dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    events_triggered: List[str] = field(default_factory=list)
+    match_outcomes: List[Dict[str, str]] = field(default_factory=list)
+    highlights: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    schedule_notes: List[str] = field(default_factory=list)
+    stopped_by_interrupt: bool = False
+    interrupt_reasons: List[str] = field(default_factory=list)
+
+    def record_slot(self, result: SlotResult) -> None:
+        details = result.training_details or {}
+        for stat, delta in (details.get("stat_changes") or {}).items():
+            self.stat_gains[stat] += delta
+        for stat, delta in (details.get("xp_gains") or {}).items():
+            self.xp_gains[stat] += delta
+
+        if details.get("skills_unlocked"):
+            for skill in details["skills_unlocked"]:
+                self.highlights.append(f"Unlocked skill: {skill}")
+        if details.get("breakthrough"):
+            stat = details["breakthrough"].get("stat", "Unknown").replace('_', ' ').title()
+            self.highlights.append(f"Breakthrough in {stat}")
+        milestones = details.get("milestones") or []
+        for entry in milestones:
+            label = getattr(entry, "milestone_label", None) or getattr(entry, "milestone_key", "Milestone")
+            reward = getattr(entry, "skill_name", "")
+            reward_suffix = f" -> {reward}" if reward else ""
+            self.highlights.append(f"Milestone: {label}{reward_suffix}")
+
+        if result.match_result:
+            self.match_outcomes.append(
+                {
+                    "slot": f"{result.day_name} {result.slot_name}",
+                    "opponent": result.opponent_name or "Opponent",
+                    "result": result.match_result,
+                    "score": result.match_score or "-",
+                }
+            )
+        if result.error:
+            self.add_warning(result.error)
+
+        status = details.get("status")
+        if status == "injured":
+            self.flag_interrupt(f"Injury during {result.day_name} {result.slot_name}")
+
+    def add_event(self, description: str) -> None:
+        if description:
+            self.events_triggered.append(description)
+
+    def add_warning(self, warning: str) -> None:
+        if warning:
+            self.warnings.append(warning)
+
+    def add_schedule_note(self, note: str) -> None:
+        if note:
+            self.schedule_notes.append(note)
+
+    def flag_interrupt(self, reason: str) -> None:
+        self.stopped_by_interrupt = True
+        if reason:
+            self.interrupt_reasons.append(reason)
+
+    def to_payload(self) -> Dict[str, object]:
+        return {
+            "week": self.week_number,
+            "stat_gains": dict(self.stat_gains),
+            "xp_gains": dict(self.xp_gains),
+            "events": list(self.events_triggered),
+            "matches": list(self.match_outcomes),
+            "highlights": list(self.highlights),
+            "warnings": list(self.warnings),
+            "schedule_notes": list(self.schedule_notes),
+            "stopped": self.stopped_by_interrupt,
+            "reasons": list(self.interrupt_reasons),
+        }
+
+
 def execute_schedule_core(
     context: GameContext,
     schedule_grid,
@@ -93,7 +177,7 @@ def execute_schedule_core(
     if context.school_id is None:
         raise ValueError("GameContext missing school_id; cannot execute schedule.")
 
-    from match_engine import sim_match, sim_match_fast  # Local import avoids circular dependency
+    from match_engine import resolve_match  # Local import avoids circular dependency
 
     my_team = session.get(Team, context.school_id)
     if not my_team:
@@ -131,11 +215,12 @@ def execute_schedule_core(
                         slot_result.error = "No opponents available for practice match."
                     else:
                         slot_result.opponent_name = opponent.name
-                        sim_runner = sim_match_fast if FAST_PRACTICE_MATCHES else sim_match
-                        winner, score = sim_runner(
+                        mode = "fast" if FAST_PRACTICE_MATCHES else "standard"
+                        winner, score = resolve_match(
                             my_team,
                             opponent,
                             tournament_name="Practice Match",
+                            mode=mode,
                             silent=False,
                         )
                         if winner:

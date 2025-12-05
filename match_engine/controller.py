@@ -27,6 +27,7 @@ from .states import MatchState
 from .batter_logic import AtBatStateMachine
 
 from ui.ui_display import render_box_score_panel
+from battery_system.battery_trust import apply_trust_buffer
 
 
 def save_game_results(state):
@@ -730,6 +731,7 @@ class MatchController:
                 self._winner = self.state.home_team
             elif self.state.away_score > self.state.home_score:
                 self._winner = self.state.away_team
+        self._flush_trust_buffer()
         _finalize_rivalry_context(self.state, getattr(self._winner, "id", None))
         error_summary = self.scoreboard.get_error_summary()
         setattr(self.state, "error_summary", error_summary)
@@ -748,6 +750,11 @@ class MatchController:
         flush_telemetry(self.state)
         self._finished = True
         return GameResult(self._winner)
+
+    def _flush_trust_buffer(self) -> None:
+        buffer = self.simulation.pop_trust_buffer()
+        if buffer:
+            apply_trust_buffer(buffer)
 
     def _state_change(self, phase: str, payload: Optional[Dict[str, Any]] = None) -> None:
         data = payload or {}

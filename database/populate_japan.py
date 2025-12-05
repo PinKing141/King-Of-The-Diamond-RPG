@@ -18,6 +18,7 @@ from database.setup_db import (
     Coach,
     ScoutingData,
     session_scope,
+    GeoLocation,
 )
 from world.school_philosophy import PHILOSOPHY_MATRIX
 from game.archetypes import assign_player_archetype
@@ -96,15 +97,151 @@ prefecture_counts = {
 # --- DATABASE CONNECTIONS ---
 kks = pykakasi.kakasi()
 
+
+def _row_value(row, *keys, default=None):
+    for key in keys:
+        if key in row.keys():
+            value = row[key]
+            if value not in (None, ""):
+                return value
+    return default
+
+
+def _classify_tier(population: int) -> str:
+    if population >= 2_000_000:
+        return "S"
+    if population >= 1_000_000:
+        return "A"
+    if population >= 500_000:
+        return "B"
+    if population >= 200_000:
+        return "C"
+    return "D"
+
+
+def import_city_catalog(session):
+    """Load prefecture/city data into GeoLocation if empty."""
+    if session.query(GeoLocation.id).first():
+        return
+
+    if not os.path.exists(CITIES_DB_PATH):
+        print("City catalog missing. Seeding fallback prefecture hubs...")
+        fallback = [
+            GeoLocation(
+                prefecture=pref,
+                city_name=f"{pref} City",
+                population=max(int(count * 1000), 1),
+                tier="Fallback",
+            )
+            for pref, count in prefecture_counts.items()
+        ]
+        session.bulk_save_objects(fallback)
+        session.commit()
+        return
+
+    conn = sqlite3.connect(CITIES_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jpcities'")
+    table = "jpcities" if cur.fetchone() else "Cities"
+
+    try:
+        cur.execute(
+            f"""
+            SELECT admin_name, city, city_ascii, lat, lng, population, population_proper
+            FROM {table}
+            WHERE admin_name IS NOT NULL AND city IS NOT NULL
+            """
+        )
+    except sqlite3.OperationalError:
+        cur.execute(
+            f"SELECT admin_name, city, city_ascii FROM {table} WHERE admin_name IS NOT NULL AND city IS NOT NULL"
+        )
+
+    seen = set()
+    batch = []
+    inserted = 0
+
+    try:
+        for row in cur.fetchall():
+            prefecture = _row_value(row, 'admin_name', 'prefecture')
+            city_ascii = _row_value(row, 'city_ascii', 'city')
+            if not prefecture or not city_ascii:
+                continue
+
+            key = (prefecture.lower(), city_ascii.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+
+            population_raw = _row_value(row, 'population', 'population_proper', default=0)
+            try:
+                population = int(float(population_raw)) if population_raw is not None else 0
+            except ValueError:
+                population = 0
+
+            lat_raw = _row_value(row, 'lat', 'latitude')
+            lng_raw = _row_value(row, 'lng', 'longitude')
+            latitude = float(lat_raw) if lat_raw not in (None, "") else None
+            longitude = float(lng_raw) if lng_raw not in (None, "") else None
+
+            loc = GeoLocation(
+                prefecture=prefecture.strip(),
+                city_name=city_ascii.strip(),
+                latitude=latitude,
+                longitude=longitude,
+                population=population,
+                tier=_classify_tier(population),
+            )
+            batch.append(loc)
+
+            if len(batch) >= 750:
+                session.bulk_save_objects(batch)
+                session.commit()
+                inserted += len(batch)
+                batch.clear()
+
+        if batch:
+            session.bulk_save_objects(batch)
+            session.commit()
+            inserted += len(batch)
+    finally:
+        conn.close()
+
+    print(f"Imported {inserted} city records into GeoLocation table.")
+
+
+def reset_location_assignments(session):
+    session.query(GeoLocation).update({GeoLocation.school_count: 0})
+    session.commit()
+
+
+def build_location_cache(session):
+    cache = defaultdict(list)
+    for loc in session.query(GeoLocation).all():
+        cache[loc.prefecture].append(loc)
+    return cache
+
+
+def choose_location(prefecture: str, cache) -> GeoLocation:
+    options = cache.get(prefecture)
+    if not options:
+        return None
+
+    weights = []
+    for loc in options:
+        population = max(loc.population or 1, 1)
+        divisor = 1 + (loc.school_count or 0)
+        weights.append(population / divisor)
+
+    pick = random.choices(options, weights=weights, k=1)[0]
+    pick.school_count = (pick.school_count or 0) + 1
+    return pick
+
 try:
     name_db_conn = sqlite3.connect(NAME_DB_PATH) if os.path.exists(NAME_DB_PATH) else None
     name_db_cursor = name_db_conn.cursor() if name_db_conn else None
 except: name_db_conn = None
-
-try:
-    cities_db_conn = sqlite3.connect(CITIES_DB_PATH) if os.path.exists(CITIES_DB_PATH) else None
-    cities_db_cursor = cities_db_conn.cursor() if cities_db_conn else None
-except: cities_db_conn = None
 
 # --- HELPERS ---
 
@@ -143,33 +280,6 @@ def get_random_english_name(gender='M'):
 
     except Exception:
         return "Yamada", "Taro"
-
-def get_random_city(prefecture):
-    if not cities_db_conn:
-        return prefecture
-
-    try:
-        # Try exact match first
-        cities_db_cursor.execute("""
-            SELECT city_ascii FROM jpcities 
-            WHERE admin_name = ? COLLATE NOCASE
-            ORDER BY RANDOM() LIMIT 1
-        """, (prefecture,))
-        row = cities_db_cursor.fetchone()
-        if row and row[0]: return row[0]
-
-        # Try loose match
-        cities_db_cursor.execute("""
-            SELECT city_ascii FROM jpcities 
-            WHERE admin_name LIKE ? 
-            ORDER BY RANDOM() LIMIT 1
-        """, (f"%{prefecture}%",))
-        row = cities_db_cursor.fetchone()
-        if row and row[0]: return row[0]
-
-        return prefecture
-    except Exception:
-        return prefecture
 
 def generate_stats(position, specific_pos, focus):
     # Generates raw stats dictionary
@@ -390,6 +500,7 @@ def generate_school_name(prefecture, city):
 
 def populate_world():
     with session_scope() as session:
+        import_city_catalog(session)
         print("--- SYSTEM: WIPING OLD DATA ---")
         try:
             session.query(PitchRepertoire).delete()
@@ -401,6 +512,9 @@ def populate_world():
         except Exception as e:
             print(f"Error wiping data: {e}")
             session.rollback()
+
+        reset_location_assignments(session)
+        locations_by_pref = build_location_cache(session)
 
         used_school_names.clear()
         _school_name_bases.clear()
@@ -428,8 +542,9 @@ def populate_world():
                         phil_name = random.choices(archetype_keys, weights=weights, k=1)[0]
                         data = PHILOSOPHY_MATRIX[phil_name]
                         
-                        city = get_random_city(pref)
-                        s_name = generate_school_name(pref, city)
+                        location = choose_location(pref, locations_by_pref)
+                        city_label = (location.city_name if location else pref).strip()
+                        s_name = generate_school_name(pref, city_label)
                         
                         # REVAMPED BUDGET: Multiplier for realism (e.g. Budget 100 -> 10,000,000 Yen)
                         # Base is roughly 1-5 million yen for equipment/travel
@@ -441,6 +556,8 @@ def populate_world():
                         school = School(
                             name=s_name,
                             prefecture=pref,
+                            city_name=city_label,
+                            geo_location_id=location.id if location else None,
                             prestige=random.randint(20, 80),
                             budget=final_budget,
                             philosophy=phil_name,
@@ -555,7 +672,6 @@ def populate_world():
             print(f" Done. ({schools_in_pref} Schools)")
 
     if name_db_conn: name_db_conn.close()
-    if cities_db_conn: cities_db_conn.close()
     
     print("--- SYSTEM: DATABASE POPULATION COMPLETE ---")
 

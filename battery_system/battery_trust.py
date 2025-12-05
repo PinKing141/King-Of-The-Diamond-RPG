@@ -6,6 +6,15 @@ from typing import Dict, Optional, Tuple
 
 from database.setup_db import BatteryTrust, session_scope
 
+_PLATE_RESULT_DELTAS = {
+    "K": 1,
+    "BB": -1,
+    "1B": -1,
+    "2B": -1,
+    "3B": -1,
+    "HR": -1,
+}
+
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
@@ -60,16 +69,18 @@ def update_trust(pitcher_id, catcher_id, delta):
         return rec.trust
 
 
+def trust_delta_for_plate_result(*, result_type: Optional[str], hit_type: Optional[str] = None) -> int:
+    """Translate a plate appearance outcome into the trust delta without persisting it."""
+
+    token = _plate_result_token(result_type, hit_type)
+    if not token:
+        return 0
+    return _PLATE_RESULT_DELTAS.get(token, 0)
+
+
 def update_trust_after_at_bat(pitcher_id, catcher_id, result_type):
     """Simple wrapper that bumps trust based on an at-bat outcome."""
-    delta = 0
-    if result_type == "K":
-        delta = 1  # Strikeout builds trust
-    elif result_type in ["1B", "2B", "3B", "HR"]:
-        delta = -1  # Hits damage trust slightly
-    elif result_type == "BB":
-        delta = -1
-
+    delta = _PLATE_RESULT_DELTAS.get(result_type, 0)
     if delta != 0:
         return update_trust(pitcher_id, catcher_id, delta)
     return None
@@ -184,3 +195,17 @@ def adjust_battery_sync(container, pitcher_id: Optional[int], catcher_id: Option
     new_value = _clamp(new_value, -5.0, 5.0)
     tracker[key] = new_value
     return new_value
+
+
+def apply_trust_buffer(buffer: Dict[Tuple[int, int], int]) -> None:
+    """Commit aggregated trust deltas for a single game using one DB session."""
+
+    if not buffer:
+        return
+    with session_scope() as session:
+        for (pitcher_id, catcher_id), delta in buffer.items():
+            if not delta:
+                continue
+            rec = _get_or_create_trust_record(session, pitcher_id, catcher_id)
+            rec.trust = int(_clamp((rec.trust or 0) + delta, 0, 100))
+        session.commit()

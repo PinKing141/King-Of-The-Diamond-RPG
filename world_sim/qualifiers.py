@@ -1,9 +1,10 @@
 import math
 
 from database.setup_db import School, session_scope
-from match_engine import sim_match, sim_match_fast
+from match_engine import resolve_match
 from ui.ui_display import Colour
 from game.rng import get_rng
+from .sim_utils import quick_resolve_match
 
 rng = get_rng()
 
@@ -81,7 +82,13 @@ def run_district_tournament(session, district_name, user_school_id):
             if is_user_match:
                 print(f"\n{Colour.GREEN}*** QUALIFIER MATCH: {home.name} vs {away.name} ***{Colour.RESET}")
                 input("   Press Enter to play...")
-                winner, score = sim_match(home, away, f"{district_name} Round {round_num}", silent=False)
+                winner, score = resolve_match(
+                    home,
+                    away,
+                    f"{district_name} Round {round_num}",
+                    mode="standard",
+                    silent=False,
+                )
                 
                 if winner.id != user_school_id:
                     print(f"{Colour.FAIL}   ELIMINATED! You lost {score}.{Colour.RESET}")
@@ -89,8 +96,7 @@ def run_district_tournament(session, district_name, user_school_id):
                 else:
                     print(f"{Colour.gold}   VICTORY! Score: {score}{Colour.RESET}")
             else:
-                # Background Sim
-                winner, score = sim_match_fast(home, away, f"{district_name} Round {round_num}")
+                winner, score, _ = quick_resolve_match(session, home, away)
             
             next_round.append(winner)
             

@@ -45,9 +45,15 @@ def stub_simulation(monkeypatch):
             self.state = state
             self.loop_state = MatchState.WAITING_FOR_PITCH
             self.awaiting_player_choice = False
+            self._trust_buffer = {}
 
         def step(self):
             return None
+
+        def pop_trust_buffer(self):
+            buffer = self._trust_buffer
+            self._trust_buffer = {}
+            return buffer
 
     monkeypatch.setattr(controller_module, "MatchSimulation", _StubSimulation)
 

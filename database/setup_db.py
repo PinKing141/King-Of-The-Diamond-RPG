@@ -273,6 +273,52 @@ def ensure_game_schema():
             conn.execute(text(stmt))
 
 
+def ensure_school_schema():
+    inspector = inspect(engine)
+    if not inspector.has_table('schools'):
+        return
+
+    columns = {col['name'] for col in inspector.get_columns('schools')}
+    statements = []
+    if 'city_name' not in columns:
+        statements.append("ALTER TABLE schools ADD COLUMN city_name VARCHAR")
+    if 'geo_location_id' not in columns:
+        statements.append("ALTER TABLE schools ADD COLUMN geo_location_id INTEGER")
+
+    if not statements:
+        return
+
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+
+
+def ensure_geolocation_schema():
+    inspector = inspect(engine)
+    if inspector.has_table('geolocations'):
+        return
+
+    GeoLocation.__table__.create(bind=engine)
+
+
+# ============================================================
+# 0. GEO LOCATION TABLE
+# ============================================================
+class GeoLocation(Base):
+    __tablename__ = 'geolocations'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    prefecture = Column(String, index=True)
+    city_name = Column(String, index=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    population = Column(Integer, default=0)
+    tier = Column(String, nullable=True)
+    school_count = Column(Integer, default=0)
+
+    schools = relationship("School", back_populates="location")
+
+
 # ============================================================
 # 1. SCHOOL TABLE
 # ============================================================
@@ -282,6 +328,8 @@ class School(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String)
     prefecture = Column(String)
+    city_name = Column(String, nullable=True)
+    geo_location_id = Column(Integer, ForeignKey('geolocations.id'), nullable=True)
     prestige = Column(Integer, default=0)
 
     budget = Column(Integer, default=500000)
@@ -301,6 +349,7 @@ class School(Base):
     games_home = relationship("Game", foreign_keys="Game.home_school_id", back_populates="home_school")
     games_away = relationship("Game", foreign_keys="Game.away_school_id", back_populates="away_school")
     scouting_data = relationship("ScoutingData", back_populates="school")
+    location = relationship("GeoLocation", back_populates="schools")
 
 
 # ============================================================
@@ -642,6 +691,8 @@ Performance = PlayerGameStats
 
 # Ensure critical schema migrations run when the module loads so legacy
 # saves pick up new progression columns without requiring a manual script.
+ensure_geolocation_schema()
+ensure_school_schema()
 ensure_player_schema()
 ensure_player_skill_schema()
 ensure_player_milestone_schema()
@@ -656,6 +707,8 @@ ensure_game_stats_schema()
 # ============================================================
 def create_database():
     Base.metadata.create_all(engine)
+    ensure_geolocation_schema()
+    ensure_school_schema()
     ensure_gamestate_schema()
     ensure_player_schema()
     ensure_player_skill_schema()

@@ -10,8 +10,9 @@ from game.pitch_minigame import (
     trigger_pitch_minigame,
 )
 from game.rng import get_rng
-from match_engine import sim_match, sim_match_fast
+from match_engine import resolve_match
 from ui.ui_display import Colour, clear_screen
+from .sim_utils import quick_resolve_match
 
 rng = get_rng()
 REGISTERED_DIALOGUE_IDS: Set[str] = set()
@@ -183,23 +184,26 @@ def _run_generic_tournament(title, user_school_id, participants, session):
             if is_user_match:
                 print(f"{Colour.GREEN}   *** YOUR MATCH ***{Colour.RESET}")
                 if leverage_result:
-                    winner, score = sim_match(
+                    winner, score = resolve_match(
                         home,
                         away,
                         f"{title} Round {round_num}",
+                        mode="standard",
                         silent=False,
                         clutch_pitch=clutch_payload,
                     )
                 else:
-                    winner, score = sim_match_fast(
+                    winner, score = resolve_match(
                         home,
                         away,
                         f"{title} Round {round_num}",
+                        mode="fast",
                     )
                     print(f"   Result: {winner.name} wins! ({score})")
             else:
-                winner, score = sim_match_fast(home, away, f"{title} Round {round_num}")
-                print(f"   Result: {winner.name} wins! ({score})")
+                winner, score, upset = quick_resolve_match(session, home, away)
+                note = " (UPSET)" if upset else ""
+                print(f"   Result: {winner.name} wins! ({score}){note}")
             
             next_round.append(winner)
             

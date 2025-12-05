@@ -383,3 +383,60 @@ def _team_fatigue_snapshot(conn, player_data) -> Optional[Tuple[float, float]]:
     if count == 0:
         return None
     return (total_fatigue / count, total_stamina / count)
+
+
+def _format_stat_map(stat_map):
+    if not stat_map:
+        return "-"
+    entries = []
+    for stat, value in sorted(stat_map.items()):
+        label = stat.replace('_', ' ').title()
+        entries.append(f"{label} +{value:.1f}")
+    return ", ".join(entries)
+
+
+def render_weekly_dashboard(summary, *, clear: bool = True) -> None:
+    """Present a compact Persona-style report card for completed weeks."""
+
+    if clear:
+        clear_screen()
+
+    print(f"{Colour.HEADER}=== WEEK {summary.week_number} REPORT ==={Colour.RESET}")
+
+    if summary.schedule_notes:
+        for note in summary.schedule_notes:
+            print(f" {Colour.CYAN}•{Colour.RESET} {note}")
+
+    print(f"\n{Colour.CYAN}[TRAINING RESULTS]{Colour.RESET}")
+    print(f"  {_format_stat_map(summary.stat_gains)}")
+    if summary.xp_gains:
+        print(f"  XP: {_format_stat_map(summary.xp_gains)}")
+
+    if summary.match_outcomes:
+        print(f"\n{Colour.YELLOW}[MATCH RESULTS]{Colour.RESET}")
+        for match in summary.match_outcomes:
+            slot = match.get("slot", "?")
+            opponent = match.get("opponent", "Opponent")
+            result = match.get("result", "-")
+            score = match.get("score", "-")
+            color = Colour.GREEN if result == 'WON' else Colour.FAIL if result == 'LOST' else Colour.YELLOW
+            print(f"  {slot}: vs {opponent} -> {color}{result}{Colour.RESET} ({score})")
+
+    if summary.events_triggered or summary.highlights:
+        print(f"\n{Colour.PURPLE}[NEWS FEED]{Colour.RESET}")
+        for event in summary.events_triggered:
+            print(f"  ! {event}")
+        for highlight in summary.highlights:
+            print(f"  ★ {highlight}")
+
+    if summary.warnings:
+        print(f"\n{Colour.WARNING}[WARNINGS]{Colour.RESET}")
+        for warn in summary.warnings:
+            print(f"  ! {warn}")
+
+    if summary.stopped_by_interrupt:
+        print(f"\n{Colour.FAIL}[AUTO-SIM INTERRUPTED]{Colour.RESET}")
+        for reason in summary.interrupt_reasons:
+            print(f"  → {reason}")
+
+    print("\nPress Enter to continue...", end="")

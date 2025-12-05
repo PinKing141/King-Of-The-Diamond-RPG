@@ -2,7 +2,6 @@ import json
 import time
 import sys
 import random
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -22,7 +21,7 @@ from game.constants import (
 )
 from world.roster_manager import run_roster_logic
 # Import the bridge function from the new match engine location
-from ui.ui_display import Colour, clear_screen
+from ui.ui_display import Colour, clear_screen, render_weekly_dashboard
 # Import the new Event Manager
 from game.event_manager import trigger_random_event
 from game.game_context import GameContext
@@ -36,6 +35,7 @@ from game.dialogue_manager import run_dialogue_event
 from game.weekly_scheduler_core import (
     DAYS_OF_WEEK,
     SLOTS,
+    WeekSummary,
     execute_schedule_core,
 )
 
@@ -80,6 +80,27 @@ COACH_ORDER_DEFS: Tuple[CoachOrder, ...] = (
         reward_ability_points=2,
     ),
 )
+
+AUTO_SCHEDULE_TEMPLATE: Tuple[Tuple[str, str, str], ...] = (
+    ("train_power", "team_practice", "rest"),
+    ("train_speed", "study", "social"),
+    ("practice_match", "rest", "mind"),
+    ("train_control", "team_practice", "rest"),
+    ("train_contact", "study", "mind"),
+    ("b_team_match", "rest", "social"),
+    ("rest", "mind", "social"),
+)
+
+SMART_SIM_FATIGUE_CAP = 92
+
+
+def _summarize_execution(current_week: int, execution) -> WeekSummary:
+    summary = WeekSummary(week_number=current_week)
+    for warning in execution.warnings:
+        summary.add_warning(warning)
+    for slot in execution.results:
+        summary.record_slot(slot)
+    return summary
 
 # --- CONSTANT HELPERS ---
 
@@ -354,6 +375,214 @@ def _process_skipped_penalties(
     context.set_temp_effect('skipped_mandatory_slots', payload)
     return payload
 
+
+def _initialize_week(
+    context: GameContext,
+    current_week: int,
+    *,
+    enable_events: bool = True,
+):
+    player = _get_active_player(context)
+    if not player:
+        return None, None, None, None
+
+    for key in ('mentor_training', 'rival_pressure', 'skipped_mandatory_slots'):
+        context.clear_temp_effect(key)
+
+    session = context.session
+    seed_relationships(session, player)
+
+    if context.school_id:
+        run_roster_logic(target_school_id=context.school_id, db_session=session)
+        session.refresh(player)
+
+    exam_summary = maybe_run_academic_exam(player, current_week)
+    if exam_summary:
+        session.add(player)
+        session.commit()
+
+    event_text = None
+    if enable_events:
+        event_text = trigger_random_event(context, current_week)
+
+    player = _get_active_player(context)
+    coach_order = _select_coach_order(player, current_week) if player else None
+    return player, coach_order, exam_summary, event_text
+
+
+def _finalize_week_outcomes(
+    context: GameContext,
+    *,
+    current_week: int,
+    coach_order: Optional[CoachOrder],
+    execution,
+    skipped_mandatory: List[Dict[str, object]],
+    summary: WeekSummary,
+    exam_summary: Optional[dict] = None,
+    event_text: Optional[str] = None,
+) -> WeekSummary:
+    player = _get_active_player(context)
+    session = context.session
+
+    if exam_summary:
+        exam_label = exam_summary.get('exam_name', 'Exam')
+        exam_score = exam_summary.get('score')
+        exam_grade = exam_summary.get('grade')
+        summary.add_event(f"{exam_label}: {exam_score} ({exam_grade})")
+        comment = exam_summary.get('comment')
+        if comment:
+            summary.add_event(comment)
+
+    if event_text:
+        summary.add_event(event_text)
+
+    order_progress = _evaluate_order_progress(coach_order, execution.results if execution else [])
+    reward_delta = {"trust": 0, "ability_points": 0}
+    if coach_order and order_progress and player:
+        completed = bool(order_progress.get("completed"))
+        progress = order_progress.get("progress", 0)
+        target = order_progress.get("target", 0)
+        if completed:
+            trust_gain = coach_order.reward_trust
+            ability_gain = coach_order.reward_ability_points
+            old_trust = player.trust_baseline or 50
+            player.trust_baseline = min(100, old_trust + trust_gain)
+            player.ability_points = (player.ability_points or 0) + ability_gain
+            session.add(player)
+            reward_delta = {"trust": trust_gain, "ability_points": ability_gain}
+            summary.add_event(
+                f"Coach's Orders complete (+{trust_gain} Trust / +{ability_gain} Ability)."
+            )
+        else:
+            summary.add_warning(
+                f"Coach's Orders incomplete ({progress}/{target})."
+            )
+
+        _record_coach_order_result(
+            session,
+            current_week=current_week,
+            player=player,
+            coach_order=coach_order,
+            order_progress=order_progress,
+            reward_delta=reward_delta,
+        )
+
+    penalty_payload = _process_skipped_penalties(context, player, skipped_mandatory)
+    if penalty_payload:
+        session.add(player)
+        session.commit()
+        summary.add_warning(
+            f"Coach trust -{penalty_payload['trust_penalty']} / Morale -{penalty_payload['morale_penalty']}"
+        )
+        summary.add_event("Coaches noted missed mandatory work.")
+        for slot in penalty_payload['entries']:
+            expected = _format_action_label(slot.get('expected'))
+            chosen = _format_action_label(slot.get('chosen'))
+            summary.add_warning(
+                f"Skipped {slot['day']} {slot['slot']}: expected {expected} -> {chosen}"
+            )
+    else:
+        session.commit()
+
+    context.set_temp_effect('last_week_summary', summary.to_payload())
+    return summary
+
+
+def _safe_action_choice(template_action: str, projected_fatigue: int) -> str:
+    if projected_fatigue >= 95:
+        return 'rest'
+    if projected_fatigue >= 85 and template_action not in {'rest', 'mind', 'study'}:
+        return 'rest'
+    if projected_fatigue >= 75 and template_action.startswith('train_'):
+        return 'mind'
+    return template_action
+
+
+def _inject_order_requirements(
+    schedule_state: List[List[Optional[str]]],
+    coach_order: Optional[CoachOrder],
+) -> None:
+    if not coach_order:
+        return
+    requirement = coach_order.requirement or {}
+    if requirement.get('type') != 'action_count':
+        return
+    actions = list(requirement.get('actions') or [])
+    target = int(requirement.get('count', 0))
+    if not actions or target <= 0:
+        return
+    slots = [
+        (day_idx, slot_idx)
+        for day_idx in range(7)
+        for slot_idx in range(3)
+        if schedule_state[day_idx][slot_idx] is None
+    ]
+    random.shuffle(slots)
+    placed = 0
+    for day_idx, slot_idx in slots:
+        schedule_state[day_idx][slot_idx] = random.choice(actions)
+        placed += 1
+        if placed >= target:
+            break
+
+
+def generate_auto_schedule(player: Optional[Player], coach_order: Optional[CoachOrder] = None):
+    schedule_state = [[None for _ in range(3)] for _ in range(7)]
+    mandatory_schedule = build_mandatory_schedule(player)
+    for (day_idx, slot_idx), action in mandatory_schedule.items():
+        schedule_state[day_idx][slot_idx] = action
+
+    _inject_order_requirements(schedule_state, coach_order)
+
+    projected_fatigue = (player.fatigue or 0) if player else 0
+    for day_idx, template_row in enumerate(AUTO_SCHEDULE_TEMPLATE):
+        for slot_idx, template_action in enumerate(template_row):
+            if schedule_state[day_idx][slot_idx]:
+                projected_fatigue = max(0, projected_fatigue + get_action_cost(schedule_state[day_idx][slot_idx]))
+                continue
+            chosen = _safe_action_choice(template_action, projected_fatigue)
+            schedule_state[day_idx][slot_idx] = chosen
+            projected_fatigue = max(0, projected_fatigue + get_action_cost(chosen))
+
+    return schedule_state, mandatory_schedule
+
+
+def run_week_automatic(context: GameContext, current_week: int):
+    player, coach_order, exam_summary, _ = _initialize_week(context, current_week, enable_events=False)
+    if not player:
+        summary = WeekSummary(week_number=current_week)
+        summary.flag_interrupt("Active player missing; cannot simulate week.")
+        return None, summary
+
+    schedule_grid, _ = generate_auto_schedule(player, coach_order)
+    skipped_mandatory: List[Dict[str, object]] = []
+
+    try:
+        execution, summary = execute_schedule_silent(context, schedule_grid, current_week)
+    except ValueError as err:
+        summary = WeekSummary(week_number=current_week)
+        summary.add_warning(str(err))
+        summary.flag_interrupt("Schedule aborted")
+        return None, summary
+
+    summary.add_schedule_note("Auto-schedule executed by staff.")
+    summary = _finalize_week_outcomes(
+        context,
+        current_week=current_week,
+        coach_order=coach_order,
+        execution=execution,
+        skipped_mandatory=skipped_mandatory,
+        summary=summary,
+        exam_summary=exam_summary,
+        event_text=None,
+    )
+    refreshed_player = _get_active_player(context)
+    if refreshed_player and (refreshed_player.fatigue or 0) >= SMART_SIM_FATIGUE_CAP:
+        summary.flag_interrupt(
+            f"Fatigue reached {(refreshed_player.fatigue or 0)}%."
+        )
+    return execution, summary
+
 # --- HELPER FUNCTIONS ---
 
 def get_action_cost(action_key):
@@ -615,90 +844,20 @@ def plan_week_ui(start_fatigue: int, player: Optional[Player], coach_order: Opti
 
     return schedule_grid, skipped_mandatory
 
-def execute_schedule(context: GameContext, schedule_grid, current_week):
-    """Call the core executor then render its structured output."""
-    print(f"\n=== EXECUTING WEEK {current_week} SCHEDULE ===")
+def execute_schedule_silent(context: GameContext, schedule_grid, current_week):
+    """Execute schedule math without emitting per-slot narration."""
 
-    try:
-        execution = execute_schedule_core(context, schedule_grid, current_week)
-    except ValueError as err:
-        print(f"Execution aborted: {err}")
-        return None
-
-    grouped = defaultdict(list)
-    for result in execution.results:
-        grouped[result.day_index].append(result)
-
-    for day_idx in sorted(grouped.keys()):
-        print(f"\n>> {DAYS_OF_WEEK[day_idx]}")
-        for slot_result in sorted(grouped[day_idx], key=lambda r: r.slot_index):
-            action_label = slot_result.action.replace('_', ' ').title()
-            print(f"   [{SLOTS[slot_result.slot_index]}] {action_label}...", end="")
-            sys.stdout.flush()
-            time.sleep(0.2)
-            print(f" {slot_result.training_summary}")
-
-            details = slot_result.training_details or {}
-            if details.get("stat_changes"):
-                stat_fragment = ", ".join(
-                    f"{k}+{round(v,2)}" for k, v in details["stat_changes"].items()
-                )
-                print(f"      Stats: {stat_fragment}")
-            xp_details = details.get("xp_gains") or {}
-            if xp_details:
-                xp_fragment = ", ".join(
-                    f"{k}+{round(v,2)}xp" for k, v in xp_details.items()
-                )
-                print(f"      XP: {xp_fragment}")
-            breakthrough = details.get("breakthrough")
-            if breakthrough:
-                stat_label = breakthrough['stat'].replace('_', ' ').title()
-                print(f"      🔥 Breakthrough in {stat_label}!")
-
-            if slot_result.opponent_name:
-                matchup = slot_result.opponent_name
-                if 'b_team' in slot_result.action:
-                    matchup = f"{matchup} (B)"
-                print(f"      ⚾ GAME START: vs {matchup}")
-                if slot_result.match_result:
-                    color = Colour.GREEN if slot_result.match_result == 'WON' else Colour.FAIL
-                    score_text = slot_result.match_score or "N/A"
-                    print(
-                        f"      🏁 RESULT: {color}{slot_result.match_result}{Colour.RESET} ({score_text})"
-                    )
-            if slot_result.error:
-                print(f"      {Colour.WARNING}{slot_result.error}{Colour.RESET}")
-
-    return execution
+    execution = execute_schedule_core(context, schedule_grid, current_week)
+    summary = _summarize_execution(current_week, execution)
+    return execution, summary
 
 
 def start_week(context: GameContext, current_week: int) -> None:
     """Primary entry point for the weekly training phase."""
-    player = _get_active_player(context)
+    player, coach_order, exam_summary, event_text = _initialize_week(context, current_week)
     if not player:
         print("No active player is set. Load a save before planning the week.")
         return
-
-    # Reset one-week modifiers so fresh effects can be applied.
-    for key in ('mentor_training', 'rival_pressure', 'skipped_mandatory_slots'):
-        context.clear_temp_effect(key)
-
-    session = context.session
-    seed_relationships(session, player)
-
-    if context.school_id:
-        run_roster_logic(target_school_id=context.school_id, db_session=session)
-        session.refresh(player)
-
-    exam_summary = maybe_run_academic_exam(player, current_week)
-    if exam_summary:
-        session.add(player)
-        session.commit()
-
-    trigger_random_event(context, current_week)
-
-    player = _get_active_player(context)
-    coach_order = _select_coach_order(player, current_week)
     _print_weekly_brief(player, current_week, coach_order)
 
     if exam_summary:
@@ -706,6 +865,9 @@ def start_week(context: GameContext, current_week: int) -> None:
             f"\n{Colour.CYAN}Exam: {exam_summary['exam_name']} -> {exam_summary['score']} ({exam_summary['grade']}){Colour.RESET}"
         )
         print(f" {exam_summary['comment']}")
+
+    if event_text:
+        print(f"\n{Colour.BOLD}Weekly Highlight:{Colour.RESET} {event_text}")
 
     if not is_academically_eligible(player, player.school):
         needed = required_score_for_school(player.school)
@@ -718,60 +880,23 @@ def start_week(context: GameContext, current_week: int) -> None:
     start_fatigue = player.fatigue or 0
     schedule_grid, skipped_mandatory = plan_week_ui(start_fatigue, player, coach_order)
 
-    execution = execute_schedule(context, schedule_grid, current_week)
-    if not execution:
+    try:
+        execution, summary = execute_schedule_silent(context, schedule_grid, current_week)
+    except ValueError as err:
+        print(f"Execution aborted: {err}")
         return
 
-    player = _get_active_player(context)
-    order_progress = _evaluate_order_progress(coach_order, execution.results)
-    reward_delta = {"trust": 0, "ability_points": 0}
-    if coach_order and order_progress:
-        completed = bool(order_progress.get("completed"))
-        progress = order_progress.get("progress", 0)
-        target = order_progress.get("target", 0)
-        if completed:
-            trust_gain = coach_order.reward_trust
-            ability_gain = coach_order.reward_ability_points
-            old_trust = player.trust_baseline or 50
-            player.trust_baseline = min(100, old_trust + trust_gain)
-            player.ability_points = (player.ability_points or 0) + ability_gain
-            session.add(player)
-            reward_delta = {"trust": trust_gain, "ability_points": ability_gain}
-            print(
-                f"\n{Colour.GREEN}Coach's Orders complete!{Colour.RESET} Trust +{trust_gain}, Ability Points +{ability_gain}."
-            )
-        else:
-            print(
-                f"\n{Colour.WARNING}Coach's Orders incomplete.{Colour.RESET} Progress {progress}/{target}."
-            )
+    summary.add_schedule_note("Player-planned week.")
+    summary = _finalize_week_outcomes(
+        context,
+        current_week=current_week,
+        coach_order=coach_order,
+        execution=execution,
+        skipped_mandatory=skipped_mandatory,
+        summary=summary,
+        exam_summary=exam_summary,
+        event_text=event_text,
+    )
 
-        _record_coach_order_result(
-            session,
-            current_week=current_week,
-            player=player,
-            coach_order=coach_order,
-            order_progress=order_progress,
-            reward_delta=reward_delta,
-        )
-
-    penalty_payload = _process_skipped_penalties(context, player, skipped_mandatory)
-    if penalty_payload:
-        session.add(player)
-        session.commit()
-
-        print(f"\n{Colour.WARNING}Coach Kataoka noted the skipped obligations.{Colour.RESET}")
-        print(
-            f" Coach Trust {Colour.FAIL}-{penalty_payload['trust_penalty']}{Colour.RESET} (Baseline now {penalty_payload['new_trust']})."
-        )
-        if penalty_payload['morale_penalty']:
-            print(
-                f" Morale {Colour.FAIL}-{penalty_payload['morale_penalty']}{Colour.RESET} — teammates question your commitment."
-            )
-        print(" Details:")
-        for slot in penalty_payload['entries']:
-            expected = _format_action_label(slot.get('expected'))
-            chosen = _format_action_label(slot.get('chosen'))
-            print(f"  • {slot['day']} {slot['slot']}: expected {expected} -> planned {chosen}")
-        input("\nPress Enter to continue...")
-    else:
-        session.commit()
+    render_weekly_dashboard(summary)
+    input()

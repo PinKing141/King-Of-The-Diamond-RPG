@@ -5,14 +5,18 @@ import os
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.event_bus import EventBus
 from match_engine.batter_logic import AtBatStateMachine
 from match_engine.pitch_logic import get_current_catcher
 from match_engine.states import EventType, MatchState
 from player_roles import batter_controls as batter_ui
-from battery_system.battery_trust import apply_plate_result_to_trust
+from battery_system.battery_trust import (
+    get_trust_snapshot,
+    set_trust_snapshot,
+    trust_delta_for_plate_result,
+)
 
 from .momentum import MomentumSystem
 
@@ -118,6 +122,7 @@ class MatchSimulation:
         self._current_matchup: Optional[MatchupContext] = None
         self._pending_choice: Optional[BatterChoice] = None
         self._pending_choice_options: List[Dict[str, str]] = []
+        self._trust_buffer: Dict[Tuple[int, int], int] = {}
 
     def step(self) -> Optional[PlayOutcome]:
         """Advance the simulation by a single action tick."""
@@ -141,6 +146,13 @@ class MatchSimulation:
         self._pending_choice_options.clear()
         self.loop_state = MatchState.WAITING_FOR_PITCH
         return outcome
+
+    def pop_trust_buffer(self) -> Dict[Tuple[int, int], int]:
+        """Return and reset the accumulated trust deltas for this simulation."""
+
+        buffer = self._trust_buffer
+        self._trust_buffer = {}
+        return buffer
 
     def submit_player_choice(self, choice_key: str) -> None:
         """Accept a Batter's Eye selection from a human player."""
@@ -345,13 +357,16 @@ class MatchSimulation:
         catcher_id = getattr(catcher, "id", None)
         if not pitcher_id or not catcher_id:
             return
-        apply_plate_result_to_trust(
-            self.state,
-            pitcher_id,
-            catcher_id,
+        delta = trust_delta_for_plate_result(
             result_type=outcome.result_type,
             hit_type=outcome.hit_type,
         )
+        if delta == 0:
+            return
+        key = (pitcher_id, catcher_id)
+        self._trust_buffer[key] = self._trust_buffer.get(key, 0) + delta
+        current_value = get_trust_snapshot(self.state, pitcher_id, catcher_id)
+        set_trust_snapshot(self.state, pitcher_id, catcher_id, current_value + delta)
 
     def _batting_side(self, half: Optional[str] = None) -> str:
         label = (half or self.state.top_bottom or "Top").lower()
@@ -490,46 +505,48 @@ def _simulate_match(
     with session_scope() as session:
         consume_strategy_mods(session, home_team.id)
         consume_strategy_mods(session, away_team.id)
-    return winner, score_str
+_RESOLVE_MODE_PRESETS: Dict[str, Dict[str, bool]] = {
+    "standard": {"fast": False, "silent": False},
+    "interactive": {"fast": False, "silent": False},
+    "fast": {"fast": True, "silent": False},
+    "silent": {"fast": False, "silent": True},
+}
 
 
-def sim_match(
+def resolve_match(
     home_team,
     away_team,
     tournament_name: str = "Practice Match",
     *,
-    silent: bool = False,
+    mode: str = "standard",
+    silent: Optional[bool] = None,
     clutch_pitch: Optional[Dict[str, Any]] = None,
 ):
-    """Legacy bridge for running a match with optional suppressed commentary."""
+    """Unified entry point for orchestrating a simulated match.
 
+    Parameters
+    ----------
+    mode: str
+        "standard" (default) runs the full engine with commentary on.
+        "fast" mirrors the previous sim_match_fast helper.
+        "silent" suppresses commentary without altering pace.
+    silent: Optional[bool]
+        Override the mode's default commentary setting when provided.
+    """
+
+    preset = _RESOLVE_MODE_PRESETS.get(mode)
+    if preset is None:
+        raise ValueError(f"Unknown resolve mode '{mode}'.")
+    fast = preset["fast"]
+    effective_silent = preset["silent"] if silent is None else silent
     return _simulate_match(
         home_team,
         away_team,
         tournament_name,
-        silent=silent,
-        fast=False,
+        silent=effective_silent,
+        fast=fast,
         clutch_pitch=clutch_pitch,
     )
 
 
-def sim_match_fast(
-    home_team,
-    away_team,
-    tournament_name: str = "Practice Match",
-    *,
-    clutch_pitch: Optional[Dict[str, Any]] = None,
-):
-    """High-throughput simulation that skips commentary generation entirely."""
-
-    return _simulate_match(
-        home_team,
-        away_team,
-        tournament_name,
-        silent=False,
-        fast=True,
-        clutch_pitch=clutch_pitch,
-    )
-
-
-__all__ = ["MatchSimulation", "PlayOutcome", "sim_match", "sim_match_fast"]
+__all__ = ["MatchSimulation", "PlayOutcome", "resolve_match"]

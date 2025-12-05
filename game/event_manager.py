@@ -423,5 +423,6 @@ def trigger_random_event(context: Optional[GameContext] = None, current_week: Op
     if result_text and not result_text.startswith("Dialogue"):
         print(f"\n{Colour.BOLD}>> WEEKLY HIGHLIGHT: {result_text}{Colour.RESET}")
         time.sleep(1.5)
-        
+    
     # Session lifecycle managed by caller/context
+    return result_text

@@ -2,16 +2,15 @@ import sys
 import os
 import random
 import time
-import sqlite3
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 # Add root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.setup_db import School, Player, PitchRepertoire
-from config import CITIES_DB_PATH
 from ui.ui_display import Colour, clear_screen
 from player_roles.two_way import roll_two_way_profile
 from game.academic_system import roll_academic_profile
@@ -76,61 +75,74 @@ MIN_PITCHES = 1
 MAX_PITCHES = 4
 
 _PREFECTURE_CACHE: Optional[List[str]] = None
+_CITY_CACHE: Dict[str, List[str]] = {}
 
 
-def get_prefecture_catalog() -> List[str]:
+def _reset_hometown_cache() -> None:
+    global _PREFECTURE_CACHE, _CITY_CACHE
+    _PREFECTURE_CACHE = None
+    _CITY_CACHE = {}
+
+
+def get_prefecture_catalog(session: Session) -> List[str]:
     global _PREFECTURE_CACHE
     if _PREFECTURE_CACHE is not None:
         return _PREFECTURE_CACHE
-    if not os.path.exists(CITIES_DB_PATH):
-        _PREFECTURE_CACHE = []
-        return _PREFECTURE_CACHE
+    if session is None:
+        return []
 
     try:
-        conn = sqlite3.connect(CITIES_DB_PATH)
-        cur = conn.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jpcities'")
-        table = "jpcities" if cur.fetchone() else "Cities"
-        cur.execute(f"SELECT DISTINCT admin_name FROM {table} ORDER BY admin_name")
-        _PREFECTURE_CACHE = [row[0] for row in cur.fetchall() if row[0]]
-        conn.close()
+        rows = (
+            session.query(School.prefecture)
+            .group_by(School.prefecture)
+            .order_by(School.prefecture)
+            .all()
+        )
+        _PREFECTURE_CACHE = [row[0] for row in rows if row[0]]
     except Exception as exc:
-        print(f"Prefecture DB Error: {exc}")
+        print(f"Prefecture lookup failed: {exc}")
         _PREFECTURE_CACHE = []
     return _PREFECTURE_CACHE
 
 
-def get_city_matches(prefecture: str, search_term: str = "") -> List[str]:
-    matches: List[str] = []
-    if not os.path.exists(CITIES_DB_PATH):
-        return matches
+def _load_cities_for_prefecture(session: Session, prefecture: str) -> List[str]:
+    cached = _CITY_CACHE.get(prefecture)
+    if cached is not None:
+        return cached
+    if session is None:
+        _CITY_CACHE[prefecture] = []
+        return _CITY_CACHE[prefecture]
 
     try:
-        conn = sqlite3.connect(CITIES_DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jpcities'")
-        tbl = "jpcities" if c.fetchone() else "Cities"
-
-        sql = f"""
-            SELECT admin_name, city
-            FROM {tbl}
-            WHERE admin_name = ?
-              AND (
-                    ? = ''
-                 OR lower(city) LIKE ?
-                 OR lower(city_ascii) LIKE ?
-              )
-            ORDER BY city
-            LIMIT 20
-        """
-        term = f"%{search_term.lower()}%"
-        c.execute(sql, (prefecture, search_term.lower(), term, term))
-        matches = [f"{row[0]} — {row[1]}" for row in c.fetchall()]
-        conn.close()
+        rows = (
+            session.query(
+                School.city_name,
+                func.count(School.id).label("schools"),
+            )
+            .filter(School.prefecture == prefecture)
+            .filter(School.city_name.isnot(None))
+            .group_by(School.city_name)
+            .order_by(func.count(School.id).desc(), func.lower(School.city_name))
+            .all()
+        )
+        city_names = [row[0] for row in rows if row[0]]
     except Exception as exc:
-        print(f"City DB Error: {exc}")
+        print(f"City lookup failed for {prefecture}: {exc}")
+        city_names = []
 
-    return matches
+    _CITY_CACHE[prefecture] = city_names
+    return city_names
+
+
+def get_city_matches(session: Session, prefecture: str, search_term: str = "") -> List[str]:
+    cities = _load_cities_for_prefecture(session, prefecture)
+    if not cities:
+        return []
+
+    term = search_term.strip().lower()
+    filtered = [c for c in cities if term in c.lower()] if term else cities
+    limited = filtered[:20]
+    return [f"{prefecture} — {city}" for city in limited]
 
 
 def _bar(value: Optional[int], width: int = 20) -> str:
@@ -360,6 +372,7 @@ def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Option
 # CHARACTER CREATION MENU (unchanged logic)
 # ------------------------------------------------------
 def create_hero(session: Session) -> Optional[int]:
+    _reset_hometown_cache()
     step = 0
     data = {
         "first_name": "", "last_name": "",
@@ -367,6 +380,7 @@ def create_hero(session: Session) -> Optional[int]:
         "growth_style": None,
         "stats": None, "rerolls_left": 3,
         "hometown": None,
+        "prefecture_choice": None,
         "school": None,
         "pitch_arsenal": [],
         "starter_trait": None,
@@ -565,10 +579,11 @@ def create_hero(session: Session) -> Optional[int]:
 
         # STEP 5: HOMETOWN (PREFECTURE -> CITY)
         elif step == 5:
-            prefectures = get_prefecture_catalog()
+            prefectures = get_prefecture_catalog(session)
             if not prefectures:
                 print("No prefecture data found. Defaulting to Tokyo.")
                 data['hometown'] = "Tokyo"
+                data['prefecture_choice'] = "Tokyo"
                 step += 1
                 continue
 
@@ -591,17 +606,20 @@ def create_hero(session: Session) -> Optional[int]:
                 if 1 <= pick <= len(filtered):
                     selected_pref = filtered[pick - 1]
             if back_to_prev:
+                data['prefecture_choice'] = None
                 continue
             if not selected_pref:
                 continue
+            data['prefecture_choice'] = selected_pref
 
             while True:
                 _print_option(f"{selected_pref}: enter city keyword (blank lists popular). 0=Back")
                 city_term = input("City Search: ").strip()
                 if city_term == '0':
                     selected_pref = None
+                    data['prefecture_choice'] = None
                     break
-                matches = get_city_matches(selected_pref, city_term)
+                matches = get_city_matches(session, selected_pref, city_term)
                 if not matches:
                     print("No cities found. Use prefecture only?")
                     if input("Use prefecture only (y/n): ").lower() == 'y':
@@ -630,13 +648,32 @@ def create_hero(session: Session) -> Optional[int]:
 
         # STEP 6: SCHOOL SELECTION
         elif step == 6:
-            pref = data['hometown'].split('—')[0].strip() if '—' in data['hometown'] else "Tokyo"
-            
-            offers = session.query(School).filter(School.prefecture == pref).limit(5).all()
+            hometown = data.get('hometown') or ''
+            pref = data.get('prefecture_choice')
+            if not pref and hometown:
+                pref = hometown.split('—')[0].strip()
+            pref = pref or "Tokyo"
+
+            city = None
+            if '—' in hometown:
+                city = hometown.split('—', 1)[1].strip()
+
+            base_query = session.query(School).filter(School.prefecture == pref)
+            offers = []
+            if city:
+                offers = (
+                    base_query.filter(School.city_name == city)
+                    .order_by(func.random())
+                    .limit(5)
+                    .all()
+                )
             if not offers:
-                offers = session.query(School).limit(5).all()
-            
-            _print_option(f"Offers from {pref}:")
+                offers = base_query.order_by(func.random()).limit(5).all()
+            if not offers:
+                offers = session.query(School).order_by(func.random()).limit(5).all()
+
+            location_label = f"{pref} — {city}" if city else pref
+            _print_option(f"Offers from {location_label}:")
             for i, t in enumerate(offers):
                 print(f" {i+1}. {t.name} (Rank: {t.prestige})")
             print(" 0. Back")

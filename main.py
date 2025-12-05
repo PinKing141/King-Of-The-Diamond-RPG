@@ -1,11 +1,12 @@
 import sys
 import os
 import time
+import random
 
 from core.event_bus import EventBus
 from database.setup_db import create_database, GameState, School, Player, get_session
-from ui.ui_display import Colour, clear_screen
-from game.weekly_scheduler import start_week
+from ui.ui_display import Colour, clear_screen, render_weekly_dashboard
+from game.weekly_scheduler import start_week, run_week_automatic
 from world_sim.tournament_sim import run_koshien_tournament, run_spring_koshien
 from world_sim.qualifiers import run_season_qualifiers
 from world_sim.prefecture_engine import simulate_background_matches
@@ -105,6 +106,58 @@ def get_player_info(session, state):
     if p and p.school:
         return f"{p.name} ({p.position}) - {p.school.name} (Year {p.year})"
     return "Unknown Player"
+
+
+SMART_SIM_INTERRUPTS = {
+    15: "Summer qualifiers demand manual coaching.",
+    40: "Winter camp requires a player choice.",
+    48: "Spring Senbatsu selections need your approval.",
+}
+
+
+def run_smart_simulation(context, session, state, target_week: int):
+    """Delegate consecutive weeks until an interrupt condition fires."""
+
+    summaries = []
+    reason = None
+
+    while state.current_week < target_week:
+        player = load_active_player(session, state)
+        if not player:
+            reason = "No active player loaded."
+            break
+
+        if state.current_week in SMART_SIM_INTERRUPTS:
+            reason = SMART_SIM_INTERRUPTS[state.current_week]
+            break
+
+        # Story beats still deserve manual choices.
+        if random.random() <= 0.40:
+            reason = "Story event pending—take the reins."
+            break
+
+        user_school_id = player.school_id
+        print(f"\r >> Processing Week {state.current_week}...", end="")
+        simulate_background_matches(user_school_id)
+
+        context.refresh_session()
+        context.set_player(player.id, user_school_id)
+        _, summary = run_week_automatic(context, state.current_week)
+        summaries.append(summary)
+        if summary.stopped_by_interrupt:
+            reason = summary.interrupt_reasons[-1] if summary.interrupt_reasons else "Week interrupted."
+            break
+
+        state.current_week += 1
+        if state.current_week % 4 == 0:
+            state.current_month += 1
+            if state.current_month > 12:
+                state.current_month = 1
+        session.add(state)
+        session.commit()
+
+    print()
+    return summaries, reason
 
 
 def start_new_career_same_world():
@@ -339,6 +392,7 @@ def run_game_loop():
             print(" [Enter] Next Week")
             print(" [S] Scouting / Roster")
             print(" [D] Save Game")
+            print(" [A] Smart Sim (Delegate Weeks)")
             print(" [Q] Quit to Menu")
 
             cmd = input(">> ").lower()
@@ -349,6 +403,36 @@ def run_game_loop():
                 continue
             elif cmd == 'd':
                 show_save_menu("SAVE")
+                continue
+            elif cmd == 'a':
+                target_input = input(
+                    f"Simulate until week (>{state.current_week}): "
+                ).strip()
+                try:
+                    target_week = int(target_input) if target_input else state.current_week + 1
+                except ValueError:
+                    print("Invalid week.")
+                    continue
+                if target_week <= state.current_week:
+                    target_week = state.current_week + 1
+                target_week = min(50, target_week)
+                # Advance once before automation, mirroring the normal flow.
+                state.current_week += 1
+                if state.current_week % 4 == 0:
+                    state.current_month += 1
+                    if state.current_month > 12:
+                        state.current_month = 1
+                session.commit()
+                if state.current_week >= target_week:
+                    continue
+                summaries, reason = run_smart_simulation(context, session, state, target_week)
+                if summaries:
+                    render_weekly_dashboard(summaries[-1])
+                    input()
+                if reason:
+                    print(f"\n{Colour.WARNING}Smart Sim stopped: {reason}{Colour.RESET}")
+                    input("Press Enter to continue...")
+                session.refresh(state)
                 continue
             elif cmd == 'q':
                 break
