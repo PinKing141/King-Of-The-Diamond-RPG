@@ -1,8 +1,5 @@
 import time
-<<<<<<< HEAD
 from dataclasses import dataclass
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 from typing import Optional
 from .pitch_logic import resolve_pitch, get_current_catcher
 from .ball_in_play import ContactResult, resolve_contact
@@ -959,10 +956,7 @@ class AtBatStateMachine:
         batter_tendencies = gather_behavior_tendencies(batter)
         times_faced = state.register_plate_appearance(pitcher_id, batter_id)
         steal_checked = False
-<<<<<<< HEAD
         squeeze_called = False
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         while True:
             self._emit_state(self.STATE_WINDUP, {
                 "inning": state.inning,
@@ -982,7 +976,6 @@ class AtBatStateMachine:
                 guess_payload = _auto_batters_eye_guess(state, batter, pitcher, batter_tendencies)
                 if guess_payload:
                     batter_mods['guess_payload'] = guess_payload
-<<<<<<< HEAD
 
             defense_runners = getattr(state, "runners", None) or []
             if _user_controls_defense(state) and any(defense_runners[:2]):
@@ -1084,63 +1077,6 @@ class AtBatStateMachine:
                 state.balls += 1
                 if getattr(pitch_res, 'special', None) == "wild_pitch":
                     if commentary_enabled():
-=======
-            
-            if not steal_checked:
-                steal_result = _maybe_call_aggressive_play(state)
-                steal_checked = True
-                if steal_result == "runner_out":
-                    if state.outs >= 3:
-                        return
-                    continue
-
-            trait_context = get_at_bat_context(state, batter, pitcher)
-            batter_trait_mods = _collect_trait_mods(batter, trait_context)
-            pitcher_trait_mods = _collect_trait_mods(pitcher, trait_context)
-
-            _configure_defensive_shift(state)
-
-            bases_loaded_snapshot = _bases_loaded(state)
-            outs_snapshot = state.outs
-
-            # 1. Pitch Resolution (Pass batter intent)
-            self._emit_state(self.STATE_PITCH_FLIGHT, {
-                "inning": state.inning,
-                "half": state.top_bottom,
-                "balls": state.balls,
-                "strikes": state.strikes,
-            })
-            state.add_pitch_count(pitcher.id)
-            pitch_res = resolve_pitch(
-                pitcher,
-                batter,
-                state,
-                batter_action,
-                batter_mods,
-                batter_trait_mods=batter_trait_mods,
-                pitcher_trait_mods=pitcher_trait_mods,
-                batter_tendencies=batter_tendencies,
-                times_through_order=times_faced,
-            )
-            last_pitch_res = pitch_res
-            tracker = _update_pitch_diagnostics(state, pitcher.id, pitch_res.outcome)
-
-            announce_pitch(pitch_res)
-            _maybe_comment_on_control(pitcher, tracker)
-            _handle_argument_event(state, pitch_res, batter, pitcher)
-            _handle_batters_eye_feedback(state, batter, pitch_res)
-            
-            # 2. Update Count
-            self._emit_state(self.STATE_RESOLVE, {
-                "outcome": pitch_res.outcome,
-                "inning": state.inning,
-                "half": state.top_bottom,
-            })
-            if pitch_res.outcome == "Ball":
-                state.balls += 1
-                if getattr(pitch_res, 'special', None) == "wild_pitch":
-                    if commentary_enabled():
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
                         print("   >> Wild pitch! Everyone moves up 90 feet.")
                     wild_runs = _advance_on_wild_pitch(state)
                     if wild_runs:
@@ -1196,10 +1132,7 @@ class AtBatStateMachine:
                     reset_slump_chain(state, batter_id)
                     record_pitcher_stress(state, pitcher_id, spike=False)
                     reset_rally_tracker(state, offense_team_id)
-<<<<<<< HEAD
                     _note_rivalry_strikeout(state, batter_id, pitcher_id, last_pitch_res)
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
                     break
                     
             elif pitch_res.outcome == "Foul":
@@ -1214,7 +1147,6 @@ class AtBatStateMachine:
                 })
                 # 3. Contact
                 p_mod = getattr(pitch_res, 'power_mod', 0)
-<<<<<<< HEAD
                 bunt_intent = getattr(pitch_res, "bunt_intent", None)
                 if bunt_intent and getattr(bunt_intent, "squeeze", False):
                     contact_res = _resolve_bunt_contact(state, batter, pitcher, bunt_intent, batter_trait_mods)
@@ -1227,16 +1159,6 @@ class AtBatStateMachine:
                         power_mod=p_mod,
                         trait_mods=batter_trait_mods,
                     )
-=======
-                contact_res = resolve_contact(
-                    pitch_res.contact_quality,
-                    batter,
-                    pitcher,
-                    state,
-                    power_mod=p_mod,
-                    trait_mods=batter_trait_mods,
-                )
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
                 announce_play(contact_res)
                 reached_base = contact_res.hit_type != "Out"
                 was_slumping = reached_base and get_confidence(state, batter_id) <= -30
@@ -1250,17 +1172,11 @@ class AtBatStateMachine:
 
                 runs_scored_on_play = 0
                 if contact_res.hit_type == "Out":
-<<<<<<< HEAD
                     outs_recorded = 1 + int(getattr(contact_res, "extra_outs", 0))
                     state.outs += outs_recorded
                     if not getattr(contact_res, "sacrifice", False):
                         batter_stats["at_bats"] += 1
                     pitcher_stats["innings_pitched"] += 0.33 * outs_recorded
-=======
-                    state.outs += 1
-                    batter_stats["at_bats"] += 1
-                    pitcher_stats["innings_pitched"] += 0.33
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
                     reset_slump_chain(state, batter_id)
                     record_pitcher_stress(state, pitcher_id, spike=False)
                     reset_rally_tracker(state, offense_team_id)
@@ -1297,7 +1213,6 @@ class AtBatStateMachine:
                     apply_slump_boost(state, batter_id, was_slumping, "hit")
                     maybe_catcher_settle(state, pitcher_id)
 
-<<<<<<< HEAD
                 advances = getattr(contact_res, "runner_advances", None)
                 if advances:
                     pre_home_adv = state.home_score
@@ -1316,8 +1231,6 @@ class AtBatStateMachine:
                         if _lead_changed(state, extra_runs, pre_home_adv, pre_away_adv):
                             apply_lead_change_swing(state)
 
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
                 outs_logged = max(0, state.outs - outs_snapshot)
                 state.latest_play_detail = {
                     "hit_type": contact_res.hit_type,
@@ -1327,11 +1240,8 @@ class AtBatStateMachine:
                     "description": contact_res.description,
                     "credited_hit": contact_res.credited_hit,
                     "error_on_play": error_flag,
-<<<<<<< HEAD
                     "error_type": getattr(contact_res, "error_type", None),
                     "error_position": getattr(contact_res, "primary_position", None),
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
                 }
 
                 break

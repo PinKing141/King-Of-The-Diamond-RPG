@@ -10,11 +10,7 @@ from game.coach_strategy import export_mod_descriptors
 from game.player_progression import fetch_player_milestone_tags
 from game.rng import get_rng
 from core.event_bus import EventBus
-<<<<<<< HEAD
 from match_engine.confidence import adjust_confidence, initialize_confidence
-=======
-from match_engine.confidence import initialize_confidence
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 from match_engine.momentum import MomentumSystem, PresenceProfile, PresenceSystem
 from match_engine.states import EventType
 from world.rivals import get_ledger
@@ -111,10 +107,7 @@ class MatchState:
         home_bench: Optional[Iterable[Player]] = None,
         away_bench: Optional[Iterable[Player]] = None,
         event_bus: EventBus | None = None,
-<<<<<<< HEAD
         clutch_pitch_payload: Optional[Dict[str, Any]] = None,
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
     ):
         # Teams (Now Schools)
         self.home_team = home_team
@@ -220,7 +213,6 @@ class MatchState:
         }
         self.player_lookup = {}
         self.event_bus: EventBus = event_bus or EventBus()
-<<<<<<< HEAD
         self.clutch_pitch_payload = clutch_pitch_payload
         # Lazy import to break circular dependency with game.catcher_ai
         def _lazy_catcher_memory():
@@ -228,8 +220,6 @@ class MatchState:
             return CatcherMemory()
         self.catcher_memory = _lazy_catcher_memory()
         self.clutch_pitch_effects: Dict[int, Dict[str, Any]] = {}
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         for player in self.home_roster + self.away_roster:
             if player:
                 self.player_lookup[player.id] = player
@@ -514,10 +504,7 @@ def prepare_match(
         home_bench=home_bench,
         away_bench=away_bench,
         event_bus=event_bus,
-<<<<<<< HEAD
         clutch_pitch_payload=clutch_pitch,
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
     )
     _attach_coach_modifiers(match_state)
     match_state.configure_presence(_build_presence_profiles(match_state))

@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 import json
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 from typing import Any, Dict, List, Optional
 
 from ui.ui_display import (
@@ -81,7 +78,6 @@ DRAMA_TAGS = (
 )
 
 
-<<<<<<< HEAD
 def _normalize_error_summary(summary) -> Dict[str, List[Any]]:
     if summary is None:
         return {"home": [], "away": []}
@@ -115,8 +111,6 @@ def _format_error_entries(entries: Optional[List[Any]]) -> str:
     return ", ".join(labels) if labels else "None"
 
 
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 def _inning_label(half: str, inning: int) -> str:
     half_label = "Top" if half.lower().startswith("t") else "Bottom"
     return f"{half_label} {inning}"
@@ -149,10 +143,7 @@ class CommentaryListener:
         self._last_swing: Optional[Dict[str, Any]] = None
         self._player_names: Dict[int, str] = {}
         self._team_names: Dict[str, str] = {"home": "Home", "away": "Away"}
-<<<<<<< HEAD
         self._team_names_by_id: Dict[int, str] = {}
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         if not event_bus:
             return
         event_bus.subscribe("LINEUP_READY", self._on_lineup_ready)
@@ -163,7 +154,6 @@ class CommentaryListener:
         event_bus.subscribe(EventType.STRIKEOUT.value, self._on_strikeout)
         event_bus.subscribe(EventType.PLAY_RESULT.value, self._on_play_result)
         event_bus.subscribe(EventType.BATTERS_EYE_PROMPT.value, self._on_batters_eye_prompt)
-<<<<<<< HEAD
         event_bus.subscribe(EventType.PITCH_MINIGAME_TRIGGER.value, self._on_minigame_trigger)
         event_bus.subscribe(EventType.PITCH_MINIGAME_RESOLVE.value, self._on_minigame_resolve)
         event_bus.subscribe(EventType.BATTERY_SIGN_CALLED.value, self._on_battery_sign)
@@ -171,8 +161,6 @@ class CommentaryListener:
         event_bus.subscribe(EventType.BATTERY_FORCED_CALL.value, self._on_battery_forced)
         event_bus.subscribe(EventType.BASERUN_PICKOFF.value, self._on_pickoff_event)
         event_bus.subscribe(EventType.OFFENSE_CALLS_SQUEEZE.value, self._on_squeeze_call)
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 
     def _on_lineup_ready(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -181,15 +169,12 @@ class CommentaryListener:
         away = payload.get("away", {})
         self._team_names["home"] = home.get("team_name") or self._team_names["home"]
         self._team_names["away"] = away.get("team_name") or self._team_names["away"]
-<<<<<<< HEAD
         home_id = home.get("team_id")
         away_id = away.get("team_id")
         if home_id is not None:
             self._team_names_by_id[home_id] = self._team_names["home"]
         if away_id is not None:
             self._team_names_by_id[away_id] = self._team_names["away"]
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         for team in (home, away):
             for entry in team.get("lineup", []):
                 player_id = entry.get("player_id")
@@ -235,20 +220,14 @@ class CommentaryListener:
         home_score = payload.get("home_score", 0)
         away_score = payload.get("away_score", 0)
         winner = payload.get("winner_name")
-<<<<<<< HEAD
         error_summary = payload.get("error_summary") or {}
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         print("\n" + "#" * 60)
         print(f"Final Score: {away} {away_score} - {home_score} {home}")
         if winner:
             print(f"Winner: {Colour.gold}{winner}{Colour.RESET}")
         else:
             print("Result: Draw")
-<<<<<<< HEAD
         self._print_error_summary(error_summary, home_label=home, away_label=away)
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         print("#" * 60 + "\n")
 
     def _player_label(self, player_id: Optional[int], default: str) -> str:
@@ -256,20 +235,16 @@ class CommentaryListener:
             return default
         return self._player_names.get(player_id, default)
 
-<<<<<<< HEAD
     def _team_label_from_id(self, team_id: Optional[int]) -> str:
         if team_id is None:
             return "Offense"
         return self._team_names_by_id.get(team_id, "Offense")
 
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
     def _score_line(self, away_score: int, home_score: int) -> str:
         away_name = self._team_names.get("away", "Away")
         home_name = self._team_names.get("home", "Home")
         return f"{away_name[:3]} {away_score} - {home_score} {home_name[:3]}"
 
-<<<<<<< HEAD
     def _print_error_summary(self, summary, *, home_label: str, away_label: str) -> None:
         normalized = _normalize_error_summary(summary)
         away_line = _format_error_entries(normalized.get("away"))
@@ -278,8 +253,6 @@ class CommentaryListener:
             return
         print(f"Errors: {away_label[:3]} {away_line} | {home_label[:3]} {home_line}")
 
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
     def _on_pitch_thrown(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
             return
@@ -321,7 +294,6 @@ class CommentaryListener:
         description = payload.get("description", "Play resolves.")
         runs = payload.get("runs_scored", 0)
         drama_tag = _drama_tag(payload.get("drama_level"))
-<<<<<<< HEAD
         if payload.get("error_on_play") and payload.get("error_type"):
             error_type = payload.get("error_type")
             label = "Throwing Error" if error_type == "E_THROW" else "Fielding Error"
@@ -330,9 +302,6 @@ class CommentaryListener:
             print(f"   >> {color}[{label}]{Colour.RESET} {defender}: {description}{drama_tag}")
         else:
             print(f"   >> {description}{drama_tag}")
-=======
-        print(f"   >> {description}{drama_tag}")
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         if runs:
             batting_team = self._team_names.get("away" if (payload.get("half") == "Top") else "home", "Offense")
             print(f"   !! {Colour.gold}{runs} run(s) answer for {batting_team}!{Colour.RESET}")
@@ -348,7 +317,6 @@ class CommentaryListener:
         for choice in options:
             print(f"        [{choice.get('key')}] {choice.get('label')} — {choice.get('description')}")
 
-<<<<<<< HEAD
     def _on_minigame_trigger(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
             return
@@ -418,8 +386,6 @@ class CommentaryListener:
             f"   >> {team_name} rolls the dice in {_inning_label(half, inning)} — squeeze is on with {runner} charging home!"
         )
 
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 
 def _short_name(player) -> str:
     if not player:

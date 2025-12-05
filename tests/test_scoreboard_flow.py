@@ -84,7 +84,6 @@ def test_run_logging_tracks_correct_team():
     board = Scoreboard()
     board.record_inning(1, away_runs=3, home_runs=2)
     assert board.innings[0] == [3, 2]
-<<<<<<< HEAD
 
 
 def test_error_logging_records_position_codes():
@@ -96,5 +95,3 @@ def test_error_logging_records_position_codes():
     summary = board.get_error_summary()
     assert summary["home"] == [{"tag": "E6(T)", "rbis": 2, "position": "Shortstop", "type": "E_THROW"}]
     assert summary["away"] == [{"tag": "E7", "rbis": 0, "position": "Left Field", "type": "E_FIELD"}]
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb

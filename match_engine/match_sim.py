@@ -9,15 +9,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from core.event_bus import EventBus
 from match_engine.batter_logic import AtBatStateMachine
-<<<<<<< HEAD
 from match_engine.pitch_logic import get_current_catcher
 from match_engine.states import EventType, MatchState
 from player_roles import batter_controls as batter_ui
 from battery_system.battery_trust import apply_plate_result_to_trust
-=======
-from match_engine.states import EventType, MatchState
-from player_roles import batter_controls as batter_ui
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 
 from .momentum import MomentumSystem
 
@@ -72,11 +67,8 @@ class PlayOutcome:
     hit_type: Optional[str] = None
     double_play: bool = False
     error_on_play: bool = False
-<<<<<<< HEAD
     error_type: Optional[str] = None
     error_position: Optional[str] = None
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 
 
 class MatchSimulation:
@@ -236,10 +228,7 @@ class MatchSimulation:
         with self._override_player_input(batter_choice):
             AtBatStateMachine(self.state).run()
         outcome = self._summarize_outcome(matchup)
-<<<<<<< HEAD
         self._update_battery_trust(matchup.pitcher, outcome)
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         batting_side = self._batting_side(matchup.half)
         fielding_side = self._fielding_side(matchup.half)
         batting_team_id = self._team_id_for_side(batting_side)
@@ -278,11 +267,8 @@ class MatchSimulation:
                 "hit_type": play_detail.get("hit_type"),
                 "double_play": bool(play_detail.get("double_play")),
                 "error_on_play": bool(play_detail.get("error_on_play")),
-<<<<<<< HEAD
                 "error_type": play_detail.get("error_type"),
                 "error_position": play_detail.get("error_position"),
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
             },
         )
         self._rotate_lineup(matchup.lineup_attr)
@@ -308,11 +294,8 @@ class MatchSimulation:
         hit_type = play_detail.get("hit_type")
         double_play = bool(play_detail.get("double_play"))
         error_flag = bool(play_detail.get("error_on_play"))
-<<<<<<< HEAD
         error_type = play_detail.get("error_type")
         error_position = play_detail.get("error_position")
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         result_type = "neutral"
         description = play_detail.get("description")
         if strikeout_delta > 0:
@@ -352,7 +335,6 @@ class MatchSimulation:
             hit_type=hit_type,
             double_play=double_play,
             error_on_play=error_flag,
-<<<<<<< HEAD
             error_type=error_type,
             error_position=error_position,
         )
@@ -369,8 +351,6 @@ class MatchSimulation:
             catcher_id,
             result_type=outcome.result_type,
             hit_type=outcome.hit_type,
-=======
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
         )
 
     def _batting_side(self, half: Optional[str] = None) -> str:
@@ -485,7 +465,6 @@ def _fetch_latest_score(home_id: int, away_id: int, tournament_name: str) -> str
     return score_str
 
 
-<<<<<<< HEAD
 def _simulate_match(
     home_team,
     away_team,
@@ -495,9 +474,6 @@ def _simulate_match(
     fast: bool,
     clutch_pitch: Optional[Dict[str, Any]] = None,
 ):
-=======
-def _simulate_match(home_team, away_team, tournament_name: str, *, silent: bool, fast: bool):
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
     from database.setup_db import session_scope
     from game.coach_strategy import consume_strategy_mods
     from .controller import run_match as engine_run_match
@@ -527,7 +503,6 @@ def sim_match(
 ):
     """Legacy bridge for running a match with optional suppressed commentary."""
 
-<<<<<<< HEAD
     return _simulate_match(
         home_team,
         away_team,
@@ -536,9 +511,6 @@ def sim_match(
         fast=False,
         clutch_pitch=clutch_pitch,
     )
-=======
-    return _simulate_match(home_team, away_team, tournament_name, silent=silent, fast=False)
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 
 
 def sim_match_fast(
@@ -550,7 +522,6 @@ def sim_match_fast(
 ):
     """High-throughput simulation that skips commentary generation entirely."""
 
-<<<<<<< HEAD
     return _simulate_match(
         home_team,
         away_team,
@@ -559,9 +530,6 @@ def sim_match_fast(
         fast=True,
         clutch_pitch=clutch_pitch,
     )
-=======
-    return _simulate_match(home_team, away_team, tournament_name, silent=False, fast=True)
->>>>>>> 359d5be5976e259890c872a8dc047cde2fd02cdb
 
 
 __all__ = ["MatchSimulation", "PlayOutcome", "sim_match", "sim_match_fast"]
