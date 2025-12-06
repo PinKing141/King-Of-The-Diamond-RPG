@@ -74,6 +74,7 @@ create_database()
 
 # --- CONFIGURATION ---
 SCALE_FACTOR = 1.0 
+POPULATE_BULK_INSERT = (os.getenv("POPULATE_BULK_INSERT", "").lower() in {"1", "true", "yes"})
 
 # --- PATH CONFIGURATION ---
 def get_base_path():
@@ -826,6 +827,7 @@ def populate_world():
                     session.add(coach)
 
                     roster_players = []
+                    pitcher_arsenal_map = {}
                     positions_needed = [
                         "Pitcher", "Pitcher", "Pitcher", "Pitcher",
                         "Catcher", "Catcher",
@@ -871,7 +873,7 @@ def populate_world():
 
                         if broad_pos == "Pitcher":
                             arsenal = generate_pitch_arsenal(PseudoPlayer(stats), data.get('focus'), "Overhand")
-                            player.pitch_repertoire = arsenal
+                            pitcher_arsenal_map[player] = arsenal
 
                         roster_players.append(player)
 
@@ -903,8 +905,22 @@ def populate_world():
                             b.role = "RELIEVER"
                         next_num += 1
 
-                    session.add_all(roster_players)
-                    session.flush()
+                    if POPULATE_BULK_INSERT:
+                        # Persist players quickly and hydrate primary keys for downstream trait seeding.
+                        session.bulk_save_objects(roster_players, return_defaults=True)
+                        session.flush()
+                    else:
+                        session.add_all(roster_players)
+                        session.flush()
+
+                    pitch_rows = []
+                    for player, arsenal in pitcher_arsenal_map.items():
+                        for pitch in arsenal:
+                            pitch.player_id = player.id
+                            pitch_rows.append(pitch)
+                    if pitch_rows:
+                        session.bulk_save_objects(pitch_rows)
+                        session.flush()
                     seed_initial_traits(session, roster_players)
                     seed_negative_traits(session, roster_players)
 
@@ -921,7 +937,7 @@ def populate_world():
 
     if name_db_conn: name_db_conn.close()
     elapsed = time.perf_counter() - start_time
-    if elapsed > 30:
+    if elapsed > 30 and not POPULATE_BULK_INSERT:
         print(f"[Perf] Population ran in {elapsed:.1f}s. Consider enabling bulk inserts for players via POPULATE_BULK_INSERT=1 to speed up large worlds.")
     print("--- SYSTEM: DATABASE POPULATION COMPLETE ---")
 

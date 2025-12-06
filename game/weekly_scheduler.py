@@ -38,6 +38,7 @@ from game.weekly_scheduler_core import (
     WeekSummary,
     execute_schedule_core,
 )
+from world.media_engine import generate_weekly_news
 
 
 @dataclass(frozen=True)
@@ -534,6 +535,20 @@ def _finalize_week_outcomes(
             )
     else:
         session.commit()
+
+    school = getattr(player, "school", None)
+    team_name = getattr(school, "name", "Team")
+    try:
+        summary.newsletter = generate_weekly_news(
+            summary,
+            team_name=team_name,
+            week=current_week,
+            headlines=summary.newsletter or getattr(execution, "headlines", None),
+            prestige=getattr(school, "prestige", None),
+        )
+    except Exception:
+        # If media generation fails, leave summary intact so the week can continue.
+        pass
 
     context.set_temp_effect('last_week_summary', summary.to_payload())
     return summary

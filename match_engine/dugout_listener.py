@@ -172,6 +172,7 @@ class DugoutListener:
         bus.subscribe(EventType.PITCH_THROWN.value, self._handle_pitch)
         bus.subscribe(EventType.BATTER_SWUNG.value, self._handle_swing)
         bus.subscribe(EventType.PLAY_RESULT.value, self._handle_play)
+        bus.subscribe(EventType.RIVAL_CUT_IN.value, self._handle_cut_in)
 
     def _emit(self, message: str, *, tag: str = "General", **meta) -> None:
         logs = getattr(self.state, "logs", None)
@@ -290,6 +291,24 @@ class DugoutListener:
                 batter_id=batter_id,
                 extra=extra,
             )
+
+    def _handle_cut_in(self, payload: Dict[str, object]) -> None:
+        batter_id = payload.get("batter_id")
+        pitcher_id = payload.get("pitcher_id")
+        inning = payload.get("inning")
+        half = payload.get("half")
+        hero = payload.get("hero_name") or "Hero"
+        rival = payload.get("rival_name") or "Rival"
+        msg = f"[Cut-In] {hero} vs {rival} — tension spikes as the showdown begins."
+        self._emit(
+            msg,
+            tag="Rivalry",
+            inning=inning,
+            half=half,
+            batter_id=batter_id,
+            pitcher_id=pitcher_id,
+            pause=True,
+        )
 
     def _handle_play(self, payload: Dict[str, object]) -> None:
         runs = payload.get("runs_scored", 0)

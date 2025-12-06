@@ -29,6 +29,7 @@ from .momentum import MomentumSystem
 from .brass_band import BrassBand
 
 from ui.ui_display import render_box_score_panel
+from ui.match_intro import render_match_intro
 from battery_system.battery_trust import apply_trust_buffer
 
 
@@ -815,6 +816,11 @@ def run_match(
         )
         if not state:
             return None # Error handling
+        if not fast:
+            try:
+                render_match_intro(state)
+            except Exception:
+                pass
         CommentaryListener(getattr(state, "event_bus", None))
         if not hasattr(state, "telemetry_store_in_db"):
             state.telemetry_store_in_db = True

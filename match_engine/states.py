@@ -34,6 +34,7 @@ class EventType(str, Enum):
     OFFENSE_CALLS_SQUEEZE = "OFFENSE_CALLS_SQUEEZE"
     PSYCHOLOGY_SHIFT = "PSYCHOLOGY_SHIFT"
     DUGOUT_CHATTER = "DUGOUT_CHATTER"
+    RIVAL_CUT_IN = "RIVAL_CUT_IN"
 
 
 __all__ = ["MatchState", "EventType"]

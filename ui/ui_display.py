@@ -407,6 +407,11 @@ def render_weekly_dashboard(summary, *, clear: bool = True) -> None:
         for note in summary.schedule_notes:
             print(f" {Colour.CYAN}•{Colour.RESET} {note}")
 
+    if summary.newsletter:
+        print(f"\n{Colour.GREEN}[WEEKLY NEWS]{Colour.RESET}")
+        for line in summary.newsletter:
+            print(f"  • {line}")
+
     print(f"\n{Colour.CYAN}[TRAINING RESULTS]{Colour.RESET}")
     print(f"  {_format_stat_map(summary.stat_gains)}")
     if summary.xp_gains:

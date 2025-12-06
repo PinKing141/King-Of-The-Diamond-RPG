@@ -123,9 +123,15 @@ class MatchSimulation:
         self._pending_choice: Optional[BatterChoice] = None
         self._pending_choice_options: List[Dict[str, str]] = []
         self._trust_buffer: Dict[Tuple[int, int], int] = {}
+        self._pending_cut_in: bool = False
 
     def step(self) -> Optional[PlayOutcome]:
         """Advance the simulation by a single action tick."""
+
+        # If we just fired a cut-in, hold the loop for one tick so UI can animate.
+        if self._pending_cut_in:
+            self._pending_cut_in = False
+            return None
 
         if self._current_matchup is None:
             self._current_matchup = self._build_matchup()
@@ -133,7 +139,9 @@ class MatchSimulation:
                 return None
 
         if self._is_rivalry_moment(self._current_matchup):
-            self._emit_rival_cut_in(self._current_matchup)
+            if self._emit_rival_cut_in(self._current_matchup):
+                self._pending_cut_in = True
+                return None
 
         if self._current_matchup.is_human and not self._pending_choice:
             if not self.awaiting_player_choice:
@@ -405,11 +413,11 @@ class MatchSimulation:
         pitcher_id = getattr(matchup.pitcher, "id", None)
         return ctx.is_rival_plate(batter_id) or ctx.is_hero_pitching(pitcher_id)
 
-    def _emit_rival_cut_in(self, matchup: MatchupContext) -> None:
+    def _emit_rival_cut_in(self, matchup: MatchupContext) -> bool:
         memo = getattr(self.state, "commentary_memory", None)
         cache_key = f"rival_cutin_{matchup.inning}_{matchup.half}_{getattr(matchup.batter, 'id', None)}"
         if isinstance(memo, set) and cache_key in memo:
-            return
+            return False
         hero = getattr(self.state, "hero_name", None) or "Hero"
         rival = getattr(self.state, "rival_name", None) or getattr(matchup.batter, "last_name", "Rival")
         payload = {
@@ -420,12 +428,13 @@ class MatchSimulation:
             "hero_name": hero,
             "rival_name": rival,
         }
-        self.bus.publish("RIVAL_CUT_IN", payload)
+        self.bus.publish(EventType.RIVAL_CUT_IN.value, payload)
         logs = getattr(self.state, "logs", None)
         if isinstance(logs, list):
             logs.append(f"[Rivalry] {hero} locks eyes with {rival} as the cut-in hits.")
         if isinstance(memo, set):
             memo.add(cache_key)
+        return True
 
     def _compute_drama_level(self) -> int:
         inning = self.state.inning

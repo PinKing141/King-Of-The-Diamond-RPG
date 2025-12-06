@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from game.mechanics import get_or_create_profile, mechanics_adjustment_for_pitch
@@ -51,3 +52,37 @@ def test_psychology_engine_tracks_pitch_and_plate_outcome():
     assert updated.focus >= snapshot.focus
     batter_snapshot = engine.batter_modifiers(11)
     assert batter_snapshot.eye_scalar <= 1.0
+
+
+def test_mechanics_profile_rehydrates_from_json():
+    state = DummyState()
+    pitcher = _sample_pitcher()
+    baseline = get_or_create_profile(state, pitcher)
+
+    payload = json.dumps(
+        {
+            "pitcher_id": pitcher.id,
+            "signature": baseline.signature,
+            "arm_slot": baseline.arm_slot,
+            "posture": baseline.posture,
+            "tempo": baseline.tempo,
+            "deception": baseline.deception,
+            "balance": baseline.balance,
+            "aggression": baseline.aggression,
+            "release_height": baseline.release_height,
+            "extension": baseline.extension,
+            "perceived_velocity_bonus": baseline.perceived_velocity_bonus,
+            "command_scalar": baseline.command_scalar,
+            "movement_bias": baseline.movement_bias,
+            "notes": list(baseline.notes),
+        }
+    )
+
+    restored_state = DummyState()
+    restored_pitcher = _sample_pitcher()
+    restored_pitcher.mechanics_json = payload
+    hydrated = get_or_create_profile(restored_state, restored_pitcher)
+
+    assert hydrated.signature == baseline.signature
+    assert hydrated.arm_slot == baseline.arm_slot
+    assert hydrated.movement_bias == baseline.movement_bias

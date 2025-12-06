@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Sequence, Tuple
@@ -223,6 +224,84 @@ def generate_unique_form(
     }
 
 
+def _serialize_profile(profile: PitchingMechanicsProfile) -> Dict[str, object]:
+    return {
+        "pitcher_id": profile.pitcher_id,
+        "signature": profile.signature,
+        "arm_slot": profile.arm_slot,
+        "posture": profile.posture,
+        "tempo": profile.tempo,
+        "deception": profile.deception,
+        "balance": profile.balance,
+        "aggression": profile.aggression,
+        "release_height": profile.release_height,
+        "extension": profile.extension,
+        "perceived_velocity_bonus": profile.perceived_velocity_bonus,
+        "command_scalar": profile.command_scalar,
+        "movement_bias": profile.movement_bias,
+        "notes": list(profile.notes),
+    }
+
+
+def _hydrate_profile(payload: dict, pitcher_id: Optional[int]) -> Optional[PitchingMechanicsProfile]:
+    try:
+        return PitchingMechanicsProfile(
+            pitcher_id=pitcher_id or payload.get("pitcher_id"),
+            signature=payload["signature"],
+            arm_slot=payload["arm_slot"],
+            posture=payload.get("posture", "neutral"),
+            tempo=float(payload.get("tempo", 0.5)),
+            deception=float(payload.get("deception", 0.6)),
+            balance=float(payload.get("balance", 0.55)),
+            aggression=float(payload.get("aggression", 0.5)),
+            release_height=float(payload.get("release_height", 5.5)),
+            extension=float(payload.get("extension", 6.0)),
+            perceived_velocity_bonus=float(payload.get("perceived_velocity_bonus", 0.0)),
+            command_scalar=float(payload.get("command_scalar", 1.0)),
+            movement_bias={
+                "ride": float(payload.get("movement_bias", {}).get("ride", 1.0)),
+                "sink": float(payload.get("movement_bias", {}).get("sink", 1.0)),
+                "sweep": float(payload.get("movement_bias", {}).get("sweep", 1.0)),
+            },
+            notes=tuple(payload.get("notes", ())),
+        )
+    except Exception:
+        return None
+
+
+def _load_profile_from_json(raw: Optional[str], pitcher_id: Optional[int]) -> Optional[PitchingMechanicsProfile]:
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    return _hydrate_profile(payload, pitcher_id)
+
+
+def _persist_profile(state, pitcher, profile: PitchingMechanicsProfile, *, pitcher_id: Optional[int]) -> None:
+    if pitcher_id is None:
+        return
+    mechanics_json = json.dumps(_serialize_profile(profile))
+    if hasattr(pitcher, "mechanics_json"):
+        try:
+            pitcher.mechanics_json = mechanics_json
+        except Exception:
+            pass
+    session = getattr(state, "db_session", None)
+    if session is None:
+        return
+    try:
+        session.add(pitcher)
+        session.flush()
+    except Exception:
+        # If the flush fails (closed session/rollback), keep runtime cache intact.
+        try:
+            session.rollback()
+        except Exception:
+            pass
+
+
 def get_or_create_profile(state, pitcher) -> PitchingMechanicsProfile:
     cache = getattr(state, "pitcher_mechanics", None)
     if cache is None:
@@ -231,9 +310,12 @@ def get_or_create_profile(state, pitcher) -> PitchingMechanicsProfile:
     pitcher_id = getattr(pitcher, "id", None)
     if pitcher_id in cache:
         return cache[pitcher_id]
-    profile = generate_mechanics_profile(pitcher)
+    stored = _load_profile_from_json(getattr(pitcher, "mechanics_json", None), pitcher_id)
+    profile = stored or generate_mechanics_profile(pitcher)
     if pitcher_id is not None:
         cache[pitcher_id] = profile
+        if stored is None:
+            _persist_profile(state, pitcher, profile, pitcher_id=pitcher_id)
     return profile
 
 

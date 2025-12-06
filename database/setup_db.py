@@ -141,6 +141,8 @@ def ensure_player_schema():
         statements.append("ALTER TABLE players ADD COLUMN is_two_way BOOLEAN DEFAULT 0")
     if 'secondary_position' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN secondary_position VARCHAR")
+    if 'mechanics_json' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN mechanics_json TEXT")
 
     if 'academic_skill' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN academic_skill INTEGER DEFAULT 55")
@@ -482,6 +484,7 @@ class Player(Base):
     conditioning = Column(Integer, default=50)
     ability_points = Column(Integer, default=0)
     training_xp = Column(Text, default="{}")
+    mechanics_json = Column(Text, nullable=True)
 
     school = relationship("School", back_populates="players")
     pitch_repertoire = relationship("PitchRepertoire", back_populates="player")
