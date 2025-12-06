@@ -189,6 +189,40 @@ def generate_mechanics_profile(pitcher, *, seed: Optional[int] = None) -> Pitchi
     )
 
 
+def generate_unique_form(
+    pitcher,
+    *,
+    seed: Optional[int] = None,
+    profile: Optional[PitchingMechanicsProfile] = None,
+) -> Dict[str, object]:
+    """Derive delivery-facing modifiers used by pitch physics.
+
+    Notes
+    -----
+    - "hiding_factor" scales how well the ball is hidden; values >1.0 shrink reaction time.
+    - "extension" is reused directly to boost perceived velocity in-flight adjustments.
+    """
+
+    base_profile = profile or generate_mechanics_profile(pitcher, seed=seed)
+    deception = base_profile.deception
+    hiding = 1.0 + (deception - 0.6) * 0.55
+    if base_profile.posture == "closed":
+        hiding += 0.05
+    elif base_profile.posture == "open":
+        hiding -= 0.03
+    if base_profile.arm_slot in {"Sidearm", "Low Three-Quarters"}:
+        hiding += 0.02
+    hiding = max(0.85, min(1.2, hiding))
+
+    return {
+        "profile": base_profile,
+        "signature": base_profile.signature,
+        "extension": base_profile.extension,
+        "release_height": base_profile.release_height,
+        "hiding_factor": hiding,
+    }
+
+
 def get_or_create_profile(state, pitcher) -> PitchingMechanicsProfile:
     cache = getattr(state, "pitcher_mechanics", None)
     if cache is None:
@@ -265,6 +299,7 @@ def describe_mechanics(state, pitchers: Iterable) -> Dict[int, Dict[str, object]
 __all__ = [
     "MechanicsAdjustment",
     "PitchingMechanicsProfile",
+    "generate_unique_form",
     "generate_mechanics_profile",
     "get_or_create_profile",
     "mechanics_adjustment_for_pitch",

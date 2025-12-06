@@ -144,6 +144,8 @@ def _summarize_execution(current_week: int, execution) -> WeekSummary:
         summary.add_warning(warning)
     for slot in execution.results:
         summary.record_slot(slot)
+    if getattr(execution, "headlines", None):
+        summary.newsletter = list(execution.headlines)
     return summary
 
 # --- CONSTANT HELPERS ---

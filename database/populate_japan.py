@@ -5,6 +5,7 @@ import os
 import sqlite3
 import json
 import unicodedata
+import time
 import pykakasi 
 import traceback
 from collections import defaultdict
@@ -745,6 +746,7 @@ def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
 used_school_names = set()
 
 def populate_world():
+    start_time = time.perf_counter()
     with session_scope() as session:
         import_city_catalog(session)
         print("--- SYSTEM: WIPING OLD DATA ---")
@@ -918,7 +920,9 @@ def populate_world():
             print(f" Done. ({schools_in_pref} Schools)")
 
     if name_db_conn: name_db_conn.close()
-    
+    elapsed = time.perf_counter() - start_time
+    if elapsed > 30:
+        print(f"[Perf] Population ran in {elapsed:.1f}s. Consider enabling bulk inserts for players via POPULATE_BULK_INSERT=1 to speed up large worlds.")
     print("--- SYSTEM: DATABASE POPULATION COMPLETE ---")
 
 if __name__ == "__main__":

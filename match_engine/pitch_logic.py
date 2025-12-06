@@ -4,7 +4,11 @@ from typing import Any, Dict, Optional
 from database.setup_db import PitchRepertoire, session_scope
 from match_engine.pitch_definitions import PITCH_TYPES, ARM_SLOT_MODIFIERS
 from game.rng import get_rng
-from game.mechanics import get_or_create_profile, mechanics_adjustment_for_pitch
+from game.mechanics import (
+    generate_unique_form,
+    get_or_create_profile,
+    mechanics_adjustment_for_pitch,
+)
 from game.skill_system import player_has_skill
 from battery_system.battery_trust import adjust_battery_sync, get_battery_sync
 
@@ -679,11 +683,19 @@ def resolve_pitch(
     p_def = PITCH_TYPES.get(pitch.pitch_name, PITCH_TYPES["4-Seam Fastball"])
 
     mechanics_profile = None
+    form_effect = None
+    extension_bonus = 0.0
+    hiding_factor = 1.0
     mechanics_tags: tuple[str, ...] = ()
     mechanics_deception = 0.0
     perception_penalty = 0.0
     try:
         mechanics_profile = get_or_create_profile(state, pitcher)
+        form_effect = generate_unique_form(pitcher, profile=mechanics_profile)
+        if form_effect:
+            extension_ft = float(form_effect.get("extension", 6.0) or 6.0)
+            extension_bonus = max(-1.2, min(2.8, (extension_ft - 6.0) * 0.45))
+            hiding_factor = float(form_effect.get("hiding_factor", 1.0) or 1.0)
     except Exception:
         mechanics_profile = None
     
@@ -722,6 +734,8 @@ def resolve_pitch(
     # Final Values
     base_velocity = (getattr(pitcher, 'velocity', 0) or 0) + pitcher_trait_mods.get('velocity', 0)
     velocity = (base_velocity * p_def['velocity_mod']) - fatigue_penalty
+    if extension_bonus:
+        velocity += extension_bonus
     base_movement = pitch.break_level * p_def['break_mod']
     movement_plane_mult = 1.0
     if p_def['type'] in ["Vertical", "Drop_Sink"]:
@@ -939,6 +953,8 @@ def resolve_pitch(
         batter_mods['power_mod'] = batter_mods.get('power_mod', 0) + 5
     
     reaction = eye_stat + rng.randint(-10, 10) - perception_penalty
+    if hiding_factor != 1.0:
+        reaction -= (hiding_factor - 1.0) * 14.0
     bat_control = contact_stat + rng.randint(-15, 15)
     batter_conf = get_confidence(state, batter.id)
     reaction += batter_conf * 0.2

@@ -82,6 +82,7 @@ class ScheduleExecution:
 
     results: List[SlotResult]
     warnings: List[str]
+    headlines: List[str]
 
 
 @dataclass
@@ -98,6 +99,7 @@ class WeekSummary:
     schedule_notes: List[str] = field(default_factory=list)
     stopped_by_interrupt: bool = False
     interrupt_reasons: List[str] = field(default_factory=list)
+    newsletter: List[str] = field(default_factory=list)
 
     def record_slot(self, result: SlotResult) -> None:
         details = result.training_details or {}
@@ -152,6 +154,24 @@ class WeekSummary:
         if reason:
             self.interrupt_reasons.append(reason)
 
+    def build_newsletter(self, *, team_name: str) -> List[str]:
+        if self.newsletter:
+            return self.newsletter
+        lines: List[str] = []
+        for entry in self.match_outcomes:
+            slot = entry.get("slot", "Match")
+            opponent = entry.get("opponent", "Opponent")
+            result = entry.get("result", "?")
+            score = entry.get("score", "-")
+            prefix = "Upset Alert: " if result.upper() == "WON" else "Setback: "
+            lines.append(f"{prefix}{team_name} {result} vs {opponent} ({score}) in {slot}.")
+        if self.highlights:
+            lines.append(self.highlights[0])
+        if self.warnings:
+            lines.append(self.warnings[0])
+        self.newsletter = lines[:4]
+        return self.newsletter
+
     def to_payload(self) -> Dict[str, object]:
         return {
             "week": self.week_number,
@@ -185,6 +205,7 @@ def execute_schedule_core(
 
     slot_results: List[SlotResult] = []
     warnings: List[str] = []
+    headlines: List[str] = []
     progression_state: Dict[str, object] = {}
 
     for d_idx, day_slots in enumerate(schedule_grid):
@@ -227,6 +248,10 @@ def execute_schedule_core(
                             outcome = 'WON' if winner.id == my_team.id else 'LOST'
                             slot_result.match_result = outcome
                             slot_result.match_score = score
+                            headline = f"{my_team.name} {outcome} vs {opponent.name if opponent else 'Opponent'} ({score})"
+                            if outcome == "WON" and getattr(opponent, "prestige", 0) > getattr(my_team, "prestige", 0) + 12:
+                                headline = "Dark Horse Alert: " + headline
+                            headlines.append(headline)
                         else:
                             slot_result.match_result = "UNKNOWN"
                 slot_results.append(slot_result)
@@ -241,4 +266,4 @@ def execute_schedule_core(
             session.commit()
 
     session.expire_all()
-    return ScheduleExecution(results=slot_results, warnings=warnings)
+    return ScheduleExecution(results=slot_results, warnings=warnings, headlines=headlines)

@@ -431,6 +431,90 @@ def _attach_coach_modifiers(state: MatchState):
     }
 
 
+def _apply_locker_room_speech(state: MatchState) -> None:
+    """Lightweight pregame speech that nudges morale/control based on coach archetype."""
+
+    def _buff_team(team, roster):
+        coach = getattr(team, "coach", None)
+        archetype = ((getattr(coach, "archetype", "") or "").upper())
+        if not archetype or not roster:
+            return None
+        morale_delta = 0
+        stamina_delta = 0
+        control_delta = 0
+        power_delta = 0
+        if "PASSION" in archetype:
+            morale_delta = 6
+            stamina_delta = -2
+        elif "LOGIC" in archetype:
+            control_delta = 4
+            power_delta = -2
+        elif "TRADITION" in archetype or "TRADITIONAL" in archetype:
+            morale_delta = 3
+            control_delta = 2
+
+        for player in roster:
+            if not player:
+                continue
+            if morale_delta:
+                player.morale = max(30, min(99, (getattr(player, "morale", 60) or 60) + morale_delta))
+            if stamina_delta:
+                player.stamina = max(20, min(99, (getattr(player, "stamina", 50) or 50) + stamina_delta))
+            if control_delta and getattr(player, "position", "").lower() == "pitcher":
+                player.control = max(20, min(99, (getattr(player, "control", 50) or 50) + control_delta))
+            if power_delta and getattr(player, "position", "").lower() != "pitcher":
+                player.power = max(15, min(99, (getattr(player, "power", 50) or 50) + power_delta))
+
+        if morale_delta or control_delta or stamina_delta:
+            label = getattr(team, "name", "Team")
+            speech = "Passion rally" if morale_delta else "Tactical briefing" if control_delta else "Steady drumbeat"
+            note = f"[Locker Room] {label} receives a {speech}. Morale {morale_delta:+}, Control {control_delta:+}, Stamina {stamina_delta:+}."
+            if isinstance(state.logs, list):
+                state.logs.append(note)
+
+    _buff_team(state.home_team, getattr(state, "home_roster", []))
+    _buff_team(state.away_team, getattr(state, "away_roster", []))
+
+
+def _support_tier(state: MatchState, school) -> int:
+    if not school:
+        return 0
+    tourney = (getattr(state, "tournament", None) or getattr(state, "tournament_name", "") or "")
+    if "koshien" in str(tourney).lower():
+        return 3
+    prestige = getattr(school, "prestige", 0) or 0
+    era = getattr(school, "current_era", "REBUILDING") or "REBUILDING"
+    tier = 0
+    if prestige >= 20:
+        tier = 1
+    if prestige >= 45:
+        tier = 2
+    if prestige >= 75:
+        tier = 3
+    if era == "DARK_HORSE":
+        tier = min(3, tier + 1)
+    elif era == "SLEEPING_LION":
+        tier = max(1, tier - 1)
+    return tier
+
+
+def _emit_scouting_card(state: MatchState) -> None:
+    opponent = state.away_team if getattr(state, "top_bottom", "Top") == "Top" else state.away_team
+    if not opponent:
+        return
+    lineup = getattr(state, "away_lineup", [])
+    star = None
+    if lineup:
+        star = max(lineup, key=lambda p: (getattr(p, "overall", 0) or 0))
+    band_tier = _support_tier(state, opponent)
+    era = getattr(opponent, "current_era", "REBUILDING") or "REBUILDING"
+    text = f"[Scouting Card] {getattr(opponent, 'name', 'Opponent')} — Era: {era}, Brass tier: {band_tier}."
+    if star:
+        text += f" Star: {getattr(star, 'last_name', getattr(star, 'name', 'Ace'))}."
+    if isinstance(state.logs, list):
+        state.logs.append(text)
+
+
 def _tag_lineup_slots(lineup: Iterable[Player]) -> None:
     for idx, player in enumerate(lineup, start=1):
         if player is None:
@@ -518,6 +602,8 @@ def prepare_match(
     match_state.tournament_name = tournament_name
     match_state.tournament = tournament_name
     match_state.brass_band = BrassBand(match_state)
+    _apply_locker_room_speech(match_state)
+    _emit_scouting_card(match_state)
     _attach_coach_modifiers(match_state)
     match_state.configure_presence(_build_presence_profiles(match_state))
     match_state.update_pressure_index()

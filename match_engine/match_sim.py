@@ -132,6 +132,9 @@ class MatchSimulation:
             if self._current_matchup is None:
                 return None
 
+        if self._is_rivalry_moment(self._current_matchup):
+            self._emit_rival_cut_in(self._current_matchup)
+
         if self._current_matchup.is_human and not self._pending_choice:
             if not self.awaiting_player_choice:
                 if self._maybe_apply_agent_choice():
@@ -393,6 +396,36 @@ class MatchSimulation:
         if not lineup or len(lineup) <= 1:
             return
         lineup[:] = lineup[1:] + lineup[:1]
+
+    def _is_rivalry_moment(self, matchup: MatchupContext) -> bool:
+        ctx = getattr(self.state, "rival_match_context", None)
+        if not ctx:
+            return False
+        batter_id = getattr(matchup.batter, "id", None)
+        pitcher_id = getattr(matchup.pitcher, "id", None)
+        return ctx.is_rival_plate(batter_id) or ctx.is_hero_pitching(pitcher_id)
+
+    def _emit_rival_cut_in(self, matchup: MatchupContext) -> None:
+        memo = getattr(self.state, "commentary_memory", None)
+        cache_key = f"rival_cutin_{matchup.inning}_{matchup.half}_{getattr(matchup.batter, 'id', None)}"
+        if isinstance(memo, set) and cache_key in memo:
+            return
+        hero = getattr(self.state, "hero_name", None) or "Hero"
+        rival = getattr(self.state, "rival_name", None) or getattr(matchup.batter, "last_name", "Rival")
+        payload = {
+            "inning": matchup.inning,
+            "half": matchup.half,
+            "batter_id": getattr(matchup.batter, "id", None),
+            "pitcher_id": getattr(matchup.pitcher, "id", None),
+            "hero_name": hero,
+            "rival_name": rival,
+        }
+        self.bus.publish("RIVAL_CUT_IN", payload)
+        logs = getattr(self.state, "logs", None)
+        if isinstance(logs, list):
+            logs.append(f"[Rivalry] {hero} locks eyes with {rival} as the cut-in hits.")
+        if isinstance(memo, set):
+            memo.add(cache_key)
 
     def _compute_drama_level(self) -> int:
         inning = self.state.inning
