@@ -1055,7 +1055,6 @@ def sync_player_skills(
     prune_unknown: bool = True,
     fix_duplicates: bool = True,
     dry_run: bool = False,
-    loaded_only: bool | None = None,
 ):
     """Clean up PlayerSkill rows so they align with the active catalog."""
     if not session:
@@ -1074,9 +1073,6 @@ def sync_player_skills(
         "dry_run": dry_run,
     }
 
-    if loaded_only is None:
-        loaded_only = bool(os.getenv("PYTEST_CURRENT_TEST"))
-
     query = session.query(Player)
     try:
         query = query.options(selectinload(Player.skills))
@@ -1084,7 +1080,7 @@ def sync_player_skills(
         # Older SQLAlchemy versions without selectinload fall back to lazy loading.
         pass
 
-    players = list(session.identity_map.values()) if loaded_only else query.all()
+    players = query.all()
     for player in players:
         stats["players_scanned"] += 1
         skill_rel = getattr(player, "skills", []) or []
