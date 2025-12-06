@@ -1,8 +1,10 @@
+import os
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from database.setup_db import PitchRepertoire, session_scope
 from match_engine.pitch_definitions import PITCH_TYPES, ARM_SLOT_MODIFIERS
+from match_engine.commentary import commentary_enabled
 from game.rng import get_rng
 from game.mechanics import (
     generate_unique_form,
@@ -11,6 +13,9 @@ from game.mechanics import (
 )
 from game.skill_system import player_has_skill
 from battery_system.battery_trust import adjust_battery_sync, get_battery_sync
+
+# Toggle: allow battle-math logs to be pushed into at-bat feeds without always printing.
+ADV_BATTLE_FEEDBACK = os.environ.get("ADV_BATTLE_FEEDBACK", "1") not in {"0", "false", "False"}
 
 rng = get_rng()
 
@@ -358,6 +363,8 @@ class PitchResult:
         self.outcome = outcome  # "Ball", "Strike", "Foul", "InPlay"
         self.description = description  # "Swinging Miss", "Looking", "Weak Grounder"
         self.velocity = velocity
+        self.in_zone = location == "Zone"
+        self.zone_label = "IN" if self.in_zone else "OUT"
         self.contact_quality = 0  # Default
         self.special = None
         self.argument_penalty = 0
@@ -661,6 +668,8 @@ def resolve_pitch(
     previous_call = getattr(state, "last_battery_call", None)
     if isinstance(previous_call, dict):
         battery_context.update(previous_call)
+    perfect_location = bool(getattr(negotiated, "perfect_location", False))
+
     battery_context.update(
         {
             "pitcher_id": pitcher_id,
@@ -825,6 +834,15 @@ def resolve_pitch(
             )
         state.last_clutch_pitch_effect = dict(clutch_effect)
 
+    # Synchronized Pitch: perfect location once per game for bonded battery
+    if perfect_location:
+        effective_control += 25
+        effective_movement += 6
+        location = "Zone"
+        battery_context["perfect_location"] = True
+        if isinstance(getattr(state, "logs", None), list):
+            state.logs.append("[Battery Bond] Synchronized Pitch fired — paint job guaranteed.")
+
     # --- 3. BATTER REACTION ---
     pitcher_psych = psychology_engine.pitcher_modifiers(pitcher_id) if psychology_engine else None
     batter_psych = psychology_engine.batter_modifiers(batter_id) if psychology_engine else None
@@ -834,15 +852,26 @@ def resolve_pitch(
         velocity += pitcher_psych.velocity_bonus
     
     # Apply mods (from User Choice or AI buffs)
+    speech_buffs = getattr(state, "captains_speech_buffs", {}) or {}
+    offense_buff = speech_buffs.get(_offense_team_id(state))
+    defense_buff = speech_buffs.get(_defense_team_id(state))
+
     base_eye = getattr(batter, 'eye', getattr(batter, 'discipline', 50)) or 50
     base_eye += batter_trait_mods.get('discipline', 0) + batter_trait_mods.get('eye', 0)
     eye_stat = base_eye + batter_mods.get('eye_mod', 0)
     base_contact = getattr(batter, 'contact', 50) or 50
     base_contact += batter_trait_mods.get('contact', 0)
     contact_stat = base_contact + batter_mods.get('contact_mod', 0)
+    if offense_buff:
+        eye_stat += offense_buff.get("eye", 0)
+        contact_stat += offense_buff.get("contact", 0)
+        batter_mods['power_mod'] = batter_mods.get('power_mod', 0) + offense_buff.get("power", 0)
     if batter_psych:
         eye_stat *= batter_psych.eye_scalar
         contact_stat *= batter_psych.contact_scalar
+    if defense_buff:
+        effective_control += defense_buff.get("control", 0)
+        effective_movement += defense_buff.get("movement", 0)
 
     rivalry_ctx = getattr(state, "rival_match_context", None)
     if rivalry_ctx and batter_id:
@@ -859,6 +888,18 @@ def resolve_pitch(
                     logs.append(
                         f"[Rivals] {getattr(batter, 'last_name', getattr(batter, 'name', 'Rival'))} refuses to chase that {pitch.pitch_name} again."
                     )
+
+        if rivalry_ctx.is_rival_plate(batter_id) and rivalry_ctx.is_hero_pitching(pitcher_id):
+            effective_control -= 6
+            effective_movement -= 2
+            perception_penalty += 4
+            memory = getattr(state, "commentary_memory", None)
+            memo_key = "rival_nerves"
+            if isinstance(memory, set) and memo_key not in memory:
+                memory.add(memo_key)
+                logs = getattr(state, "logs", None)
+                if isinstance(logs, list):
+                    logs.append("[Rivals] Hands shake — safe zone shrinks under rival glare.")
 
     guess_payload = batter_mods.get('guess_payload')
     guess_match = _guess_matches(guess_payload, p_def, location) if guess_payload else None
@@ -918,6 +959,14 @@ def resolve_pitch(
 
     def _finalize_result(res_obj: PitchResult) -> PitchResult:
         _annotate_result(res_obj, count_snapshot)
+        # Attach pitch metadata for downstream UI/log consumers
+        res_obj.pitch_family = p_def.get("family", "Unknown")
+        res_obj.pitch_plane = p_def.get("plane", "?")
+        res_obj.arm_slot = arm_slot
+        res_obj.slot_group = slot_group
+        res_obj.pitch_desc = p_def.get("desc")
+        if perfect_location:
+            res_obj.special = "synchronized_pitch"
         if guess_payload:
             res_obj.guess_payload = dict(guess_payload)
         if battery_context:
@@ -967,6 +1016,8 @@ def resolve_pitch(
     should_swing = False
     
     swing_tendency = max(0.5, min(2.0, batter_tendencies.get('swing_aggression', 1.0)))
+    if offense_buff and offense_buff.get("aggression_mult"):
+        swing_tendency *= offense_buff["aggression_mult"]
     if _player_team_id(batter) == 1:
         # USER BATTER: Based on input action
         if batter_action in ["Swing", "Power", "Contact"]:
@@ -1025,12 +1076,25 @@ def resolve_pitch(
 
     # CASE B: SWING
     hit_difficulty = effective_movement + mechanics_deception
-    if location == "Chase": hit_difficulty += 30
-    if velocity > 150: hit_difficulty += 10
-    hit_difficulty += tunneling_bonus
-    hit_difficulty -= sequence_penalty
+    _battle_breakdown = [
+        ("movement", effective_movement),
+        ("deception", mechanics_deception),
+    ]
+    if location == "Chase":
+        hit_difficulty += 30
+        _battle_breakdown.append(("chase_penalty", 30))
+    if velocity > 150:
+        hit_difficulty += 10
+        _battle_breakdown.append(("velo_bonus", 10))
+    if tunneling_bonus:
+        hit_difficulty += tunneling_bonus
+        _battle_breakdown.append(("tunneling", tunneling_bonus))
+    if sequence_penalty:
+        hit_difficulty -= sequence_penalty
+        _battle_breakdown.append(("sequence_relief", -sequence_penalty))
     if forced_call:
         hit_difficulty -= 5
+        _battle_breakdown.append(("forced_call_relief", -5))
     
     # Pitcher Control Check (Mistake pitch?)
     mistake_pitch = rng.randint(0, 100) > effective_control
@@ -1039,9 +1103,49 @@ def resolve_pitch(
     
     # Calculate Contact
     contact_quality = bat_control - hit_difficulty + rng.randint(0, 20)
+
+    def _attach_battle_debug(res_obj: PitchResult):
+        # Capture the key numbers used for this swing so UI can explain why it failed/succeeded.
+        battle_debug = {
+            "bat_control": round(bat_control, 2),
+            "hit_difficulty": round(hit_difficulty, 2),
+            "contact_mod": batter_mods.get("contact_mod", 0),
+            "power_mod": batter_mods.get("power_mod", 0),
+            "velocity": round(velocity, 2),
+            "movement": round(effective_movement, 2),
+            "battle_breakdown": _battle_breakdown,
+        }
+        res_obj.battle_debug = battle_debug
+
+        team_id = getattr(batter, "team_id", getattr(batter, "school_id", None))
+        if team_id != 1:
+            return
+
+        drivers = []
+        if velocity:
+            drivers.append(f"velo {velocity:.0f}")
+        for label, val in _battle_breakdown:
+            if label in {"chase_penalty", "tunneling", "velo_bonus"} and val:
+                drivers.append(f"{label.replace('_', ' ')} {val:+.0f}")
+        driver_txt = (" Drivers: " + ", ".join(drivers)) if drivers else ""
+        line = (
+            f"Battle math: bat control {bat_control:.0f} vs difficulty {hit_difficulty:.0f}"
+            f" (contact mod {batter_mods.get('contact_mod', 0):+}).{driver_txt}"
+        )
+
+        # Always push to logs for UI consumption; optionally print if commentary is on.
+        if ADV_BATTLE_FEEDBACK:
+            for attr in ("at_bat_log", "play_by_play", "logs"):
+                log_ref = getattr(state, attr, None)
+                if isinstance(log_ref, list):
+                    log_ref.append(line)
+                    break
+        if commentary_enabled():
+            print(f"   >> {line}")
     
     if contact_quality < 0:
         res = PitchResult(pitch.pitch_name, location, "Strike", "Swinging Miss", velocity)
+        _attach_battle_debug(res)
         res = _finalize_result(res)
         _note_batter_behavior(
             state,
@@ -1056,6 +1160,7 @@ def resolve_pitch(
         return res
     elif contact_quality < 20:
         res = PitchResult(pitch.pitch_name, location, "Foul", "Tipped", velocity)
+        _attach_battle_debug(res)
         res = _finalize_result(res)
         _note_batter_behavior(
             state,
@@ -1071,6 +1176,7 @@ def resolve_pitch(
         # In Play
         res = PitchResult(pitch.pitch_name, location, "InPlay", "Contact", velocity)
         res = _finalize_result(res)
+        _attach_battle_debug(res)
         
         # Attach dynamic attributes for ball_in_play logic
         res.contact_quality = contact_quality

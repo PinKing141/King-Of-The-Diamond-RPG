@@ -269,6 +269,8 @@ class CommentaryListener:
         print(
             f"{Colour.BLUE}[Pitch]{Colour.RESET} {inning_label} | {score} | Count {count} — {pitcher} vs {batter}, {line}."
         )
+        if payload.get("rival_plate"):
+            print(f"{Colour.RED}~~~ Rival aura shakes the zone! Safe windows feel smaller. ~~~{Colour.RESET}")
 
     def _on_batter_swung(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():

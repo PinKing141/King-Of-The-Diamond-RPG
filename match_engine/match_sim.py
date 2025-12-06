@@ -13,7 +13,7 @@ from match_engine.pitch_logic import get_arsenal, get_current_catcher, get_last_
 from match_engine.pitch_definitions import PITCH_TYPES
 from game.scouting_system import get_scouting_info
 from game.save_manager import autosave_match_state
-from match_engine.states import EventType, MatchState
+from match_engine.states import EventType, MatchState, PlayMode
 from player_roles import batter_controls as batter_ui
 from battery_system.battery_trust import (
     get_trust_snapshot,
@@ -188,6 +188,9 @@ class MatchSimulation:
         pitcher = self.state.home_pitcher if self.state.top_bottom == "Top" else self.state.away_pitcher
         batter_id = getattr(batter, "id", None)
         pitcher_id = getattr(pitcher, "id", None)
+        play_mode = getattr(self.state, "play_mode", PlayMode.SIM.value)
+        force_sim = str(play_mode).upper() == PlayMode.SIM.value
+        self.state.fast_sim = force_sim
         return MatchupContext(
             inning=self.state.inning,
             half=self.state.top_bottom,
@@ -201,7 +204,7 @@ class MatchSimulation:
             away_score=self.state.away_score,
             batter_stats=self.state.get_stats(batter_id).copy(),
             pitcher_stats=self.state.get_stats(pitcher_id).copy(),
-            is_human=self._is_user_controlled(batter),
+            is_human=(False if force_sim else self._is_user_controlled(batter)),
         )
 
     def _maybe_apply_agent_choice(self) -> bool:
@@ -304,6 +307,11 @@ class MatchSimulation:
         matchup = self._current_matchup
         batter_choice = self._pending_choice if matchup.is_human else None
         self.loop_state = MatchState.PITCH_FLIGHT
+        rival_plate = False
+        ctx = getattr(self.state, "rival_match_context", None)
+        if ctx:
+            rival_plate = ctx.is_rival_plate(getattr(matchup.batter, "id", None))
+
         self.bus.publish(
             EventType.PITCH_THROWN.value,
             {
@@ -315,6 +323,7 @@ class MatchSimulation:
                 "strikes": matchup.strikes,
                 "home_score": matchup.home_score,
                 "away_score": matchup.away_score,
+                "rival_plate": rival_plate,
             },
         )
         with self._override_player_input(batter_choice):
@@ -635,6 +644,7 @@ def _simulate_match(
     silent: bool,
     fast: bool,
     clutch_pitch: Optional[Dict[str, Any]] = None,
+    persist_results: bool = True,
 ):
     from database.setup_db import session_scope
     from game.coach_strategy import consume_strategy_mods
@@ -645,6 +655,7 @@ def _simulate_match(
             home_team.id,
             away_team.id,
             fast=True,
+            persist_results=persist_results,
             clutch_pitch=clutch_pitch,
             tournament_name=tournament_name,
         )
@@ -655,6 +666,7 @@ def _simulate_match(
                 away_team.id,
                 clutch_pitch=clutch_pitch,
                 tournament_name=tournament_name,
+                persist_results=persist_results,
             )
     else:
         winner = engine_run_match(
@@ -662,6 +674,7 @@ def _simulate_match(
             away_team.id,
             clutch_pitch=clutch_pitch,
             tournament_name=tournament_name,
+            persist_results=persist_results,
         )
 
     score_str = _fetch_latest_score(home_team.id, away_team.id, tournament_name)
@@ -684,6 +697,7 @@ def resolve_match(
     mode: str = "standard",
     silent: Optional[bool] = None,
     clutch_pitch: Optional[Dict[str, Any]] = None,
+    persist_results: bool = True,
 ):
     """Unified entry point for orchestrating a simulated match.
 
@@ -709,6 +723,7 @@ def resolve_match(
         silent=effective_silent,
         fast=fast,
         clutch_pitch=clutch_pitch,
+        persist_results=persist_results,
     )
 
 

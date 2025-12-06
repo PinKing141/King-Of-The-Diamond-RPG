@@ -12,6 +12,7 @@ from .commentary import (
     announce_score_change,
     commentary_enabled,
 )
+from game.strike_zone_renderer import build_pitch_snapshot_lines
 from game.rng import get_rng
 from game.skill_system import (
     evaluate_situational_skills,
@@ -32,7 +33,7 @@ from match_engine.confidence import (
     reset_rally_tracker,
     reset_slump_chain,
 )
-from match_engine.states import EventType
+from match_engine.states import EventType, PlayMode
 from world_sim.baserunning import (
     evaluate_slide_step,
     note_runner_pressure,
@@ -41,6 +42,45 @@ from world_sim.baserunning import (
 )
 
 rng = get_rng()
+
+
+def _order_label(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _apply_offense_orders(order_label: str, state, batter_action: str, batter_mods: dict) -> tuple[str, dict]:
+    """Blend simple approach tweaks based on standing orders for SIM pacing."""
+
+    order = _order_label(order_label)
+    if order.startswith("work"):
+        batter_action = "Contact"
+        batter_mods["eye_mod"] = batter_mods.get("eye_mod", 0) + 10
+        batter_mods["contact_mod"] = batter_mods.get("contact_mod", 0) + 4
+        batter_mods["power_mod"] = batter_mods.get("power_mod", 0) - 6
+    elif order.startswith("swing") or order.startswith("attack"):
+        batter_action = "Power"
+        batter_mods["power_mod"] = batter_mods.get("power_mod", 0) + 10
+        batter_mods["eye_mod"] = batter_mods.get("eye_mod", 0) - 8
+        batter_mods["contact_mod"] = batter_mods.get("contact_mod", 0) - 2
+    elif order.startswith("protect"):
+        batter_action = "Contact"
+        batter_mods["eye_mod"] = batter_mods.get("eye_mod", 0) + 12
+        batter_mods["contact_mod"] = batter_mods.get("contact_mod", 0) + 6
+        batter_mods["power_mod"] = batter_mods.get("power_mod", 0) - 8
+        if getattr(state, "strikes", 0) >= 2:
+            batter_mods["force_swing"] = True
+    return batter_action, batter_mods
+
+
+def _apply_defense_orders(order_label: str, pitcher_trait_mods: dict) -> dict:
+    order = _order_label(order_label)
+    if order.startswith("attack"):
+        pitcher_trait_mods["control"] = pitcher_trait_mods.get("control", 0) + 3
+        pitcher_trait_mods["velocity"] = pitcher_trait_mods.get("velocity", 0) + 2
+    elif order.startswith("nibble") or order.startswith("pitch around"):
+        pitcher_trait_mods["control"] = pitcher_trait_mods.get("control", 0) + 6
+        pitcher_trait_mods["movement"] = pitcher_trait_mods.get("movement", 0) + 2
+    return pitcher_trait_mods
 
 
 def _lineup_slot(player) -> int | None:
@@ -473,6 +513,112 @@ def _handle_batters_eye_feedback(state, batter, pitch_res):
     logs = getattr(state, "logs", None)
     if isinstance(logs, list):
         logs.append(f"Batter's Eye: {message}")
+
+
+def _emit_battle_math(state, batter, pitch_res, batter_action: str):
+    """Surface a concise clash summary so the player sees the math and intent bridge."""
+
+    if _player_team_id(batter) != 1:
+        return
+    debug = getattr(pitch_res, "battle_debug", None)
+    if not isinstance(debug, dict):
+        return
+    bat_control = debug.get("bat_control")
+    hit_diff = debug.get("hit_difficulty")
+    contact_mod = debug.get("contact_mod", 0)
+    velo = debug.get("velocity", 0)
+    breakdown = debug.get("battle_breakdown", []) or []
+    delta = None
+    try:
+        delta = float(bat_control) - float(hit_diff)
+    except Exception:
+        delta = None
+    short_reasons = []
+    if velo:
+        short_reasons.append(f"velo {velo:.0f}")
+    for label, val in breakdown:
+        if label in {"chase_penalty", "tunneling", "velo_bonus"} and val:
+            short_reasons.append(f"{label.replace('_',' ')} {val:+.0f}")
+    clash = (
+        f"Clash: bat control {bat_control:.0f} vs pitch diff {hit_diff:.0f}"
+        f" (intent {batter_action}, contact mod {contact_mod:+})"
+    )
+    if delta is not None:
+        edge_label = "edge" if delta >= 0 else "deficit"
+        clash += f" [{edge_label} {delta:+.0f}]"
+    detail = "Drivers: " + ", ".join(short_reasons) + "." if short_reasons else ""
+
+    # Outcome-aware bridge
+    outcome = getattr(pitch_res, "outcome", "?")
+    desc = getattr(pitch_res, "description", "") or outcome
+    rng_note = ""
+    if delta is not None:
+        if delta >= 10 and outcome in {"Strike", "Foul"}:
+            rng_note = "Had the advantage, but the pitch execution/paint stole it."
+        elif delta <= -10 and outcome in {"InPlay", "Ball"}:
+            rng_note = "Behind on paper; luck/discipline turned it in your favor."
+
+    guess = getattr(pitch_res, "guess_payload", None) or {}
+    guess_label = guess.get("label")
+    guess_res = guess.get("result")
+    intent_line = ""
+    if guess_label:
+        if guess_res == "locked_in":
+            intent_line = f"You sat on {guess_label} and were ready."
+        elif guess_res == "fooled":
+            intent_line = f"You were hunting {guess_label}, but got something else."
+
+    lines = [clash]
+    if detail:
+        lines.append(detail)
+    if intent_line:
+        lines.append(intent_line)
+    if rng_note:
+        lines.append(rng_note)
+    lines.append(f"Result: {outcome} — {desc}")
+
+    msg = " " .join(lines)
+    if commentary_enabled():
+        print(f"   >> {msg}")
+    logs = getattr(state, "logs", None)
+    if isinstance(logs, list):
+        logs.append(msg)
+
+
+def _emit_pitch_grid(state, batter, pitch_res):
+    """Log/print a quick pitch map for user batters to show in/out location."""
+
+    if _player_team_id(batter) != 1:
+        return
+    location = getattr(pitch_res, "location", None)
+    if not location:
+        return
+    highlight = 5 if getattr(pitch_res, "in_zone", location == "Zone") else "O11"
+    lines = build_pitch_snapshot_lines(location, highlight_zone=highlight, heat_stats={}, theme_name="persona", color=False)
+
+    pitch_name = getattr(pitch_res, "pitch_name", "?")
+    family = getattr(pitch_res, "pitch_family", "")
+    arm_slot = getattr(pitch_res, "arm_slot", "")
+    slot_group = getattr(pitch_res, "slot_group", "")
+    velocity = getattr(pitch_res, "velocity", 0)
+    zone_label = getattr(pitch_res, "zone_label", "")
+    header = f"Pitch Map: {pitch_name} ({velocity:.0f} mph) [{zone_label}]"
+    meta_bits = []
+    if family:
+        meta_bits.append(f"family: {family}")
+    if arm_slot:
+        meta_bits.append(f"arm slot: {arm_slot}")
+    if slot_group:
+        meta_bits.append(f"slot group: {slot_group}")
+    if meta_bits:
+        header += " | " + "; ".join(meta_bits)
+
+    block = "\n".join([header] + lines)
+    if commentary_enabled():
+        print(block)
+    logs = getattr(state, "logs", None)
+    if isinstance(logs, list):
+        logs.append(block)
 
 
 def _auto_batters_eye_guess(state, batter, pitcher, tendencies=None):
@@ -955,6 +1101,13 @@ class AtBatStateMachine:
         
         batter_tendencies = gather_behavior_tendencies(batter)
         times_faced = state.register_plate_appearance(pitcher_id, batter_id)
+        play_mode_value = getattr(state, "play_mode", PlayMode.SIM.value)
+        sim_fast = str(play_mode_value).upper() == PlayMode.SIM.value
+        orders = getattr(state, "standing_orders", {}) or {}
+        offense_order = orders.get("offense")
+        defense_order = orders.get("defense")
+        if sim_fast:
+            state.fast_sim = True
         steal_checked = False
         squeeze_called = False
         while True:
@@ -967,12 +1120,13 @@ class AtBatStateMachine:
             # --- USER INPUT CHECK (BATTER) ---
             batter_action = "Normal"
             batter_mods = {}
-            
-            # Check if Batter is USER (Assuming Team ID 1 is User)
-            if _player_team_id(batter) == 1:
+            user_controls = _player_team_id(batter) == 1 and not sim_fast
+
+            if user_controls:
                 from player_roles.batter_controls import player_bat_turn
                 batter_action, batter_mods = player_bat_turn(pitcher, batter, state)
             else:
+                batter_action, batter_mods = _apply_offense_orders(offense_order, state, batter_action, batter_mods)
                 guess_payload = _auto_batters_eye_guess(state, batter, pitcher, batter_tendencies)
                 if guess_payload:
                     batter_mods['guess_payload'] = guess_payload
@@ -1034,6 +1188,8 @@ class AtBatStateMachine:
             if slide_trait_mods:
                 for key, delta in slide_trait_mods.items():
                     pitcher_trait_mods[key] = pitcher_trait_mods.get(key, 0) + delta
+            if sim_fast:
+                _apply_defense_orders(defense_order, pitcher_trait_mods)
 
             _configure_defensive_shift(state)
 
@@ -1066,6 +1222,8 @@ class AtBatStateMachine:
             _maybe_comment_on_control(pitcher, tracker)
             _handle_argument_event(state, pitch_res, batter, pitcher)
             _handle_batters_eye_feedback(state, batter, pitch_res)
+            _emit_battle_math(state, batter, pitch_res, batter_action)
+            _emit_pitch_grid(state, batter, pitch_res)
             
             # 2. Update Count
             self._emit_state(self.STATE_RESOLVE, {

@@ -1,21 +1,59 @@
 """Shared helpers for lightweight world simulations."""
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 from database.setup_db import Player
 from game.rng import get_rng
 
 rng = get_rng()
-MIN_WIN_PROB = 0.08
-MAX_WIN_PROB = 0.92
+MIN_WIN_PROB = 0.05
+MAX_WIN_PROB = 0.95
+
+
+_strength_cache: Dict[int, int] = {}
+
+
+def _prime_strength_cache(session, *, sample_size: int = 9) -> None:
+    """Eagerly build strength cache for all schools in one pass (avoids per-school queries)."""
+
+    if _strength_cache:
+        return
+    rows = (
+        session.query(Player.school_id, Player.overall)
+        .filter(Player.school_id.isnot(None))
+        .order_by(Player.school_id, Player.overall.desc())
+        .all()
+    )
+    if not rows:
+        return
+    current_id = None
+    bucket = []
+    for school_id, overall in rows:
+        if school_id != current_id:
+            if bucket:
+                _strength_cache[current_id] = sum(bucket) // len(bucket)
+            current_id = school_id
+            bucket = []
+        if len(bucket) < sample_size:
+            bucket.append(overall or 0)
+    if bucket and current_id is not None:
+        _strength_cache[current_id] = sum(bucket) // len(bucket)
 
 
 def calculate_team_strength(session, school_id: Optional[int], *, sample_size: int = 9) -> int:
-    """Approximate team quality by averaging the top `sample_size` overall ratings."""
+    """Approximate team quality by averaging the top `sample_size` overall ratings with memoization."""
 
     if not school_id:
         return 0
+    if school_id in _strength_cache:
+        return _strength_cache[school_id]
+
+    # Build cache lazily in one query when first needed.
+    _prime_strength_cache(session, sample_size=sample_size)
+    if school_id in _strength_cache:
+        return _strength_cache[school_id]
+
     players: Sequence[Player] = (
         session.query(Player)
         .filter(Player.school_id == school_id)
@@ -24,9 +62,13 @@ def calculate_team_strength(session, school_id: Optional[int], *, sample_size: i
         .all()
     )
     if not players:
-        return 0
-    total = sum(getattr(player, "overall", 0) or 0 for player in players)
-    return total // len(players)
+        strength = 0
+    else:
+        total = sum(getattr(player, "overall", 0) or 0 for player in players)
+        strength = total // len(players)
+
+    _strength_cache[school_id] = strength
+    return strength
 
 
 def quick_resolve_match(session, home_school, away_school) -> Tuple[object, str, bool]:

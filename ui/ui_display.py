@@ -254,6 +254,20 @@ def _tilt_counts(state) -> tuple[str, str] | None:
     return _fmt(home), _fmt(away)
 
 
+def _battle_math_lines(state, limit: int = 12) -> list[str]:
+    """Collect recent battle-math lines pushed into the game logs."""
+
+    if state is None:
+        return []
+    for attr in ("at_bat_log", "play_by_play", "logs"):
+        log_ref = getattr(state, attr, None)
+        if isinstance(log_ref, list):
+            lines = [line for line in log_ref if isinstance(line, str) and "Battle math:" in line]
+            if lines:
+                return lines[-limit:]
+    return []
+
+
 def render_box_score_panel(scoreboard, state) -> None:
     """Print a condensed box-score style panel with inning totals and error tags."""
 
@@ -299,6 +313,13 @@ def render_box_score_panel(scoreboard, state) -> None:
         home_tilt, away_tilt = tilt_snapshot
         print(f" Umpire Tilt: {away_name[:3]} {away_tilt} | {home_name[:3]} {home_tilt}")
     print(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}")
+
+    battle_lines = _battle_math_lines(state)
+    if battle_lines:
+        print(f"\n{Colour.CYAN}[BATTLE MATH FEED]{Colour.RESET}")
+        for line in battle_lines:
+            print(f"  • {line}")
+        print(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}")
 
     rivalry_summary = getattr(state, "rival_postgame", None)
     if rivalry_summary:

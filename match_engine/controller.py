@@ -23,9 +23,10 @@ from database.setup_db import get_session, Game, Performance, ensure_game_schema
 
 from game.personality_effects import evaluate_postgame_slumps
 from game.relationship_manager import apply_confidence_relationships, seed_relationships
-from .states import MatchState
+from .states import EventType, MatchState
 from .batter_logic import AtBatStateMachine
 from .momentum import MomentumSystem
+from .states import PlayMode
 from .brass_band import BrassBand
 
 from ui.ui_display import render_box_score_panel
@@ -274,6 +275,7 @@ class MatchController:
         if outcome is None:
             return None
         self.context.last_outcome = outcome
+        self._maybe_update_play_mode(outcome)
         result = self._apply_outcome(outcome)
         return result or outcome
 
@@ -550,6 +552,18 @@ class MatchController:
         self._winner = None
         self.telemetry = ensure_collector(state)
         self._walkoff_logged = False
+        # Macro pacing controls
+        self._hero_setting = getattr(state, "hero_setting", "key")  # "never", "key", "often"
+        self._hero_cooldown_pa = getattr(state, "hero_cooldown_pa", 3)
+        self._hero_cooldown_until = 0
+        self._pa_counter = getattr(state, "pa_counter", 0)
+        self._last_mode = None
+        if not hasattr(self.state, "play_mode"):
+            self.state.play_mode = PlayMode.SIM.value
+        if not hasattr(self.state, "standing_orders"):
+            self.state.standing_orders = {"offense": "Work the Count", "defense": "Attack Zone"}
+        # Mirror user preference to listeners
+        self._emit(EventType.HERO_MODE_SETTING.value, {"hero_setting": self._hero_setting})
 
     def start_game(self):
         """Run the game to completion (legacy helper)."""
@@ -571,6 +585,22 @@ class MatchController:
             self._prepare_inning()
             self._needs_inning_setup = False
             return None
+
+        # Ensure simulation respects current macro play mode
+        play_mode = getattr(self.state, "play_mode", PlayMode.SIM.value)
+        if play_mode != self._last_mode:
+            if play_mode == PlayMode.HERO.value and hasattr(self.simulation, "_pending_cut_in"):
+                self.simulation._pending_cut_in = True
+                logs = getattr(self.state, "logs", None)
+                if isinstance(logs, list):
+                    logs.append("[Cut-In] HERO mode engages — cameras zoom for the showdown.")
+            if commentary_enabled():
+                print(f"   >> Play Mode: {play_mode} (orders: {self.state.standing_orders})")
+            self._emit(
+                EventType.HERO_MODE_ENTER.value if play_mode == PlayMode.HERO.value else EventType.HERO_MODE_EXIT.value,
+                {"mode": play_mode, "standing_orders": self.state.standing_orders},
+            )
+            self._last_mode = play_mode
 
         outcome = self.simulation.step()
         self.context.loop_state = self.simulation.loop_state
@@ -651,6 +681,62 @@ class MatchController:
         if game_should_end:
             return self._finalize_game()
         return None
+
+    # --- Macro pacing & drama ---
+    def _maybe_update_play_mode(self, outcome: PlayOutcome) -> None:
+        self._pa_counter += 1
+        self.state.pa_counter = self._pa_counter
+        setting = (getattr(self.state, "hero_setting", self._hero_setting) or "key").lower()
+        if setting == "never":
+            self.state.play_mode = PlayMode.SIM.value
+            return
+
+        # Cooldown to avoid rapid flipping
+        if self._hero_cooldown_until and self._pa_counter < self._hero_cooldown_until:
+            self.state.play_mode = PlayMode.SIM.value
+            return
+
+        drama_score = self._drama_score(outcome)
+        threshold = 3 if setting == "key" else 2 if setting == "often" else 999
+
+        if drama_score >= threshold:
+            self.state.play_mode = PlayMode.HERO.value
+            self._hero_cooldown_until = self._pa_counter + max(1, self._hero_cooldown_pa)
+            self._emit(EventType.HERO_MODE_COOLDOWN.value, {"until_pa": self._hero_cooldown_until})
+        else:
+            self.state.play_mode = PlayMode.SIM.value
+
+    def _drama_score(self, outcome: PlayOutcome) -> int:
+        state = self.state
+        score = 0
+        inning = getattr(state, "inning", 1)
+        half = getattr(state, "top_bottom", "Top")
+        outs = getattr(state, "outs", 0)
+        runners = getattr(state, "runners", [None, None, None])
+        bases_loaded = all(runners)
+        risp = any(runners[1:])
+        run_diff = abs(getattr(state, "home_score", 0) - getattr(state, "away_score", 0))
+        late = inning >= 8
+        walkoff_window = half == "Bot" and inning >= 9 and getattr(state, "home_score", 0) <= getattr(state, "away_score", 0) + 1
+
+        if bases_loaded and outs == 2:
+            score += 4
+        elif bases_loaded:
+            score += 3
+        if risp and outs >= 2:
+            score += 2
+        if late and run_diff <= 2:
+            score += 2
+        if walkoff_window:
+            score += 3
+        if getattr(state, "momentum_system", None):
+            try:
+                momentum_value = state.momentum_system.current_value()
+                if abs(momentum_value) >= 3:
+                    score += 1
+            except Exception:
+                pass
+        return score
 
     def _end_half(self) -> str:
         if self.state.top_bottom == "Top":
@@ -825,6 +911,7 @@ def run_match(
     away_id,
     *,
     fast: bool = False,
+    persist_results: bool = True,
     clutch_pitch: Optional[Dict[str, Any]] = None,
     tournament_name: Optional[str] = None,
 ):
@@ -846,6 +933,8 @@ def run_match(
         )
         if not state:
             return None # Error handling
+        if fast:
+            setattr(state, "fast_sim", True)
         if not fast:
             try:
                 render_match_intro(state)
@@ -859,7 +948,7 @@ def run_match(
         winner = controller.start_game()
         if not fast:
             render_box_score_panel(scoreboard, state)
-        if winner:
+        if winner and persist_results:
             save_game_results(state)
             # Make sure downstream callers can inspect winner attributes after
             # this function closes the session.

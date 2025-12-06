@@ -144,6 +144,9 @@ def adjust_confidence_delta_for_battery(pitcher, catcher, delta: float) -> float
 def get_trust_snapshot(container, pitcher_id: Optional[int], catcher_id: Optional[int], default: int = 50) -> int:
     """Fetch trust once per game and reuse it via the provided cache container."""
 
+    # Skip DB work entirely for fast sims to avoid lock contention during bulk NPC runs.
+    if getattr(container, "fast_sim", False):
+        return default
     if not pitcher_id or not catcher_id:
         return default
     cache = _ensure_cache(container)
@@ -175,6 +178,8 @@ def apply_plate_result_to_trust(
 ) -> Optional[int]:
     """Translate a plate appearance summary into a trust adjustment and persist it."""
 
+    if getattr(container, "fast_sim", False):
+        return None
     token = _plate_result_token(result_type, hit_type)
     if not token:
         return None

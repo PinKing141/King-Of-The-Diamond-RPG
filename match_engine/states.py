@@ -13,6 +13,13 @@ class MatchState(Enum):
     PLAY_RESOLUTION = auto()
 
 
+class PlayMode(str, Enum):
+    """Macro pacing modes for the match loop."""
+
+    SIM = "SIM"   # fast/auto at-bats with standing orders
+    HERO = "HERO" # manual control for high-leverage moments
+
+
 class EventType(str, Enum):
     """Canonical event names published on the EventBus."""
 
@@ -25,6 +32,10 @@ class EventType(str, Enum):
     MOMENTUM_SHIFT = "MOMENTUM_SHIFT"
     PITCH_MINIGAME_TRIGGER = "PITCH_MINIGAME_TRIGGER"
     PITCH_MINIGAME_RESOLVE = "PITCH_MINIGAME_RESOLVE"
+    HERO_MODE_ENTER = "HERO_MODE_ENTER"
+    HERO_MODE_EXIT = "HERO_MODE_EXIT"
+    HERO_MODE_COOLDOWN = "HERO_MODE_COOLDOWN"
+    HERO_MODE_SETTING = "HERO_MODE_SETTING"
     BATTERY_SIGN_CALLED = "BATTERY_SIGN_CALLED"
     BATTERY_SHAKE = "BATTERY_SHAKE"
     BATTERY_FORCED_CALL = "BATTERY_FORCED_CALL"
