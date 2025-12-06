@@ -140,6 +140,39 @@ def get_save_slots():
     slots.sort(key=lambda x: x["slot"])
     return slots
 
+
+AUTOSAVE_PATH = os.path.join(USER_DATA_DIR, "autosave_match.db")
+AUTOSAVE_META = os.path.join(USER_DATA_DIR, "autosave_match_meta.json")
+
+
+def autosave_match_state(*, state=None, reason: str = "mid-match") -> None:
+    """Lightweight autosave to discourage reload abuse during key match moments."""
+
+    if not os.path.exists(DB_PATH):
+        return
+    meta = {
+        "reason": reason,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    if state is not None:
+        meta.update(
+            {
+                "inning": getattr(state, "inning", None),
+                "half": getattr(state, "top_bottom", None),
+                "outs": getattr(state, "outs", None),
+                "home_score": getattr(state, "home_score", None),
+                "away_score": getattr(state, "away_score", None),
+            }
+        )
+
+    try:
+        _backup_database(DB_PATH, AUTOSAVE_PATH)
+        with open(AUTOSAVE_META, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except Exception:
+        # Autosave should fail silently to avoid blocking gameplay.
+        return
+
 def save_game(slot_num):
     """Snapshot the active database into the requested save slot."""
     if not os.path.exists(DB_PATH):

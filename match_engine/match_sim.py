@@ -9,7 +9,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.event_bus import EventBus
 from match_engine.batter_logic import AtBatStateMachine
-from match_engine.pitch_logic import get_current_catcher
+from match_engine.pitch_logic import get_arsenal, get_current_catcher, get_last_pitch_call
+from match_engine.pitch_definitions import PITCH_TYPES
+from game.scouting_system import get_scouting_info
+from game.save_manager import autosave_match_state
 from match_engine.states import EventType, MatchState
 from player_roles import batter_controls as batter_ui
 from battery_system.battery_trust import (
@@ -214,6 +217,7 @@ class MatchSimulation:
         if self._current_matchup is None:
             return
         self.awaiting_player_choice = True
+        hint = self._scouting_hint(self._current_matchup)
         self._pending_choice_options = [
             {
                 "key": choice.key,
@@ -227,8 +231,73 @@ class MatchSimulation:
             "half": self._current_matchup.half,
             "batter_id": getattr(self._current_matchup.batter, "id", None),
             "options": self._pending_choice_options,
+            "hint": hint,
         }
         self.bus.publish(EventType.BATTERS_EYE_PROMPT.value, payload)
+
+    def _scouting_hint(self, matchup: MatchupContext) -> Optional[str]:
+        pitcher = matchup.pitcher
+        stats = matchup.pitcher_stats or {}
+        pitcher_id = getattr(pitcher, "id", None)
+        batter_id = getattr(matchup.batter, "id", None)
+        velocity = stats.get("velocity", getattr(pitcher, "velocity", 0) or 0)
+        movement = stats.get("movement", getattr(pitcher, "movement", 0) or 0)
+        control = stats.get("control", getattr(pitcher, "control", 0) or 0)
+        aggression = getattr(pitcher, "aggression", 50) or 50
+
+        hints: List[str] = []
+        heat_bias = velocity - movement
+        spin_bias = movement - velocity
+        if heat_bias >= 6:
+            hints.append("Fastball leaning; heaters early in counts.")
+        elif spin_bias >= 6:
+            hints.append("Breaker leaning; expect spin in leverage.")
+        else:
+            hints.append("Balanced mix; react if unsure.")
+
+        if control >= 65 and aggression >= 55:
+            hints.append("Attacks early — hunt first-pitch heater.")
+        elif control <= 50:
+            hints.append("Erratic — make them earn the zone.")
+
+        if pitcher_id:
+            try:
+                arsenal = get_arsenal(pitcher_id)
+            except Exception:
+                arsenal = []
+            family_counts: Dict[str, int] = {}
+            for pitch in arsenal:
+                name = getattr(pitch, "pitch_name", "")
+                family = (PITCH_TYPES.get(name) or {}).get("family", "Other")
+                family_counts[family] = family_counts.get(family, 0) + 1
+            if family_counts:
+                top_family = max(family_counts, key=family_counts.get)
+                count = family_counts[top_family]
+                if count >= max(2, len(arsenal) // 2):
+                    hints.append(f"Carries a {top_family.lower()} heavy mix.")
+                elif len(family_counts) >= 3:
+                    hints.append("Deep mix — stay flexible.")
+
+        last_call = get_last_pitch_call(self.state, pitcher_id, batter_id) if pitcher_id else None
+        if last_call:
+            family = last_call.get("family") or ""
+            pitch_name = last_call.get("pitch_name") or family or "Pitch"
+            location = last_call.get("location") or "Zone"
+            hints.append(f"Last pitch: {pitch_name} ({family}) to the {location}.")
+
+        try:
+            scouting = get_scouting_info(getattr(pitcher, "school_id", getattr(pitcher, "team_id", None)))
+            knowledge = getattr(scouting, "knowledge_level", 0) or 0
+        except Exception:
+            knowledge = 0
+        if knowledge >= 3:
+            hints.append("Scouting Lv3: opens with strikes; doubles spin when ahead.")
+        elif knowledge == 2:
+            hints.append("Scouting Lv2: breakers for put-aways; heater early.")
+        elif knowledge == 1:
+            hints.append("Scouting Lv1: leans heater when behind.")
+
+        return " ".join(hints[:3]) if hints else None
 
     def _execute_matchup(self) -> PlayOutcome:
         assert self._current_matchup is not None
@@ -270,6 +339,7 @@ class MatchSimulation:
             "fielding_team": fielding_side,
             "batting_team_id": batting_team_id,
             "fielding_team_id": fielding_team_id,
+            "momentum": self._momentum_snapshot(),
         }
         self.loop_state = MatchState.CONTACT_MOMENT
         self.bus.publish(EventType.BATTER_SWUNG.value, swing_payload)
@@ -298,10 +368,39 @@ class MatchSimulation:
                 "error_on_play": bool(play_detail.get("error_on_play")),
                 "error_type": play_detail.get("error_type"),
                 "error_position": play_detail.get("error_position"),
+                "momentum": self._momentum_snapshot(),
             },
         )
+        self._autosave_checkpoint(reason="play", drama=outcome.drama_level)
         self._rotate_lineup(matchup.lineup_attr)
         return outcome
+
+    def _momentum_snapshot(self) -> Optional[Dict[str, float]]:
+        system = getattr(self.state, "momentum_system", None)
+        if system and hasattr(system, "serialize"):
+            try:
+                return system.serialize()
+            except Exception:
+                return None
+        return None
+
+    def _autosave_checkpoint(self, *, reason: str, drama: int = 0) -> None:
+        enabled = getattr(self.state, "autosave_enabled", True)
+        if not enabled:
+            return
+        marker_key = f"{self.state.inning}_{self.state.top_bottom}_{self.state.outs}_{reason}"
+        markers = getattr(self.state, "autosave_markers", None)
+        if not isinstance(markers, set):
+            markers = set()
+        if marker_key in markers and drama < 2:
+            return
+        try:
+            autosave_match_state(state=self.state, reason=f"{reason}-drama{drama}")
+            markers.add(marker_key)
+            self.state.autosave_markers = markers
+        except Exception:
+            # Autosave failures should never block gameplay.
+            return
 
     def _summarize_outcome(self, matchup: MatchupContext) -> PlayOutcome:
         batter_id = getattr(matchup.batter, "id", None)

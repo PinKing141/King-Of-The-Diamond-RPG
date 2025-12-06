@@ -221,6 +221,21 @@ class DugoutListener:
             return None
         return self.rng.choice(choices)
 
+    def _render_momentum_bar(self, meter: Optional[float], zone: Optional[str]) -> str:
+        if meter is None:
+            meter = 0.0
+        meter = max(-20.0, min(20.0, float(meter)))
+        slots = 8
+        pivot = "|"
+        offset = int(round(meter / 2.5))  # tighter bar for dugout log
+        left_fill = max(0, -offset)
+        right_fill = max(0, offset)
+        left = "<" * left_fill + "." * (slots - left_fill)
+        right = "=" * right_fill + "." * (slots - right_fill)
+        bar = f"[{left}{pivot}{right}]"
+        tag = "H" if zone == "home" else "A" if zone == "away" else "="
+        return f"{bar} {tag} {meter:+.0f}"
+
     def _shout(
         self,
         category: str,
@@ -329,8 +344,15 @@ class DugoutListener:
             if key not in self._flags or self._flags[key] != self.state.inning:
                 self._flags[key] = self.state.inning
                 side = "home" if batting_team == "home" else "away"
+                meter = None
+                zone = None
+                momentum = payload.get("momentum") if isinstance(payload.get("momentum"), dict) else None
+                if momentum:
+                    meter = momentum.get("meter")
+                    zone = momentum.get("zone")
+                bar = self._render_momentum_bar(meter, zone)
                 self._emit(
-                    f"[Momentum] {runs} run(s) score for the {side} dugout; helmets fly as energy spikes.",
+                    f"[Momentum] {runs} run(s) for the {side} dugout {bar}; helmets fly as energy spikes.",
                     tag="Momentum",
                     runs=runs,
                     drama=drama,

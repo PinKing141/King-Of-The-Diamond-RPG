@@ -124,6 +124,10 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
     ground_speed_bonus = 0.0
     error_scalar = 1.0
 
+    trust_scalars = getattr(state, "fielding_trust_scalar", {}) or {}
+    if trust_scalars and defense_id is not None:
+        error_scalar *= trust_scalars.get(defense_id, 1.0)
+
     if weather:
         carry_shift = int((weather.carry_modifier or 0) * 35)
         contact_quality += int((weather.carry_modifier or 0) * 25)

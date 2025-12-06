@@ -1,5 +1,6 @@
+import threading
 from types import SimpleNamespace
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from database.setup_db import session_scope, School
 from match_engine import resolve_match
@@ -24,9 +25,7 @@ def _to_stub(school: School) -> SimpleNamespace:
     return SimpleNamespace(id=getattr(school, "id", None), name=getattr(school, "name", None))
 
 
-def simulate_background_matches(user_school_id):
-    """Simulate NPC practice games with a tiered approach to avoid long stalls."""
-
+def _simulate_background_matches(user_school_id):
     with session_scope() as session:
         npc_schools: List[School] = (
             session.query(School).filter(School.id != user_school_id).all()
@@ -70,3 +69,15 @@ def simulate_background_matches(user_school_id):
         if notable:
             print(f" upset radar: {', '.join(notable[:3])}", end="")
     print(" done.")
+
+
+def simulate_background_matches(user_school_id, *, async_mode: bool = False) -> Optional[threading.Thread]:
+    """Simulate NPC practice games; optionally run asynchronously to avoid UI stalls."""
+
+    if async_mode:
+        worker = threading.Thread(target=_simulate_background_matches, args=(user_school_id,), daemon=True)
+        worker.start()
+        return worker
+
+    _simulate_background_matches(user_school_id)
+    return None

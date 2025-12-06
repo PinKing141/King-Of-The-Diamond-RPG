@@ -12,6 +12,13 @@ from sqlalchemy import func
 
 from database.setup_db import Player, PlayerGameStats, School
 from ui.ui_display import Colour, clear_screen
+from ui.ui_core import (
+    BAR_WIDTH as UI_BAR_WIDTH,
+    choose_theme,
+    colored_bar as ui_colored_bar,
+    simple_bar as ui_simple_bar,
+    slide_in_panel,
+)
 
 BOX_WIDTH = 78
 BAR_WIDTH = 18
@@ -350,6 +357,97 @@ def render_player_profile(session, player_id: int, knowledge_level: int = 3) -> 
     _render_personality_block(data, knowledge_level)
     _render_season_stats(data, knowledge_level)
     input(f"\n{Colour.GREEN}[Press Enter to return]{Colour.RESET}")
+
+
+# ---------------------------------------------------------------------------
+# Modern renderer using ui_core primitives (non-breaking alternative)
+# ---------------------------------------------------------------------------
+
+def render_player_profile_modern(session, player_id: int, *, theme_name: Optional[str] = None, fast: bool = False) -> None:
+    """Render a player profile using the reusable ui_core components.
+
+    Keeps the legacy renderer intact while offering a themeable option for future UI work.
+    """
+
+    data = _gather_player_data(session, player_id)
+    if not data:
+        print("Player not found.")
+        return
+
+    player = data["player"]
+    school = data["school"]
+    traits = data.get("traits", [])
+    personality = data.get("personality", {})
+    stats = data.get("season_stats", {})
+
+    clear_screen()
+    header_lines = [
+        f"{player.name} / {player.position or '?'} | Year {getattr(player, 'year', '?')} | {getattr(player, 'height_cm', getattr(player, 'height', '?'))} cm",
+        f"School: {getattr(school, 'name', 'Unaffiliated')}"
+    ]
+    if fast:
+        for line in header_lines:
+            print(line)
+    else:
+        slide_in_panel(header_lines, width=78, delay=0.002)
+
+    print("\nATTRIBUTES")
+    primary = [
+        ("Velocity", getattr(player, "velocity", None)),
+        ("Control", getattr(player, "control", None)),
+        ("Movement", getattr(player, "movement", None)),
+        ("Stamina", getattr(player, "stamina", None)),
+    ]
+    hitting = [
+        ("Contact", getattr(player, "contact", None)),
+        ("Power", getattr(player, "power", None)),
+        ("Speed", getattr(player, "speed", None)),
+        ("Fielding", getattr(player, "fielding", None)),
+        ("Throwing", getattr(player, "throwing", None)),
+    ]
+    for label, val in primary:
+        bar = ui_colored_bar(val, 100, theme_name)
+        print(f" {label:<10} {bar}  {val if val is not None else '--'}")
+    for label, val in hitting:
+        bar = ui_colored_bar(val, 100, theme_name)
+        print(f" {label:<10} {bar}  {val if val is not None else '--'}")
+
+    print("\nREPERTOIRE")
+    repertoire = getattr(player, "pitch_repertoire", []) or []
+    if repertoire:
+        for pitch in repertoire:
+            name = getattr(pitch, "pitch_name", "Pitch")
+            q = getattr(pitch, "quality", "--")
+            print(f"  • {name} (Grade {q})")
+    elif (player.position or "").lower().startswith("pitch"):
+        print("  (No pitches recorded)")
+    else:
+        print("  N/A")
+
+    print("\nTRAITS")
+    if not traits:
+        print("  (None)")
+    else:
+        for t in traits:
+            desc = TRAIT_DESCRIPTIONS.get(t, "")
+            print(f"  • {t}: {desc}")
+
+    print("\nPERSONALITY")
+    for key, val in personality.items():
+        if key == "archetype":
+            print(f"  Archetype: {val}")
+            continue
+        bar = ui_simple_bar((val * 10) if isinstance(val, (int, float)) and val <= 10 else val, 100, UI_BAR_WIDTH)
+        print(f"  {key:<12}: {bar}  {val}")
+
+    print("\nSEASON SNAPSHOT")
+    if (player.position or "").lower().startswith("pitch"):
+        print(f"  ERA: {stats.get('era', '--')}  IP: {stats.get('ip', '--')}  K: {stats.get('k', '--')}  BB: {stats.get('bb', '--')}")
+    else:
+        print(f"  AVG: {stats.get('avg', '--')}  HR: {stats.get('hr', '--')}  RBI: {stats.get('rbi', '--')}  R: {stats.get('runs_scored', '--')}")
+
+    print("\n" + "═" * 78)
+    input("Press Enter to continue...")
 
 
 def render_opponent_star_preview(session, player_id: int, knowledge_level: int) -> None:

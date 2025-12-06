@@ -153,6 +153,7 @@ class CommentaryListener:
         event_bus.subscribe(EventType.BATTER_SWUNG.value, self._on_batter_swung)
         event_bus.subscribe(EventType.STRIKEOUT.value, self._on_strikeout)
         event_bus.subscribe(EventType.PLAY_RESULT.value, self._on_play_result)
+        event_bus.subscribe(EventType.MOMENTUM_SHIFT.value, self._on_momentum_shift)
         event_bus.subscribe(EventType.BATTERS_EYE_PROMPT.value, self._on_batters_eye_prompt)
         event_bus.subscribe(EventType.PITCH_MINIGAME_TRIGGER.value, self._on_minigame_trigger)
         event_bus.subscribe(EventType.PITCH_MINIGAME_RESOLVE.value, self._on_minigame_resolve)
@@ -305,6 +306,16 @@ class CommentaryListener:
         if runs:
             batting_team = self._team_names.get("away" if (payload.get("half") == "Top") else "home", "Offense")
             print(f"   !! {Colour.gold}{runs} run(s) answer for {batting_team}!{Colour.RESET}")
+        self._print_momentum(payload)
+
+    def _on_momentum_shift(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        meter = payload.get("meter")
+        zone = payload.get("team_side")
+        bar = self._render_momentum_bar(meter, zone)
+        label = "Home" if zone == "home" else "Away" if zone == "away" else "Neutral"
+        print(f"   >> Momentum swings toward {label}: {bar}")
 
     def _on_batters_eye_prompt(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -314,8 +325,40 @@ class CommentaryListener:
         if not options:
             return
         print(f"   >> Batter's Eye moment for {batter}! Choose your plan:")
+        hint = payload.get("hint")
+        if hint:
+            print(f"        Hint: {hint}")
         for choice in options:
             print(f"        [{choice.get('key')}] {choice.get('label')} — {choice.get('description')}")
+
+    def _render_momentum_bar(self, meter: Optional[float], zone: Optional[str]) -> str:
+        if meter is None:
+            meter = 0.0
+        meter = max(-20.0, min(20.0, float(meter)))
+        slots = 10
+        pivot = "|"
+        offset = int(round(meter / 2.0))  # map 20 -> 10 slots
+        left_fill = max(0, -offset)
+        right_fill = max(0, offset)
+        left = "<" * left_fill + "." * (slots - left_fill)
+        right = "=" * right_fill + "." * (slots - right_fill)
+        bar = f"[{left}{pivot}{right}]"
+        if zone == "home":
+            return f"{Colour.GREEN}{bar}{Colour.RESET} {meter:+.0f}"
+        if zone == "away":
+            return f"{Colour.CYAN}{bar}{Colour.RESET} {meter:+.0f}"
+        return f"{bar} {meter:+.0f}"
+
+    def _print_momentum(self, payload: Dict[str, Any]) -> None:
+        data = payload.get("momentum")
+        if not data:
+            return
+        meter = data.get("meter")
+        zone = data.get("zone")
+        bar = self._render_momentum_bar(meter, zone)
+        drama = payload.get("drama_level", 0)
+        tag = "" if drama <= 1 else _drama_tag(drama)
+        print(f"      Momentum: {bar}{tag}")
 
     def _on_minigame_trigger(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():

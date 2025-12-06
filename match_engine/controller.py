@@ -22,7 +22,7 @@ from database.setup_db import get_session, Game, GameState, Performance, ensure_
 from database.setup_db import get_session, Game, Performance, ensure_game_schema
 
 from game.personality_effects import evaluate_postgame_slumps
-from game.relationship_manager import apply_confidence_relationships
+from game.relationship_manager import apply_confidence_relationships, seed_relationships
 from .states import MatchState
 from .batter_logic import AtBatStateMachine
 from .momentum import MomentumSystem
@@ -204,6 +204,7 @@ class MatchController:
             )
         if not getattr(state, "brass_band", None):
             state.brass_band = BrassBand(state)
+        self._install_fielding_trust_map(state)
         self.simulation = MatchSimulation(
             state,
             bus=self.bus,
@@ -216,6 +217,35 @@ class MatchController:
         self._current_inning_runs = {"Top": 0, "Bot": 0}
         self._finished = False
         self._winner = None
+
+    def _install_fielding_trust_map(self, state) -> None:
+        """Precompute light fielding trust scalars from relationship seeds."""
+
+        roster_map = getattr(state, "team_rosters", {}) or {}
+        session = getattr(state, "db_session", None)
+        if not session or not roster_map:
+            state.fielding_trust_scalar = {}
+            return
+        trust: Dict[int, float] = {}
+        for team_id, roster in roster_map.items():
+            if not roster:
+                continue
+            totals = []
+            for player in roster:
+                try:
+                    rel = seed_relationships(session, player)
+                except Exception:
+                    continue
+                captain = getattr(rel, "captain_rel", 50) or 50
+                battery = getattr(rel, "battery_rel", 50) or 50
+                totals.append((captain + battery) / 2.0)
+            if not totals:
+                continue
+            avg = sum(totals) / len(totals)
+            # High trust trims errors slightly; low trust inflates them a touch.
+            scalar = 1.0 - ((avg - 50.0) / 500.0)
+            trust[team_id] = max(0.9, min(1.08, scalar))
+        state.fielding_trust_scalar = trust
 
     def start_game(self):
         """Run the game to completion (legacy helper)."""

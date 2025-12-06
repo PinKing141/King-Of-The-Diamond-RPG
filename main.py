@@ -1,3 +1,4 @@
+import json
 import sys
 import os
 import time
@@ -18,6 +19,7 @@ from game.game_context import GameContext
 from game.analytics import initialise_analytics
 from match_engine.controller import MatchController
 from match_engine.commentary import CommentaryListener
+from config import DATA_FOLDER
 
 # Ensure database tables exist
 create_database()
@@ -108,16 +110,32 @@ def get_player_info(session, state):
     return "Unknown Player"
 
 
-SMART_SIM_INTERRUPTS = {
+_SIM_INTERRUPT_PATH = os.path.join(DATA_FOLDER, "sim_interrupts.json")
+_DEFAULT_SIM_INTERRUPTS = {
     15: "Summer qualifiers demand manual coaching.",
     40: "Winter camp requires a player choice.",
     48: "Spring Senbatsu selections need your approval.",
 }
 
 
+def load_sim_interrupts():
+    try:
+        with open(_SIM_INTERRUPT_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            parsed = {int(k): str(v) for k, v in raw.items() if str(k).isdigit()}
+            return parsed or dict(_DEFAULT_SIM_INTERRUPTS)
+    except FileNotFoundError:
+        return dict(_DEFAULT_SIM_INTERRUPTS)
+    except Exception:
+        return dict(_DEFAULT_SIM_INTERRUPTS)
+    return dict(_DEFAULT_SIM_INTERRUPTS)
+
+
 def run_smart_simulation(context, session, state, target_week: int):
     """Delegate consecutive weeks until an interrupt condition fires."""
 
+    sim_interrupts = load_sim_interrupts()
     summaries = []
     reason = None
 
@@ -127,8 +145,8 @@ def run_smart_simulation(context, session, state, target_week: int):
             reason = "No active player loaded."
             break
 
-        if state.current_week in SMART_SIM_INTERRUPTS:
-            reason = SMART_SIM_INTERRUPTS[state.current_week]
+        if state.current_week in sim_interrupts:
+            reason = sim_interrupts[state.current_week]
             break
 
         # Story beats still deserve manual choices.
@@ -138,7 +156,7 @@ def run_smart_simulation(context, session, state, target_week: int):
 
         user_school_id = player.school_id
         print(f"\r >> Processing Week {state.current_week}...", end="")
-        simulate_background_matches(user_school_id)
+        simulate_background_matches(user_school_id, async_mode=True)
 
         context.refresh_session()
         context.set_player(player.id, user_school_id)

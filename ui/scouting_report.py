@@ -17,6 +17,9 @@ from game.game_context import GameContext
 from game.player_progression import fetch_player_milestone_tags
 from game.skill_system import trait_synergy_summary
 from game.player_profile_renderer import render_team_scouting_report
+from game.scouting_report_renderer import render_team_report
+
+DEFAULT_SCOUT_THEME = "persona"
 
 DEBUG_MODE = False 
 KNOWLEDGE_LABELS = ["Unknown", "Basic", "Detailed", "Full"]
@@ -64,6 +67,14 @@ def _select_school(session, exclude_id=None):
                 return None
             return pick
     return None
+
+
+def _choose_theme() -> str:
+    print("\nSelect theme: persona / clean / anime / legacy (Enter to keep current)")
+    choice = input("Theme: ").strip().lower()
+    if choice in {"persona", "clean", "anime", "legacy"}:
+        return choice
+    return ""
 
 
 def _grade_index(value: int) -> int:
@@ -374,6 +385,9 @@ def view_scouting_menu(context: GameContext):
     context.refresh_session()
     session = context.session
 
+    use_modern = True
+    theme_name = DEFAULT_SCOUT_THEME
+
     while True:
         clear_screen()
         print(f"\n{Colour.HEADER}--- SCOUTING NETWORK ---{Colour.RESET}")
@@ -389,6 +403,8 @@ def view_scouting_menu(context: GameContext):
         print("1. View Active Roster (Top 18)")
         print("2. View Reserves (B-Team)")
         print("3. Scout Rival School")
+        print(f"4. Toggle Renderer (Now: {'Modern' if use_modern else 'Legacy'})")
+        print(f"5. Change Theme (Now: {theme_name})")
         print("0. Back")
         
         choice = input("Select: ")
@@ -403,12 +419,21 @@ def view_scouting_menu(context: GameContext):
             target = _select_school(session, exclude_id=user_school.id)
             if target:
                 info = get_scouting_info(target.id, session=session)
-                render_team_scouting_report(session, target.id, info.knowledge_level, info.rivalry_score)
+                if use_modern:
+                    render_team_report(session, target.id, knowledge_level=info.knowledge_level, theme_name=theme_name)
+                else:
+                    render_team_scouting_report(session, target.id, info.knowledge_level, info.rivalry_score)
                 session.expire_all()
                 refreshed = get_scouting_info(target.id, session=session)
                 _maybe_purchase_scouting(session, user_school, target, refreshed)
             else:
                 input("\n[Press Enter]")
+        elif choice == '4':
+            use_modern = not use_modern
+        elif choice == '5':
+            new_theme = _choose_theme()
+            if new_theme:
+                theme_name = new_theme
         elif choice == '0':
             break
         else:
