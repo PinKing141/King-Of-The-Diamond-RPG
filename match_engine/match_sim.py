@@ -500,12 +500,28 @@ def _simulate_match(
     from .controller import run_match as engine_run_match
 
     if fast:
-        winner = engine_run_match(home_team.id, away_team.id, fast=True, clutch_pitch=clutch_pitch)
+        winner = engine_run_match(
+            home_team.id,
+            away_team.id,
+            fast=True,
+            clutch_pitch=clutch_pitch,
+            tournament_name=tournament_name,
+        )
     elif silent:
         with _suppress_print():
-            winner = engine_run_match(home_team.id, away_team.id, clutch_pitch=clutch_pitch)
+            winner = engine_run_match(
+                home_team.id,
+                away_team.id,
+                clutch_pitch=clutch_pitch,
+                tournament_name=tournament_name,
+            )
     else:
-        winner = engine_run_match(home_team.id, away_team.id, clutch_pitch=clutch_pitch)
+        winner = engine_run_match(
+            home_team.id,
+            away_team.id,
+            clutch_pitch=clutch_pitch,
+            tournament_name=tournament_name,
+        )
 
     score_str = _fetch_latest_score(home_team.id, away_team.id, tournament_name)
     with session_scope() as session:

@@ -166,6 +166,8 @@ def ensure_player_schema():
         statements.append("ALTER TABLE players ADD COLUMN ability_points INTEGER DEFAULT 0")
     if 'training_xp' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN training_xp TEXT DEFAULT '{}'")
+    if 'theme_song' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN theme_song VARCHAR")
 
     if not statements:
         return
@@ -432,6 +434,7 @@ class Player(Base):
     overall = Column(Integer, default=0)
     potential_grade = Column(String, default="C")
     growth_tag = Column(String, default="Normal")
+    theme_song = Column(String, nullable=True)
 
     # Mental / Battery
     pitcher_personality = Column(String, nullable=True)

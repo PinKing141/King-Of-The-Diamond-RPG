@@ -13,6 +13,7 @@ from core.event_bus import EventBus
 from match_engine.confidence import adjust_confidence, initialize_confidence
 from match_engine.momentum import MomentumSystem, PresenceProfile, PresenceSystem
 from match_engine.states import EventType
+from match_engine.brass_band import BrassBand
 from match_engine.psychology import PsychologyEngine
 from match_engine.dugout_listener import DugoutListener
 from game.mechanics import get_or_create_profile
@@ -455,6 +456,8 @@ def prepare_match(
     away_id,
     db_session: Session,
     clutch_pitch: Optional[Dict[str, Any]] = None,
+    *,
+    tournament_name: Optional[str] = None,
 ):
     """
     Loads teams, builds lineups, selects pitchers.
@@ -512,6 +515,9 @@ def prepare_match(
         event_bus=event_bus,
         clutch_pitch_payload=clutch_pitch,
     )
+    match_state.tournament_name = tournament_name
+    match_state.tournament = tournament_name
+    match_state.brass_band = BrassBand(match_state)
     _attach_coach_modifiers(match_state)
     match_state.configure_presence(_build_presence_profiles(match_state))
     match_state.update_pressure_index()

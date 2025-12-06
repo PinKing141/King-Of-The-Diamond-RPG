@@ -25,6 +25,8 @@ from game.personality_effects import evaluate_postgame_slumps
 from game.relationship_manager import apply_confidence_relationships
 from .states import MatchState
 from .batter_logic import AtBatStateMachine
+from .momentum import MomentumSystem
+from .brass_band import BrassBand
 
 from ui.ui_display import render_box_score_panel
 from battery_system.battery_trust import apply_trust_buffer
@@ -189,8 +191,18 @@ class MatchController:
         self.scoreboard = scoreboard
         event_bus = getattr(state, "event_bus", None)
         self.bus: EventBus = event_bus if isinstance(event_bus, EventBus) else EventBus()
-        if not hasattr(state, "event_bus") or state.event_bus is None:
-            state.event_bus = self.bus
+        state.event_bus = self.bus
+        momentum = getattr(state, "momentum_system", None)
+        if isinstance(momentum, MomentumSystem):
+            momentum.attach_bus(self.bus)
+        else:
+            state.momentum_system = MomentumSystem(
+                getattr(state.home_team, "id", None),
+                getattr(state.away_team, "id", None),
+                bus=self.bus,
+            )
+        if not getattr(state, "brass_band", None):
+            state.brass_band = BrassBand(state)
         self.simulation = MatchSimulation(
             state,
             bus=self.bus,
@@ -783,6 +795,7 @@ def run_match(
     *,
     fast: bool = False,
     clutch_pitch: Optional[Dict[str, Any]] = None,
+    tournament_name: Optional[str] = None,
 ):
     """
     Main entry point. Call this to play a full game.
@@ -793,7 +806,13 @@ def run_match(
     if fast:
         set_commentary_enabled(False)
     try:
-        state = prepare_match(home_id, away_id, db_session, clutch_pitch=clutch_pitch)
+        state = prepare_match(
+            home_id,
+            away_id,
+            db_session,
+            clutch_pitch=clutch_pitch,
+            tournament_name=tournament_name,
+        )
         if not state:
             return None # Error handling
         CommentaryListener(getattr(state, "event_bus", None))
