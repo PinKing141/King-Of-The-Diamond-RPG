@@ -2,6 +2,15 @@ import sys
 from ui.ui_display import Colour
 from match_engine.pitch_logic import get_arsenal, PitchResult, describe_batter_tells
 
+# Flag to bypass blocking CLI prompts when a GUI layer supplies choices.
+GUI_MODE = False
+
+
+def enable_gui_mode(enabled: bool = True) -> None:
+    """Flip pitcher UI into GUI (non-blocking) mode."""
+    global GUI_MODE
+    GUI_MODE = bool(enabled)
+
 SLIDE_STEP_MODES = ("auto", "force_on", "force_off")
 SLIDE_MODE_LABELS = {
     "auto": "Auto (catcher decides)",
@@ -25,6 +34,11 @@ def player_pitch_turn(pitcher, batter, state):
     Handles the User Interaction for a pitching turn.
     Returns: (PitchRepertoire Object, Location String)
     """
+    if getattr(state, "gui_mode", False) or GUI_MODE:
+        arsenal = get_arsenal(pitcher.id)
+        fallback_pitch = arsenal[0] if arsenal else None
+        return fallback_pitch, "Zone"
+
     print(f"\n{Colour.HEADER}--- PITCHER INTERFACE ---{Colour.RESET}")
     print(f"vs {batter.name} (Pow {batter.power} / Con {batter.contact})")
     print(f"Count: {state.balls}-{state.strikes} | Outs: {state.outs}")
@@ -91,6 +105,9 @@ def player_pitch_turn(pitcher, batter, state):
 
 def prompt_runner_threat_controls(pitcher, state) -> None:
     """Allow human pitchers to react to steals/pickoffs before the pitch."""
+    if getattr(state, "gui_mode", False) or GUI_MODE:
+        return
+
     runners = list(getattr(state, "runners", []) or [])
     runner_first = runners[0] if len(runners) > 0 else None
     runner_second = runners[1] if len(runners) > 1 else None

@@ -2,6 +2,15 @@ import sys
 from ui.ui_display import Colour
 from match_engine.states import EventType
 
+# Flag to bypass blocking CLI prompts when a GUI layer supplies choices.
+GUI_MODE = False
+
+
+def enable_gui_mode(enabled: bool = True) -> None:
+    """Flip batter UI into GUI (non-blocking) mode."""
+    global GUI_MODE
+    GUI_MODE = bool(enabled)
+
 
 _BATTERS_EYE_CHOICES = {
     '1': {"kind": "family", "value": "fastball", "label": "Fastball"},
@@ -113,6 +122,9 @@ def player_bat_turn(pitcher, batter, state):
     Handles the User Interaction for a batting turn.
     Returns: (Action String, Modifier Dictionary)
     """
+    if getattr(state, "gui_mode", False) or GUI_MODE:
+        return "Take", {"gui_pending": True}
+
     print(f"\n{Colour.HEADER}--- BATTER INTERFACE ---{Colour.RESET}")
     print(f"Pitcher: {pitcher.name} | Stamina: {getattr(pitcher, 'fatigue', 0)}% Tired")
     print(f"Count: {state.balls}-{state.strikes} | Outs: {state.outs}")
