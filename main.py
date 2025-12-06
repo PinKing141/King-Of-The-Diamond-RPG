@@ -7,6 +7,7 @@ import random
 from core.event_bus import EventBus
 from database.setup_db import create_database, GameState, School, Player, get_session, safe_delete_db
 from ui.ui_display import Colour, clear_screen, render_weekly_dashboard
+from ui.ui_core import choose_theme, panel, DEFAULT_THEME
 from game.weekly_scheduler import start_week, run_week_automatic
 from world_sim.tournament_sim import run_koshien_tournament, run_spring_koshien
 from world_sim.qualifiers import run_season_qualifiers
@@ -31,12 +32,23 @@ GLOBAL_EVENT_BUS = initialise_analytics(EventBus())
 # UI
 # -----------------------------------------------------
 
-def print_banner():
+MAIN_MENU_THEME = DEFAULT_THEME
+
+
+def print_banner(theme_name: str = MAIN_MENU_THEME):
+    """Render the global banner with themed framing."""
+
     clear_screen()
-    print(f"{Colour.HEADER}==============================================={Colour.RESET}")
-    print(f"{Colour.HEADER}   ⚾  KING OF THE DIAMOND RPG: THE FINAL  ⚾     {Colour.RESET}")
-    print(f"{Colour.HEADER}==============================================={Colour.RESET}")
-    print("     The Road to the Sacred Stadium begins here.\n")
+    theme = choose_theme(theme_name)
+    width = 68
+    deco = theme["decor"] * width
+    title = "⚾  KING OF THE DIAMOND RPG: THE FINAL  ⚾"
+    subtitle = "The Road to the Sacred Stadium begins here."
+
+    print(f"{theme['accent']}{deco}{Colour.RESET}")
+    print(f"{theme['accent']}{title.center(width)}{Colour.RESET}")
+    print(f"{theme['accent']}{deco}{Colour.RESET}")
+    print(f"{theme['muted']}{subtitle.center(width)}{Colour.RESET}\n")
 
 
 # -----------------------------------------------------
@@ -234,20 +246,25 @@ def rebuild_world_database():
 
 def main_menu():
     while True:
-        print_banner()
+        print_banner(MAIN_MENU_THEME)
         session = get_session()
 
         state = session.query(GameState).first()
         has_save = state is not None
         player_info = get_player_info(session, state) if has_save else "No Data"
 
-        print(f"Current Active Game: {Colour.CYAN}{player_info}{Colour.RESET}\n")
+        theme = choose_theme(MAIN_MENU_THEME)
+        menu_lines = [
+            f"{theme['muted']}Current Active Game: {Colour.CYAN}{player_info}{Colour.RESET}",
+            "",
+            f"{theme['accent']}[1]{Colour.RESET} Continue Active Game",
+            f"{theme['accent']}[2]{Colour.RESET} Load Game (Select Slot)",
+            f"{theme['accent']}[3]{Colour.RESET} New Career (Reuse Current World)",
+            f"{theme['accent']}[4]{Colour.RESET} Rebuild World (Fresh Generation)",
+            f"{theme['accent']}[5]{Colour.RESET} Exit",
+        ]
 
-        print("1. Continue Active Game")
-        print("2. Load Game (Select Slot)")
-        print("3. New Career (Reuse Current World)")
-        print("4. Rebuild World (Fresh Generation)")
-        print("5. Exit")
+        panel("Main Menu", menu_lines, theme=MAIN_MENU_THEME, width=70)
 
         choice = input("\nSelect: ")
 
