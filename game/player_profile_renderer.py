@@ -210,12 +210,13 @@ def _header_block(title: str, subtitle: str) -> None:
 def _profile_summary(data: Dict) -> None:
     player: Player = data["player"]
     school = data["school"]
+    display_name = " ".join(part for part in [getattr(player, "last_name", ""), getattr(player, "first_name", "")] if part).strip() or player.name
     summary = f"{player.position or '??'} | Year {player.year or '?'}"
     if getattr(player, "height_cm", None):
         summary += f" | {player.height_cm} cm"
     if getattr(player, "weight_kg", None):
         summary += f" / {player.weight_kg} kg"
-    _header_block(player.name.upper(), summary)
+    _header_block((display_name or player.name).upper(), summary)
     school_name = school.name if school else "Free Agent"
     print(f"School: {school_name}")
     roles = []
@@ -229,6 +230,9 @@ def _profile_summary(data: Dict) -> None:
         roles.append(player.role.upper())
     ordered = [role for role in ROLE_PRIORITY if role in roles]
     print(f"Roles: {', '.join(ordered) if ordered else 'None'}")
+    if player.position == "Pitcher":
+        slot = getattr(player, "arm_slot", None) or "Three-Quarters"
+        print(f"Arm Slot: {slot}")
     print("─" * BOX_WIDTH)
 
 
@@ -381,10 +385,14 @@ def render_player_profile_modern(session, player_id: int, *, theme_name: Optiona
     stats = data.get("season_stats", {})
 
     clear_screen()
+    display_name = " ".join(part for part in [getattr(player, "last_name", ""), getattr(player, "first_name", "")] if part).strip() or player.name
     header_lines = [
-        f"{player.name} / {player.position or '?'} | Year {getattr(player, 'year', '?')} | {getattr(player, 'height_cm', getattr(player, 'height', '?'))} cm",
+        f"{display_name} / {player.position or '?'} | Year {getattr(player, 'year', '?')} | {getattr(player, 'height_cm', getattr(player, 'height', '?'))} cm",
         f"School: {getattr(school, 'name', 'Unaffiliated')}"
     ]
+    if (player.position or "").lower().startswith("pitch"):
+        slot = getattr(player, "arm_slot", None) or "Three-Quarters"
+        header_lines.append(f"Arm Slot: {slot}")
     if fast:
         for line in header_lines:
             print(line)

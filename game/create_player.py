@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.setup_db import School, Player, PitchRepertoire
+from database.populate_japan import roll_arm_slot
 from ui.ui_display import Colour, clear_screen
 from player_roles.two_way import roll_two_way_profile
 from game.academic_system import roll_academic_profile
@@ -186,7 +187,7 @@ def _render_creation_banner(step: int, data: dict, subtitle: str) -> None:
     print(subtitle.center(FRAME_WIDTH))
     print(f"{Colour.CYAN}{'═' * FRAME_WIDTH}{Colour.RESET}")
 
-    full_name = " ".join(part for part in [data['first_name'], data['last_name']] if part).strip()
+    full_name = " ".join(part for part in [data['last_name'], data['first_name']] if part).strip()
     summary = [
         f"Name: {full_name or '--'}",
         f"Focus: {data.get('specific_pos') or '--'} ({data.get('position') or '--'})",
@@ -220,6 +221,8 @@ def _render_stat_overview(position: str, stats: dict) -> None:
         bar = _bar(value)
         val_txt = f"{int(value):>3}" if value is not None else "--"
         print(f" {label:<10} {bar}  {val_txt}")
+    if position == "Pitcher" and stats.get('arm_slot'):
+        print(f" Arm Slot   {stats['arm_slot']}")
 
 
 def _print_option(title: str) -> None:
@@ -304,8 +307,10 @@ def roll_stats(position, is_monster=False):
 
     if position == "Pitcher":
         stats['velocity'] = random.randint(125, 138) + (10 if is_monster else 0)
+        stats['arm_slot'] = roll_arm_slot("pitching")
     else:
         stats['velocity'] = 0
+        stats['arm_slot'] = "Three-Quarters"
 
     return stats
 
@@ -315,10 +320,13 @@ def roll_stats(position, is_monster=False):
 # ------------------------------------------------------
 def commit_player_to_db(session: Session, data) -> int:
     s = data['stats']
-    if data.get('position') == "Pitcher" and not data.get('pitch_arsenal'):
-        data['pitch_arsenal'] = list(DEFAULT_PITCH_ARSENAL)
+    # Do not auto-assign default pitches; player must pick 1-4 in the menu.
     valid_cols = [c.key for c in Player.__table__.columns]
     clean_stats = {k: v for k, v in s.items() if k in valid_cols}
+
+    # Ensure arm slot persists even if upstream stats dict was missing it
+    if 'arm_slot' in valid_cols and 'arm_slot' not in clean_stats:
+        clean_stats['arm_slot'] = s.get('arm_slot') or "Three-Quarters"
 
     if 'academic_skill' not in clean_stats or 'test_score' not in clean_stats:
         academic_skill, test_score = roll_academic_profile(data.get('hometown'), data.get('school'))
@@ -344,7 +352,7 @@ def commit_player_to_db(session: Session, data) -> int:
     p = Player(
         first_name=data['first_name'],
         last_name=data['last_name'],
-        name=f"{data['first_name']} {data['last_name']}",
+        name=f"{data['last_name']} {data['first_name']}",
         position=data['position'],
         year=1,
         school_id=data['school'].id,
@@ -382,7 +390,6 @@ def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Option
         entry = PitchRepertoire(
             player_id=player.id,
             pitch_name=name,
-            pitch_type=name, # Using name as type if no mapping
             quality=quality,
             break_level=break_level,
         )
@@ -416,10 +423,9 @@ def create_hero(session: Session) -> Optional[int]:
         # STEP 0: NAME ENTRY
         if step == 0:
             _print_option("Player Identity")
-            
             # --- FIX: Avoid double prompts by only showing current if set ---
             if data['first_name'] or data['last_name']:
-                print(f"Current: {data['first_name']} {data['last_name']}")
+                print(f"Current: {data['last_name']} {data['first_name']}")
             print("Enter new values or leave blank to keep current.")
             
             first = input("First Name: ").strip()
@@ -812,7 +818,7 @@ def create_hero(session: Session) -> Optional[int]:
 
         # STEP 8: FINAL CONFIRMATION
         elif step == 8:
-            print(f"Name:   {data['first_name']} {data['last_name']}")
+            print(f"Name:   {data['last_name']} {data['first_name']}")
             print(f"Role:   {data['specific_pos']}")
             print(f"Style:  {data['growth_style']}")
             print(f"Hometown: {data['hometown']}")
@@ -822,6 +828,8 @@ def create_hero(session: Session) -> Optional[int]:
             last_score = data['stats'].get('test_score', '??')
             print(f"Academics: Skill {acad_skill} / Latest Test {last_score}")
             if data['position'] == "Pitcher":
+                arm_slot = data['stats'].get('arm_slot') or "Three-Quarters"
+                print(f"Arm Slot: {arm_slot}")
                 trait_txt = "Unlocked" if data.get('starter_trait') else "--"
                 print(f"Starter Trait: {trait_txt}")
                 pitch_summary = ", ".join(data.get('pitch_arsenal') or DEFAULT_PITCH_ARSENAL)

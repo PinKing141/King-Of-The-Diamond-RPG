@@ -118,7 +118,9 @@ def load_active_player(session, state):
 def get_player_info(session, state):
     p = load_active_player(session, state)
     if p and p.school:
-        return f"{p.name} ({p.position}) - {p.school.name} (Year {p.year})"
+        last_first = " ".join(part for part in [getattr(p, 'last_name', ''), getattr(p, 'first_name', '')] if part).strip()
+        display_name = last_first or p.name or "Unknown Player"
+        return f"{display_name} ({p.position}) - {p.school.name} (Year {p.year})"
     return "Unknown Player"
 
 
@@ -345,8 +347,13 @@ def run_game_loop():
             context.set_player(user_player.id, user_school_id)
 
             print_banner()
+            month_names = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ]
+            month_label = month_names[(state.current_month - 1) % 12] if state.current_month else "--"
             print(f"{Colour.gold}>>> YEAR {state.current_year} | WEEK {current_week} / 50{Colour.RESET}")
-            print(f"Month: {state.current_month}")
+            print(f"Date: {month_label} (Month {state.current_month})")
 
             # -----------------------------------------
             # SEASON END

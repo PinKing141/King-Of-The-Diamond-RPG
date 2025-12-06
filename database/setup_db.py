@@ -31,7 +31,7 @@ if not os.path.exists(db_dir):
     os.makedirs(db_dir)
 
 # Create engine globally but we might need to dispose it for deletion
-engine = create_engine(f"sqlite:///{DB_PATH}")
+engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"timeout": 10})
 Base = declarative_base()
 
 SessionLocal = sessionmaker(bind=engine)

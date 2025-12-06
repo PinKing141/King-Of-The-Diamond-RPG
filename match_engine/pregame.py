@@ -411,7 +411,11 @@ def _apply_rivalry_context(db_session: Session, home_lineup, away_lineup):
     hero.clutch = max(25, min(99, (hero.clutch or 50) + delta))
     hero.mental = max(25, min(99, (hero.mental or 50) + (delta / 2)))
     def _display_name(player):
-        return getattr(player, 'name', None) or getattr(player, 'last_name', None) or getattr(player, 'first_name', None) or "Player"
+        ln = getattr(player, 'last_name', '') or ''
+        fn = getattr(player, 'first_name', '') or ''
+        if ln or fn:
+            return f"{ln} {fn}".strip()
+        return getattr(player, 'name', None) or "Player"
     return {
         "hero_id": hero.id,
         "hero_school_id": hero.school_id,

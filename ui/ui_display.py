@@ -16,6 +16,7 @@ class Colour:
     RESET = '\033[0m'
     BOLD = '\033[1m'
     GOLD = '\033[93m'
+    dim = '\033[2m'
     
     # Semantic Aliases
     FAIL = '\033[91m'    # RED
@@ -44,7 +45,7 @@ def render_screen(conn, player_data):
     print("-" * 60)
     
     # --- PLAYER INFO ---
-    name_display = f"{player_data['first_name']} {player_data['last_name']}"
+    name_display = f"{player_data['last_name']} {player_data['first_name']}".strip()
     pos_display = f"{player_data['position']}"
     if player_data['jersey_number'] == 1: pos_display += " (ACE)"
     

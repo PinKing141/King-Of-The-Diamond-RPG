@@ -796,7 +796,7 @@ class MatchController:
 
     def _flush_trust_buffer(self) -> None:
         buffer = self.simulation.pop_trust_buffer()
-        if buffer:
+        if buffer and not getattr(self.state, "fast_sim", False):
             apply_trust_buffer(buffer)
 
     def _state_change(self, phase: str, payload: Optional[Dict[str, Any]] = None) -> None:

@@ -25,6 +25,14 @@ except Exception:  # fallback for portability
     def clear_screen():
         print("\033c", end="")
 
+# Ensure required colour attrs exist even if ui_display is missing some.
+for _missing, _fallback in {
+    "WHITE": "\033[97m",
+    "MAG": "\033[35m",
+}.items():
+    if not hasattr(Colour, _missing):
+        setattr(Colour, _missing, _fallback)
+
 # Themes --------------------------------------------------------------
 THEMES: Dict[str, Dict[str, str]] = {
     "clean": {

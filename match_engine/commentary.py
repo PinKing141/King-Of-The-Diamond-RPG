@@ -433,7 +433,11 @@ class CommentaryListener:
 def _short_name(player) -> str:
     if not player:
         return "Player"
-    return getattr(player, 'last_name', None) or getattr(player, 'name', None) or getattr(player, 'first_name', None) or "Player"
+    ln = getattr(player, 'last_name', '') or ''
+    fn = getattr(player, 'first_name', '') or ''
+    if ln or fn:
+        return f"{ln} {fn}".strip()
+    return getattr(player, 'name', None) or "Player"
 
 
 def _player_team_id(player) -> Optional[int]:

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from typing import Dict, Optional, Tuple
+
+from sqlalchemy.exc import OperationalError, PendingRollbackError
 
 from database.setup_db import BatteryTrust, session_scope
 
@@ -48,13 +51,34 @@ def _get_or_create_trust_record(session, pitcher_id, catcher_id):
     return rec
 
 
+def _commit_with_retry(session, retries: int = 5, delay: float = 0.1) -> None:
+    """Handle transient sqlite database locks by retrying commits."""
+
+    for attempt in range(retries):
+        try:
+            session.commit()
+            return
+        except OperationalError as exc:  # sqlite database locked
+            session.rollback()
+            if "database is locked" not in str(exc).lower() or attempt == retries - 1:
+                raise
+            time.sleep(delay)
+        except PendingRollbackError:
+            session.rollback()
+        except Exception:
+            session.rollback()
+            raise
+
+
 def get_trust(pitcher_id, catcher_id):
     """Return the saved trust value for a battery pair, seeding it if missing."""
     if not pitcher_id or not catcher_id:
         return 50
     with session_scope() as session:
-        rec = _get_or_create_trust_record(session, pitcher_id, catcher_id)
-        session.commit()
+        rec = session.get(BatteryTrust, (pitcher_id, catcher_id))
+        if rec is None:
+            rec = _get_or_create_trust_record(session, pitcher_id, catcher_id)
+            _commit_with_retry(session)
         return rec.trust
 
 
@@ -65,7 +89,7 @@ def update_trust(pitcher_id, catcher_id, delta):
     with session_scope() as session:
         rec = _get_or_create_trust_record(session, pitcher_id, catcher_id)
         rec.trust = max(0, min(100, rec.trust + delta))
-        session.commit()
+        _commit_with_retry(session)
         return rec.trust
 
 
@@ -202,10 +226,19 @@ def apply_trust_buffer(buffer: Dict[Tuple[int, int], int]) -> None:
 
     if not buffer:
         return
-    with session_scope() as session:
-        for (pitcher_id, catcher_id), delta in buffer.items():
-            if not delta:
-                continue
-            rec = _get_or_create_trust_record(session, pitcher_id, catcher_id)
-            rec.trust = int(_clamp((rec.trust or 0) + delta, 0, 100))
-        session.commit()
+
+    for attempt in range(5):
+        try:
+            with session_scope() as session:
+                with session.no_autoflush:
+                    for (pitcher_id, catcher_id), delta in buffer.items():
+                        if not delta:
+                            continue
+                        rec = _get_or_create_trust_record(session, pitcher_id, catcher_id)
+                        rec.trust = int(_clamp((rec.trust or 0) + delta, 0, 100))
+                _commit_with_retry(session)
+                return
+        except OperationalError as exc:
+            if "database is locked" not in str(exc).lower() or attempt == 4:
+                raise
+            time.sleep(0.1 * (attempt + 1))

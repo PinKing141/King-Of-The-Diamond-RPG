@@ -76,8 +76,10 @@ def recruit_freshmen(session: Session, target_roster: int = 18) -> int:
             filtered_stats['loyalty'] = traits['loyalty']
             filtered_stats['volatility'] = traits['volatility']
 
+            display_name = f"{last_name} {first_name}"
+
             player = Player(
-                name=f"{last_name} {first_name}",
+                name=display_name,
                 first_name=first_name,
                 last_name=last_name,
                 position=position,
