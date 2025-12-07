@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from database.setup_db import Player, GameState
 from debug.debug_tools import input_with_debug
 from sqlalchemy.orm import object_session
-from game.constants import (
+from core.constants import (
     ACTION_COSTS,
     ACTION_METADATA,
     ACTION_METADATA_DEFAULT,
@@ -25,24 +25,24 @@ from world.roster_manager import run_roster_logic
 # Import the bridge function from the new match engine location
 from ui.ui_display import Colour, clear_screen, render_weekly_dashboard
 # Import the new Event Manager
-from game.event_manager import trigger_random_event
-from game.game_context import GameContext
-from game.relationship_manager import seed_relationships
-from game.academic_system import (
+from game.story.event_manager import trigger_random_event
+from core.game_context import GameContext
+from game.personnel.relationship_manager import seed_relationships
+from game.systems.academic_system import (
     maybe_run_academic_exam,
     is_academically_eligible,
     required_score_for_school,
 )
-from game.pitch_mastery import apply_mastery_decay, open_pitch_lab
-from game.dialogue_manager import run_dialogue_event
-from game.exceptions import ScheduleError
-from game.weekly_scheduler_core import (
+from game.mechanics.pitch_mastery import apply_mastery_decay, open_pitch_lab
+from game.story.dialogue_manager import run_dialogue_event
+from core.exceptions import ScheduleError
+from game.loop.weekly_scheduler_core import (
     DAYS_OF_WEEK,
     SLOTS,
     WeekSummary,
     execute_schedule_core,
 )
-from game.academic_system import score_to_letter_grade
+from game.systems.academic_system import score_to_letter_grade
 from world.media_engine import generate_weekly_news
 
 

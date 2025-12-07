@@ -1,7 +1,7 @@
 import json
 
 from database.setup_db import GameState, Player, School, SessionLocal
-from game.weekly_scheduler import CoachOrder, _record_coach_order_result
+from game.loop.weekly_scheduler import CoachOrder, _record_coach_order_result
 
 
 def test_record_coach_order_result_serializes_payload():

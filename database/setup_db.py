@@ -791,6 +791,10 @@ def create_database():
 
     upgrade_schema()
 
+    # Ensure tables exist for the currently bound engine (useful in tests that
+    # monkeypatch the engine/session to an isolated SQLite file).
+    Base.metadata.create_all(bind=engine)
+
     with session_scope() as session:
         if not session.query(GameState).first():
             print("Initialising Game State...")

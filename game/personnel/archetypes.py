@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from game.rng import get_rng
+from core.rng import get_rng
 
 
 @dataclass(frozen=True)

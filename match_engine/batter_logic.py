@@ -13,9 +13,9 @@ from .commentary import (
     commentary_enabled,
 )
 from match_engine.pitch_definitions import PITCH_TYPES
-from game.strike_zone_renderer import build_pitch_snapshot_lines
-from game.rng import get_rng
-from game.skill_system import (
+from game.mechanics.strike_zone_renderer import build_pitch_snapshot_lines
+from core.rng import get_rng
+from game.mechanics.skill_system import (
     evaluate_situational_skills,
     gather_behavior_tendencies,
     gather_passive_skill_modifiers,

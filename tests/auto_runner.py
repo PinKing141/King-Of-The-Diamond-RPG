@@ -6,8 +6,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.event_bus import EventBus
 from database.setup_db import School, get_session
-from game.analytics import TELEMETRY_EVENT, initialise_analytics
-from game.pitch_minigame import trigger_pitch_minigame
+from core.analytics import TELEMETRY_EVENT, initialise_analytics
+from game.mechanics.pitch_minigame import trigger_pitch_minigame
 from match_engine.commentary import set_commentary_enabled
 from match_engine.controller import GameResult, MatchController
 from match_engine.match_sim import PlayOutcome

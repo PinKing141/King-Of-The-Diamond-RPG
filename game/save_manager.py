@@ -3,6 +3,9 @@ import os
 import glob
 import sqlite3
 from datetime import datetime
+
+from sqlalchemy import create_engine
+
 from config import USER_DATA_DIR, DB_PATH
 from ui.ui_display import Colour, clear_screen
 from database.setup_db import (
@@ -11,7 +14,7 @@ from database.setup_db import (
     get_session,
     GameState,
 )
-from game.exceptions import SaveCorruptError, SaveError, SaveNotFoundError
+from core.exceptions import SaveCorruptError, SaveError, SaveNotFoundError
 
 
 def _backup_database(source_path, target_path):
@@ -29,14 +32,31 @@ def _backup_database(source_path, target_path):
         src.close()
 
 
-def _gamestate_present():
-    session = get_session()
+def _rebind_db_engine():
+    """Point SQLAlchemy's engine/session to the current DB_PATH (test-friendly)."""
+    import database.setup_db as setup_db
+
     try:
-        return session.query(GameState).first() is not None
+        setup_db.engine.dispose()
+    except Exception:
+        pass
+
+    setup_db.engine = create_engine(f"sqlite:///{DB_PATH}")
+    setup_db.SessionLocal.configure(bind=setup_db.engine)
+
+
+def _gamestate_present():
+    """Lightweight existence check that tolerates partial schemas in tests."""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute("SELECT COUNT(*) FROM gamestate").fetchone()
+        return bool(row and row[0])
     except sqlite3.OperationalError:
         return False
     finally:
-        session.close()
+        if conn:
+            conn.close()
 
 
 def _safe_json_load(value):
@@ -197,7 +217,7 @@ def load_game(slot_num):
     source_path = os.path.join(USER_DATA_DIR, f"save_slot_{slot_num}.db")
 
     if not os.path.exists(source_path):
-        raise SaveNotFoundError(f"Slot {slot_num} is empty.")
+        return False, f"Save slot {slot_num} not found."
 
     try:
         close_all_sessions()
@@ -205,6 +225,7 @@ def load_game(slot_num):
             os.remove(DB_PATH)
 
         _backup_database(source_path, DB_PATH)
+        _rebind_db_engine()
         create_database()  # ensures schema + GameState row
 
         if not _gamestate_present():
@@ -212,9 +233,11 @@ def load_game(slot_num):
 
         return True, f"Loaded Slot {slot_num}."
     except sqlite3.DatabaseError as exc:
-        raise SaveCorruptError(f"Save file is not a valid database: {exc}")
+        return False, f"Save file is not a valid database: {exc}"
+    except (SaveCorruptError, SaveError) as exc:
+        return False, str(exc)
     except OSError as exc:
-        raise SaveError(f"System error loading save: {exc}")
+        return False, f"System error loading save: {exc}"
 
 def delete_save(slot_num):
     target_path = os.path.join(USER_DATA_DIR, f"save_slot_{slot_num}.db")

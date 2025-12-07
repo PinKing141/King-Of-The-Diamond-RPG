@@ -3,9 +3,9 @@ from typing import Dict, Optional
 
 from sqlalchemy.orm import Session
 
-from game.health_system import apply_injury
-from game.rng import get_rng
-from game.skill_system import gather_roll_modifiers
+from game.systems.health_system import apply_injury
+from core.rng import get_rng
+from game.mechanics.skill_system import gather_roll_modifiers
 from match_engine.context_manager import get_at_bat_context
 
 rng = get_rng()

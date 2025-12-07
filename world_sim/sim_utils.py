@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Dict, Optional, Sequence, Tuple
 
 from database.setup_db import Player
-from game.rng import get_rng
+from core.rng import get_rng
 
 rng = get_rng()
 MIN_WIN_PROB = 0.05

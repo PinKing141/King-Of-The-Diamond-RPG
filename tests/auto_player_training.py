@@ -18,7 +18,7 @@ class TestGhostPlayerTraining(unittest.TestCase):
              patch('time.sleep', return_value=None):
             # Capture initial player state
             try:
-                from game.create_player import get_active_player
+                from game.personnel.create_player import get_active_player
             except ImportError:
                 get_active_player = None
             initial_stamina = None

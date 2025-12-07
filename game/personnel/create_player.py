@@ -14,12 +14,12 @@ from database.setup_db import School, Player, PitchRepertoire
 from database.populate_japan import roll_arm_slot
 from ui.ui_display import Colour, clear_screen
 from player_roles.two_way import roll_two_way_profile
-from game.academic_system import roll_academic_profile
-from game.relationship_manager import seed_relationships
-from game.personality import roll_player_personality
-from game.player_generation import maybe_assign_bad_trait
-from game.trait_logic import grant_user_creation_trait_rolls
-from game.pitch_mastery import mastery_level_for_xp
+from game.systems.academic_system import roll_academic_profile
+from game.personnel.relationship_manager import seed_relationships
+from game.personnel.personality import roll_player_personality
+from game.personnel.player_generation import maybe_assign_bad_trait
+from game.mechanics.trait_logic import grant_user_creation_trait_rolls
+from game.mechanics.pitch_mastery import mastery_level_for_xp
 from match_engine.pitch_definitions import PITCH_TYPES
 
 # --- GROWTH STYLE DEFINITIONS ---

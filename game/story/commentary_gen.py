@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from game import commentary_pools as pools
-from game.rng import get_rng
+from game.story import commentary_pools as pools
+from core.rng import get_rng
 
 rng = get_rng()
 

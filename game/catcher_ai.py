@@ -4,8 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional, Tuple
 
-from game.rng import get_rng
-from game.pitch_types import PitchDefinition, get_pitch_definition
+from core.rng import get_rng
+from game.mechanics.pitch_types import PitchDefinition, get_pitch_definition
 from match_engine.pitch_logic import describe_batter_tells, get_arsenal, get_last_pitch_call
 from match_engine.pitch_definitions import PITCH_TYPES
 

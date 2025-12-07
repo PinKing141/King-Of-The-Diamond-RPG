@@ -1,4 +1,4 @@
-from game.rng import get_rng
+from core.rng import get_rng
 from game import stadiums
 from match_engine.confidence import apply_fielding_error_confidence
 from world.defense_profiles import get_defense_profile

@@ -5,17 +5,17 @@ from typing import Optional
 from database.setup_db import Player, School
 from ui.ui_display import Colour
 # Import the new Dialogue Manager
-from game.dialogue_manager import run_dialogue_event
-from game.game_context import GameContext
-from game.relationship_manager import (
+from game.story.dialogue_manager import run_dialogue_event
+from core.game_context import GameContext
+from game.personnel.relationship_manager import (
     seed_relationships,
     adjust_relationship,
     get_rival_pressure_modifier,
     apply_conflict_penalty,
 )
 from game.coach_strategy import set_strategy_modifier, has_modifier
-from game.personality_effects import adjust_player_morale, adjust_team_morale
-from game.archetypes import get_player_archetype, get_archetype_profile
+from game.personnel.personality_effects import adjust_player_morale, adjust_team_morale
+from game.personnel.archetypes import get_player_archetype, get_archetype_profile
 from sqlalchemy import func
 
 # --- INSTRUCTIONS FOR ADDING NEW EVENTS ---

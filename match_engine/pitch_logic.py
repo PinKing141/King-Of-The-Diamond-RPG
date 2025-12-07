@@ -5,14 +5,14 @@ from typing import Any, Dict, Optional
 from database.setup_db import PitchRepertoire, session_scope
 from match_engine.pitch_definitions import PITCH_TYPES, ARM_SLOT_MODIFIERS
 from match_engine.commentary import commentary_enabled
-from game.rng import get_rng
-from game.mechanics import (
+from core.rng import get_rng
+from game.mechanics.mechanics import (
     generate_unique_form,
     get_or_create_profile,
     mechanics_adjustment_for_pitch,
 )
-from game.skill_system import player_has_skill
-from game.pitch_mastery import mastery_level_for_xp, record_pitch_xp
+from game.mechanics.skill_system import player_has_skill
+from game.mechanics.pitch_mastery import mastery_level_for_xp, record_pitch_xp
 from battery_system.battery_trust import adjust_battery_sync, get_battery_sync, trust_scaled_wall
 
 # Toggle: allow battle-math logs to be pushed into at-bat feeds without always printing.
@@ -1234,6 +1234,8 @@ def resolve_pitch(
             record_pitch_xp(state, pitcher_id, getattr(pitch, "pitch_name", None), res_obj, family=family)
             _record_pitch_family(state, pitcher_id, family)
             return res_obj
+
+        return res_obj
 
     if flow_offense != 1.0:
         eye_stat *= flow_offense

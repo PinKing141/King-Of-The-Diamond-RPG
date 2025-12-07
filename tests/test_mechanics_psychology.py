@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from game.mechanics import get_or_create_profile, mechanics_adjustment_for_pitch
+from game.mechanics.mechanics import get_or_create_profile, mechanics_adjustment_for_pitch
 from match_engine.pitch_logic import PitchResult
 from match_engine.psychology import PsychologyEngine
 

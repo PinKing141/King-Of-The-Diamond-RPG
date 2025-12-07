@@ -13,7 +13,7 @@ import math
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence
 
-from game.rng import get_rng
+from core.rng import get_rng
 from world.defense_profiles import DefenseProfile, DEFAULT_PROFILE, get_defense_profile
 
 GRAVITY_FTPS2 = 32.174

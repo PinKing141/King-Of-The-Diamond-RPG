@@ -5,7 +5,7 @@ import random
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Sequence, Tuple
 
-from game.rng import get_rng
+from core.rng import get_rng
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from ui.ui_display import Colour, clear_screen
-from game.archetypes import archetype_persona_blurb
+from game.personnel.archetypes import archetype_persona_blurb
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "dialogues.json"
 

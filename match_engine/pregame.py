@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from database.setup_db import Player, School, GameState, PlayerRelationship
 from game.coach_strategy import export_mod_descriptors
-from game.player_progression import fetch_player_milestone_tags
-from game.rng import get_rng
+from game.personnel.player_progression import fetch_player_milestone_tags
+from core.rng import get_rng
 from core.event_bus import EventBus
 from match_engine.confidence import adjust_confidence, initialize_confidence
 from match_engine.momentum import MomentumSystem, PresenceProfile, PresenceSystem
@@ -16,8 +16,8 @@ from match_engine.states import EventType
 from match_engine.brass_band import BrassBand
 from match_engine.psychology import PsychologyEngine
 from match_engine.dugout_listener import DugoutListener
-from game.mechanics import get_or_create_profile
-from game.lineup_logic import optimize_lineup, select_starting_nine
+from game.mechanics.mechanics import get_or_create_profile
+from game.mechanics.lineup_logic import optimize_lineup, select_starting_nine
 from world.rivals import get_ledger
 from world_sim.weather import WeatherProfile, generate_weather_profile
 

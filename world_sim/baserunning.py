@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
-from game.rng import get_rng
+from core.rng import get_rng
 from match_engine.states import EventType
 
 rng = get_rng()

@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from database.setup_db import Team
 from game.training_logic import apply_scheduled_action
-from game.game_context import GameContext
+from core.game_context import GameContext
 
 
 DAYS_OF_WEEK = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']

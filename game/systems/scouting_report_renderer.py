@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from database.setup_db import School, Player
-from game.battery_profiles import analyze_battery_chemistry
+from game.personnel.battery_profiles import analyze_battery_chemistry
 from battery_system.battery_trust import summarize_battery_pair
 from ui.ui_core import clear_screen, colored_bar, simple_bar, panel, BAR_WIDTH
 

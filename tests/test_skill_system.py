@@ -2,7 +2,7 @@
 
 from database import setup_db
 from database.setup_db import SessionLocal, Player, PlayerSkill
-from game.skill_system import (
+from game.mechanics.skill_system import (
     check_and_grant_skills,
     player_has_skill,
     grant_skill_by_key,

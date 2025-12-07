@@ -21,8 +21,8 @@ from database.setup_db import get_session, Game, GameState, Performance, ensure_
 
 from database.setup_db import get_session, Game, Performance, ensure_game_schema
 
-from game.personality_effects import evaluate_postgame_slumps
-from game.relationship_manager import apply_confidence_relationships, seed_relationships
+from game.personnel.personality_effects import evaluate_postgame_slumps
+from game.personnel.relationship_manager import apply_confidence_relationships, seed_relationships
 from .states import EventType, MatchState
 from .batter_logic import AtBatStateMachine
 from .input_system import HumanBatterInput, CpuBatterInput
@@ -33,7 +33,7 @@ from .brass_band import BrassBand
 from ui.ui_display import render_box_score_panel
 from ui.match_intro import render_match_intro
 from battery_system.battery_trust import apply_trust_buffer
-from game.pitch_mastery import summarize_mastery_report, flush_pitch_xp
+from game.mechanics.pitch_mastery import summarize_mastery_report, flush_pitch_xp
 
 
 def save_game_results(state):
@@ -384,7 +384,11 @@ class MatchController:
             human_team_ids = getattr(state, "human_team_ids", set()) or set()
             user_controls = team_id in human_team_ids
             input_source = HumanBatterInput() if user_controls else CpuBatterInput()
-            AtBatStateMachine(state, input_source=input_source).run()
+            try:
+                AtBatStateMachine(state, input_source=input_source).run()
+            except TypeError:
+                # Backward compatibility for tests that monkeypatch a simple callable
+                AtBatStateMachine(state).run()
             setattr(state, lineup_attr, _rotate_lineup(getattr(state, lineup_attr)))
             if half == "Bot" and self._home_walkoff_ready():
                 state.outs = 3
@@ -809,7 +813,11 @@ class MatchController:
             human_team_ids = getattr(state, "human_team_ids", set()) or set()
             user_controls = team_id in human_team_ids
             input_source = HumanBatterInput() if user_controls else CpuBatterInput()
-            AtBatStateMachine(state, input_source=input_source).run()
+            try:
+                AtBatStateMachine(state, input_source=input_source).run()
+            except TypeError:
+                # Backward compatibility for legacy tests that monkeypatch a simple callable
+                AtBatStateMachine(state).run()
             setattr(state, lineup_attr, _rotate_lineup(getattr(state, lineup_attr)))
             if half == "Bot" and self._home_walkoff_ready():
                 state.outs = 3

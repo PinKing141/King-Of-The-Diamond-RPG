@@ -6,14 +6,14 @@ from typing import Optional, Tuple
 from core.event_bus import EventBus
 from database.setup_db import GameState, Player
 from debug.debug_tools import input_with_debug
-from game.analytics import initialise_analytics
-from game.config_loader import SeasonConfigLoader
-from game.exceptions import KoshienException, ScheduleError
-from game.game_context import GameContext
+from core.analytics import initialise_analytics
+from core.config_loader import SeasonConfigLoader
+from core.exceptions import KoshienException, ScheduleError
+from core.game_context import GameContext
 from game.save_manager import show_save_menu
-from game.season_engine import run_end_of_season_logic
+from game.loop.season_engine import run_end_of_season_logic
 from game.training_logic import run_training_camp_event
-from game.weekly_scheduler import build_mandatory_schedule, run_week_automatic, start_week
+from game.loop.weekly_scheduler import build_mandatory_schedule, run_week_automatic, start_week
 from ui.scouting_report import view_scouting_menu
 from ui.ui_core import choose_theme, show_page, DEFAULT_THEME
 from ui.ui_display import Colour, clear_screen, render_screen, render_weekly_dashboard

@@ -2,7 +2,7 @@ import json
 from unittest.mock import patch
 
 from database.setup_db import Player, School, SessionLocal
-from game.game_context import GameContext
+from core.game_context import GameContext
 from game import training_logic
 
 

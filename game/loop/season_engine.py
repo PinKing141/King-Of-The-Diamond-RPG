@@ -12,7 +12,7 @@ from database.setup_db import (
     School,
     get_session,
 )
-from game.offseason_engine import (
+from game.loop.offseason_engine import (
     apply_physical_growth,
     graduate_third_years,
     recruit_freshmen,

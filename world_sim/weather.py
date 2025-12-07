@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Dict, List, Sequence
 
-from game.rng import get_rng
+from core.rng import get_rng
 
 WIND_DIRECTIONS: Sequence[str] = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 

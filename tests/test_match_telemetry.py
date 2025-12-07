@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from game.config_loader import ConfigLoader
+from core.config_loader import ConfigLoader
 from match_engine import controller as controller_module
 from match_engine.controller import MatchController
 from match_engine.scoreboard import Scoreboard

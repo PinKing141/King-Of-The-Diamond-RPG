@@ -9,10 +9,10 @@ from typing import Dict, List, Optional, Sequence
 from sqlalchemy.orm import Session, selectinload
 
 from database.setup_db import GameState, Player, School
-from game.player_progression import MilestoneUnlockResult, process_milestone_unlocks
-from game.rng import get_rng
-from game.skill_system import check_and_grant_skills
-from game.trait_logic import ai_skill_unlock_probability, get_progression_speed_multiplier
+from game.personnel.player_progression import MilestoneUnlockResult, process_milestone_unlocks
+from core.rng import get_rng
+from game.mechanics.skill_system import check_and_grant_skills
+from game.mechanics.trait_logic import ai_skill_unlock_probability, get_progression_speed_multiplier
 
 logger = logging.getLogger(__name__)
 PROGRESSION_DEBUG = os.getenv("PROGRESSION_DEBUG", "").lower() in {"1", "true", "yes"}

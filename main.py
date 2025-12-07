@@ -6,10 +6,10 @@ from database.setup_db import create_database, GameState, School, Player, get_se
 from database.populate_japan import populate_world
 from ui.ui_display import Colour, clear_screen
 from ui.ui_core import choose_theme, panel, DEFAULT_THEME
-from game.create_player import create_hero
+from game.personnel.create_player import create_hero
 from game.save_manager import show_save_menu
-from game.game_context import GameContext
-from game.season_manager import SeasonManager
+from core.game_context import GameContext
+from game.loop.season_manager import SeasonManager
 from config import DB_PATH
 
 

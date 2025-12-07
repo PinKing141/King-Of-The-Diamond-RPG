@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from game.config_loader import ConfigLoader
+from core.config_loader import ConfigLoader
 
 
 DEFAULT_EVENT_NAME = "TELEMETRY_READY"

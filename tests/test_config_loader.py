@@ -1,6 +1,6 @@
 import json
 
-from game.config_loader import ConfigLoader
+from core.config_loader import ConfigLoader
 
 
 def test_config_loader_reads_sections(tmp_path):

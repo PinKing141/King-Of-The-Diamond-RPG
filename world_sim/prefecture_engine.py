@@ -5,7 +5,7 @@ from typing import List, Optional, Sequence, Tuple
 from sqlalchemy.sql.expression import func
 
 from database.setup_db import session_scope, School
-from game.rng import get_rng
+from core.rng import get_rng
 from match_engine.resolver import resolve_match
 
 from .sim_utils import quick_resolve_match

@@ -3,7 +3,7 @@ import math
 from database.setup_db import School, session_scope
 from match_engine.resolver import resolve_match
 from ui.ui_display import Colour
-from game.rng import get_rng
+from core.rng import get_rng
 from .sim_utils import quick_resolve_match
 
 rng = get_rng()

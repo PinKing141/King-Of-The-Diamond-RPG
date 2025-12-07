@@ -7,8 +7,8 @@ from typing import Iterable, Optional, Sequence
 from sqlalchemy.orm import Session
 
 from database.setup_db import Player
-from game.rng import DeterministicRNG, get_rng
-from game.skill_system import grant_skill_by_key, list_meetable_skills
+from core.rng import DeterministicRNG, get_rng
+from game.mechanics.skill_system import grant_skill_by_key, list_meetable_skills
 
 logger = logging.getLogger(__name__)
 

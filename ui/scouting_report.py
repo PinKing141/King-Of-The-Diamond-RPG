@@ -6,18 +6,18 @@ import random
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.setup_db import School, Player
 from ui.ui_display import Colour, clear_screen
-from game.scouting_system import (
+from game.systems.scouting_system import (
     get_scouting_info,
     perform_scout_action,
     SCOUTING_PACKAGES,
     MAX_KNOWLEDGE_LEVEL,
     describe_network_advantage,
 )
-from game.game_context import GameContext
-from game.player_progression import fetch_player_milestone_tags
-from game.skill_system import trait_synergy_summary
-from game.player_profile_renderer import render_team_scouting_report
-from game.scouting_report_renderer import render_team_report
+from core.game_context import GameContext
+from game.personnel.player_progression import fetch_player_milestone_tags
+from game.mechanics.skill_system import trait_synergy_summary
+from game.personnel.player_profile_renderer import render_team_scouting_report
+from game.systems.scouting_report_renderer import render_team_report
 
 DEFAULT_SCOUT_THEME = "persona"
 

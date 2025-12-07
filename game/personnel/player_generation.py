@@ -5,8 +5,8 @@ from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
 
-from game.rng import DeterministicRNG, get_rng
-from game.skill_system import (
+from core.rng import DeterministicRNG, get_rng
+from game.mechanics.skill_system import (
     SKILL_DEFINITIONS,
     grant_skill_by_key,
     list_player_skill_keys,

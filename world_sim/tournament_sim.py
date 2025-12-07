@@ -4,12 +4,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from database.setup_db import GameState, Player, PlayerRelationship, School, session_scope
-from game.pitch_minigame import (
+from game.mechanics.pitch_minigame import (
     PitchMinigameContext,
     PitchMinigameResult,
     trigger_pitch_minigame,
 )
-from game.rng import get_rng
+from core.rng import get_rng
 from match_engine.resolver import resolve_match
 from ui.ui_display import Colour, clear_screen
 from .sim_utils import quick_resolve_match

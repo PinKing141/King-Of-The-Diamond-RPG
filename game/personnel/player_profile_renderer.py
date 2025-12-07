@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from sqlalchemy import func
 
 from database.setup_db import Player, PlayerGameStats, School
-from game.pitch_mastery import mastery_progress
+from game.mechanics.pitch_mastery import mastery_progress
 from ui.ui_display import Colour, clear_screen
 from ui.ui_core import (
     BAR_WIDTH as UI_BAR_WIDTH,

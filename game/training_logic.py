@@ -4,22 +4,22 @@ import os
 import random
 from typing import List, Optional, Tuple
 
-from .health_system import check_injury_risk, apply_injury, get_performance_modifiers
+from game.systems.health_system import check_injury_risk, apply_injury, get_performance_modifiers
 from database.setup_db import PitchRepertoire, Player
-from game.academic_system import resolve_study_session, clamp, is_academically_eligible
-from game.game_context import GameContext
-from game.personality_effects import adjust_player_morale, decay_slump
-from game.player_progression import (
+from game.systems.academic_system import resolve_study_session, clamp, is_academically_eligible
+from core.game_context import GameContext
+from game.personnel.personality_effects import adjust_player_morale, decay_slump
+from game.personnel.player_progression import (
     MilestoneUnlockResult,
     get_milestone_definitions,
     process_milestone_unlocks,
 )
-from game.relationship_manager import register_morale_rebound
-from game.skill_system import check_and_grant_skills, list_player_skill_keys
-from game.trait_logic import get_progression_speed_multiplier
-from game.pitch_mastery import MASTERY_THRESHOLDS, mastery_level_for_xp, mastery_progress
+from game.personnel.relationship_manager import register_morale_rebound
+from game.mechanics.skill_system import check_and_grant_skills, list_player_skill_keys
+from game.mechanics.trait_logic import get_progression_speed_multiplier
+from game.mechanics.pitch_mastery import MASTERY_THRESHOLDS, mastery_level_for_xp, mastery_progress
 from ui.ui_display import Colour
-from game.constants import _BALANCE as BALANCE
+from core.constants import _BALANCE as BALANCE
 
 logger = logging.getLogger(__name__)
 PROGRESSION_DEBUG = os.getenv("PROGRESSION_DEBUG", "").lower() in {"1", "true", "yes"}

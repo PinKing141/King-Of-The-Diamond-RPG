@@ -1,4 +1,4 @@
-from game.rng import get_rng
+from core.rng import get_rng
 from world_sim.baserunning import (
     prepare_runner_state,
     resolve_steal_attempt as resolve_threat_steal,

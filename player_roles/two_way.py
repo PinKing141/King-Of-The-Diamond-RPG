@@ -4,7 +4,7 @@ from __future__ import annotations
 import random
 from typing import Optional, Tuple
 
-from game.rng import get_rng
+from core.rng import get_rng
 
 INFIELD_POSITIONS = {"Infielder", "1B", "2B", "3B", "SS"}
 OUTFIELD_POSITIONS = {"Outfielder", "LF", "CF", "RF"}

@@ -8,8 +8,8 @@ import os
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from database.setup_db import Player, PlayerSkill
-from game.rng import get_rng
-from game.trait_catalog import SKILL_DEFINITIONS
+from core.rng import get_rng
+from game.mechanics.trait_catalog import SKILL_DEFINITIONS
 from sqlalchemy.orm import selectinload
 
 logger = logging.getLogger(__name__)

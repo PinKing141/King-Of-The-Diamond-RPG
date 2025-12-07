@@ -33,13 +33,13 @@ from database.setup_db import (
 )
 from database.populate_japan import populate_world
 from game.ai_player_logic import run_ai_skill_progression
-from game.skill_system import (
+from game.mechanics.skill_system import (
     grant_skill_by_key,
     remove_skill_by_key,
     list_player_skill_keys,
     sync_player_skills,
 )
-from game.trait_catalog import SKILL_DEFINITIONS
+from game.mechanics.trait_catalog import SKILL_DEFINITIONS
 from match_engine.resolver import resolve_match
 from sqlalchemy import func
 

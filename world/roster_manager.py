@@ -1,7 +1,7 @@
 from collections import defaultdict
 
 from database.setup_db import School, Player, Coach, Roster, get_session
-from game.academic_system import is_academically_eligible
+from game.systems.academic_system import is_academically_eligible
 from game.coach_strategy import get_resting_player_ids
 from ai.coach_ai.coach_decision import calculate_player_utility
 

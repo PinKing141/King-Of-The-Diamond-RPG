@@ -11,11 +11,11 @@ from database.populate_japan import (
     get_random_english_name,
 )
 from database.setup_db import Player, School
-from game.rng import get_rng
+from core.rng import get_rng
 from world.school_philosophy import get_philosophy
-from game.personality import roll_player_personality
-from game.player_generation import seed_negative_traits
-from game.trait_logic import seed_initial_traits
+from game.personnel.personality import roll_player_personality
+from game.personnel.player_generation import seed_negative_traits
+from game.mechanics.trait_logic import seed_initial_traits
 
 rng = get_rng()
 BASE_ATTRIBUTES = [

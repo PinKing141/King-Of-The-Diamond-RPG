@@ -6,7 +6,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from sqlalchemy.orm import Session
 
 from database.setup_db import Player, PlayerRelationship
-from game.archetypes import get_player_archetype
+from game.personnel.archetypes import get_player_archetype
 
 REL_MIN = 0
 REL_MAX = 100

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 from database.setup_db import Player
-from game.rng import get_rng
+from core.rng import get_rng
 from ui.ui_display import Colour
 
 rng = get_rng()

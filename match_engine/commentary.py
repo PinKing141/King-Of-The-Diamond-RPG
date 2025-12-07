@@ -9,8 +9,8 @@ from ui.ui_display import (
     render_clutch_banner,
     render_minigame_ui,
 )
-from game.rng import get_rng
-from game.commentary_gen import generate_pitch_commentary
+from core.rng import get_rng
+from game.story.commentary_gen import generate_pitch_commentary
 from .states import EventType
 
 rng = get_rng()

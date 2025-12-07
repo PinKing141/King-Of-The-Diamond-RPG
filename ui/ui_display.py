@@ -3,8 +3,8 @@ import os
 from typing import Optional, Tuple
 
 from database.setup_db import Player
-from game.health_utils import get_stamina_status, get_fatigue_status
-from game.academic_system import score_to_letter_grade
+from game.systems.health_utils import get_stamina_status, get_fatigue_status
+from game.systems.academic_system import score_to_letter_grade
 
 class Colour:
     HEADER = '\033[95m'

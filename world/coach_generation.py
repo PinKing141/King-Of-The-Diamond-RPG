@@ -9,7 +9,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.setup_db import Coach
 from config import NAME_DB_PATH
-from game.personality import roll_coach_personality
+from game.personnel.personality import roll_coach_personality
 
 # Initialize converter
 kks = pykakasi.kakasi()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional, Tuple
 from battery_system.battery_trust import adjust_confidence_delta_for_battery
-from game.skill_system import player_has_skill
+from game.mechanics.skill_system import player_has_skill
 from match_engine.telemetry import capture_confidence_swing
 
 CONFIDENCE_MIN = -100

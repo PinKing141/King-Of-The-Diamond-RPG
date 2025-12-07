@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from game.rng import get_rng
+from core.rng import get_rng
 from ui.ui_display import Colour, render_clutch_banner, render_minigame_ui
 
 _rng = get_rng()

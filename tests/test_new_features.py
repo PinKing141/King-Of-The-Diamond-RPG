@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 from core.event_bus import EventBus
-from game.pitch_minigame import run_minigame, PitchMinigameContext
+from game.mechanics.pitch_minigame import run_minigame, PitchMinigameContext
 
 class TestEventBus(unittest.TestCase):
     def test_event_publish_and_subscribe(self):

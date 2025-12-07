@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence
 
-from game.weekly_scheduler_core import WeekSummary
+from game.loop.weekly_scheduler_core import WeekSummary
 
 
 def _dedupe(lines: List[str]) -> List[str]:

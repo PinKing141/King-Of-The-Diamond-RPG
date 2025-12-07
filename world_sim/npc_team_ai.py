@@ -1,7 +1,7 @@
 # world_sim/npc_team_ai.py
 from database.setup_db import session_scope, School
 from world.school_philosophy import get_philosophy
-from game.rng import get_rng
+from core.rng import get_rng
 
 rng = get_rng()
 

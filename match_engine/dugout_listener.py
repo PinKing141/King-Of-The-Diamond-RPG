@@ -5,7 +5,7 @@ from typing import Dict, Optional
 from core.event_bus import EventBus
 from match_engine.states import EventType
 from match_engine.psychology import PsychologyEngine
-from game.rng import get_rng
+from core.rng import get_rng
 
 
 CHATTER_DB = {

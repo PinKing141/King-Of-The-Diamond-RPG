@@ -1,4 +1,4 @@
-from game.weekly_scheduler_core import WeekSummary
+from game.loop.weekly_scheduler_core import WeekSummary
 from world.media_engine import generate_weekly_news
 
 

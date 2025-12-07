@@ -11,7 +11,7 @@ from sqlalchemy import create_engine
 # Ensure the project root is importable when running under pytest
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from game.rng import seed_global_rng
+from core.rng import seed_global_rng
 from database import setup_db
 
 

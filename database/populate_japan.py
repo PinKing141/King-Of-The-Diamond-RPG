@@ -23,8 +23,8 @@ from database.setup_db import (
     GeoLocation,
 )
 from world.school_philosophy import PHILOSOPHY_MATRIX
-from game.archetypes import assign_player_archetype
-from game.pitch_mastery import mastery_level_for_xp
+from game.personnel.archetypes import assign_player_archetype
+from game.mechanics.pitch_mastery import mastery_level_for_xp
 from world.coach_generation import generate_coach_for_school
 from player_roles.two_way import roll_two_way_profile
 
@@ -64,9 +64,9 @@ def roll_arm_slot(focus_label: str) -> str:
         if roll <= running:
             return slot
     return "Three-Quarters"
-from game.personality import roll_player_personality
-from game.player_generation import seed_negative_traits
-from game.trait_logic import seed_initial_traits
+from game.personnel.personality import roll_player_personality
+from game.personnel.player_generation import seed_negative_traits
+from game.mechanics.trait_logic import seed_initial_traits
 
 # Initialize DB
 create_database()

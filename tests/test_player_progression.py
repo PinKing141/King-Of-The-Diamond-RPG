@@ -10,7 +10,7 @@ from database.setup_db import (
     School,
     SessionLocal,
 )
-from game.player_progression import fetch_player_milestone_tags, process_milestone_unlocks
+from game.personnel.player_progression import fetch_player_milestone_tags, process_milestone_unlocks
 
 
 setup_db.ensure_player_skill_schema()

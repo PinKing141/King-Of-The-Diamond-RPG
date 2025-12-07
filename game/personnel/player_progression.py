@@ -12,13 +12,13 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from database.setup_db import Game, GameState, Player, PlayerGameStats, PlayerMilestone
-from game.rng import DeterministicRNG, get_rng
-from game.skill_system import (
+from core.rng import DeterministicRNG, get_rng
+from game.mechanics.skill_system import (
     SKILL_DEFINITIONS,
     grant_skill_by_key,
     player_has_skill,
 )
-from game.trait_logic import get_progression_speed_multiplier
+from game.mechanics.trait_logic import get_progression_speed_multiplier
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MILESTONE_DATA_PATH = PROJECT_ROOT / "data" / "milestones.json"

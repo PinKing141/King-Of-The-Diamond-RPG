@@ -14,7 +14,7 @@ from .battery_trust import (
     summarize_battery_pair,
 )
 from .pitcher_personality import does_pitcher_accept
-from game.relationship_manager import seed_relationships
+from game.personnel.relationship_manager import seed_relationships
 
 
 def _player_team_id(player): 

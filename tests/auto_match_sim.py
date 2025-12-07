@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from database.setup_db import School, get_session
-from game.pitch_minigame import trigger_pitch_minigame
+from game.mechanics.pitch_minigame import trigger_pitch_minigame
 from battery_system import battery_negotiation
 from match_engine.resolver import resolve_match
 
@@ -40,7 +40,7 @@ class TestMatchSimulationStress(unittest.TestCase):
                 sync=0.0,
             )
 
-        with patch('game.pitch_minigame.trigger_pitch_minigame', side_effect=fake_minigame), \
+        with patch('game.mechanics.pitch_minigame.trigger_pitch_minigame', side_effect=fake_minigame), \
              patch('builtins.input', return_value='1'), \
              patch('battery_system.battery_negotiation.input', return_value='1'), \
              patch('battery_system.battery_negotiation.print', lambda *args, **kwargs: None), \

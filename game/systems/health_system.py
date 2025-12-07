@@ -4,7 +4,7 @@ from typing import Optional, Union
 from sqlalchemy.orm import Session
 
 from database.setup_db import Player
-from game.game_context import GameContext
+from core.game_context import GameContext
 
 # --- CONDITIONING STATES ---
 COND_POOR_THRESH = 30
