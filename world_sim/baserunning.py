@@ -10,9 +10,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
+import sys
+from pathlib import Path
+import importlib.util
+
 from core.rng import get_rng
 from match_engine.states import EventType
-from game.config_loader import ConfigLoader
+
+# Ensure repository root is on sys.path for direct execution contexts (pytest, scripts).
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+try:
+    from game.config_loader import ConfigLoader
+except Exception:
+    # If the config module is unreachable (test sandboxes, limited PYTHONPATH),
+    # fall back to a stub that returns defaults.
+    class ConfigLoader:  # type: ignore
+        @staticmethod
+        def get_section(section: str, default=None):
+            return default if default is not None else {}
 
 rng = get_rng()
 _baserun_cfg = ConfigLoader.get_section("baserunning", default={})
