@@ -260,6 +260,26 @@ class SeasonManager:
                 print(f"{Colour.FAIL}Eliminated in qualifiers.{Colour.RESET}")
                 run_koshien_tournament(user_school_id, reps, context=self.context)
 
+        elif event_type == "autumn_regionals":
+            from world_sim.regional_sim import run_autumn_regionals
+
+            print(f"\n{Colour.gold}=== THE ROAD TO SENBATSU: AUTUMN REGIONALS ==={Colour.RESET}")
+            print("The top schools from every prefecture clash for Spring bids.")
+            input("Press Enter to begin...")
+
+            qualifiers = run_autumn_regionals(self.session, user_school_id, context=self.context)
+            self.context.set_temp_effect("spring_qualifier_ids", qualifiers)
+            setattr(self.state, "spring_qualifier_ids", qualifiers)
+            try:
+                self.session.commit()
+            except Exception:
+                self.session.rollback()
+
+            if user_school_id in qualifiers:
+                print(f"\n{Colour.CYAN}Ticket punched! You qualified for Spring Koshien.{Colour.RESET}")
+            else:
+                print(f"\n{Colour.dim}You did not qualify for the Spring Tournament.{Colour.RESET}")
+
         elif event_type == "winter_camp":
             print(f"\n{Colour.WARNING}Winter Training Camp begins.{Colour.RESET}")
             if input("Participate? (y/n): ").lower() == "y":
@@ -269,7 +289,8 @@ class SeasonManager:
 
         elif event_type == "spring_koshien":
             print(f"\n{Colour.CYAN}Spring Senbatsu Approaches.{Colour.RESET}")
-            run_spring_koshien(user_school_id, context=self.context)
+            qualifiers = self.context.get_temp_effect("spring_qualifier_ids") or getattr(self.state, "spring_qualifier_ids", None)
+            run_spring_koshien(user_school_id, context=self.context, qualifiers=qualifiers)
 
     def _run_weekly_menu(self, user_player: Player) -> str:
         scouting_available = self._has_game_this_week(user_player, self.state.current_week)

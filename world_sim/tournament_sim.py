@@ -90,38 +90,74 @@ def run_koshien_tournament(user_school_id, participants=None, context=None):
     with session_scope() as session:
         _run_generic_tournament("SUMMER KOSHIEN", user_school_id, participants, session, context=context)
 
-def run_spring_koshien(user_school_id, context=None):
+def run_spring_koshien(user_school_id, context=None, qualifiers=None):
     """
-    Spring Koshien (Senbatsu): 32 Teams (Invitational).
-    Selection is based on Prestige and Fall Performance (Simulated by Prestige here).
+    Spring Koshien (Senbatsu): 32 teams invited based on Autumn Regionals.
+    Falls back to prestige seeding if no qualifier list is present.
     """
+
     clear_screen()
     print(f"{Colour.HEADER}=== SPRING SENBATSU (INVITATIONAL) SELECTION ==={Colour.RESET}\n")
-    
-    with session_scope() as session:
-        # 1. Select Top 32 Schools by Prestige
-        # We exclude the user school initially to see if they make the cut naturally
-        all_schools = session.query(School).order_by(School.prestige.desc()).all()
-        
-        # The cut-off line
-        participants = all_schools[:32]
-        
-        # Check if user made it
+
+    managed_session = context is None or not getattr(context, "session", None)
+    if managed_session:
+        session_ctx = session_scope()
+        session = session_ctx.__enter__()
+    else:
+        session = context.session
+
+    try:
+        qualifier_ids = qualifiers or []
+        if not qualifier_ids and context:
+            qualifier_ids = context.get_temp_effect("spring_qualifier_ids", [])
+
+        participants = _load_spring_invitees(session, qualifier_ids, user_school_id)
         user_school = session.get(School, user_school_id)
-        user_qualified = user_school in participants
-        
-        if user_qualified:
-            print(f"{Colour.gold}INVITATION RECEIVED!{Colour.RESET}")
-            print(f"The committee has selected {user_school.name} for the Spring Tournament.")
+        user_qualified = any(s.id == user_school_id for s in participants)
+
+        if qualifier_ids:
+            if user_qualified:
+                print(f"{Colour.gold}Invitation secured via Autumn Regionals!{Colour.RESET}")
+            else:
+                print(f"{Colour.dim}Your autumn run fell short; watching from home unless prestige earns a bid.{Colour.RESET}")
         else:
-            print(f"{Colour.FAIL}No invitation received.{Colour.RESET}")
-            print(f"Your prestige ({user_school.prestige}) was not high enough to impress the committee.")
-            print("You watch the Spring tournament from home...")
-        
+            if user_qualified:
+                print(f"{Colour.gold}INVITATION RECEIVED!{Colour.RESET}")
+                print(f"The committee has selected {user_school.name} for the Spring Tournament.")
+            else:
+                print(f"{Colour.FAIL}No invitation received.{Colour.RESET}")
+                print(f"Your prestige ({user_school.prestige}) was not high enough to impress the committee.")
+                print("You watch the Spring tournament from home...")
+
         input("Press Enter to continue...")
-        
-        # Run the bracket
+
         _run_generic_tournament("SPRING SENBATSU", user_school_id, participants, session, context=context)
+    finally:
+        if managed_session:
+            session_ctx.__exit__(None, None, None)
+
+
+def _load_spring_invitees(session, qualifier_ids: Optional[List[int]], user_school_id: int) -> List[School]:
+    """Load Spring invitees; pad with prestige seeds if needed."""
+
+    if qualifier_ids:
+        qualifiers = session.query(School).filter(School.id.in_(qualifier_ids)).all()
+    else:
+        qualifiers = []
+
+    invited_ids = {s.id for s in qualifiers}
+    if len(qualifiers) < 32:
+        needed = 32 - len(qualifiers)
+        extras = (
+            session.query(School)
+            .filter(~School.id.in_(invited_ids))
+            .order_by(School.prestige.desc())
+            .limit(needed)
+            .all()
+        )
+        qualifiers.extend(extras)
+
+    return qualifiers[:32]
 
 def _run_generic_tournament(title, user_school_id, participants, session, context=None):
     """

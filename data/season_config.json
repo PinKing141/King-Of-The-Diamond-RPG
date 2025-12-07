@@ -1,12 +1,14 @@
 {
   "events": {
     "15": "summer_qualifiers",
+    "32": "autumn_regionals",
     "40": "winter_camp",
     "48": "spring_koshien"
   },
-  "tournament_weeks": [15, 48],
+  "tournament_weeks": [15, 32, 48],
   "sim_interrupts": {
     "15": "Summer qualifiers demand manual coaching.",
+    "32": "Autumn regionals decide Senbatsu invites.",
     "40": "Winter camp requires a player choice.",
     "48": "Spring Senbatsu selections need your approval."
   }
