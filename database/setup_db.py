@@ -1,8 +1,9 @@
 import os
 import sys
-import time
-import gc
 import sqlalchemy
+from alembic import command
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
 from datetime import datetime, timezone
 from sqlalchemy import (
     create_engine,
@@ -35,6 +36,19 @@ Base = declarative_base()
 SessionLocal = sessionmaker(bind=engine)
 
 
+def _alembic_config() -> Config:
+    cfg_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini")
+    cfg = Config(cfg_path)
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{DB_PATH}")
+    cfg.set_main_option("script_location", os.path.join(os.path.dirname(os.path.dirname(__file__)), "migrations"))
+    return cfg
+
+
+def upgrade_schema(revision: str = "head") -> None:
+    """Run Alembic migrations to the requested revision."""
+    command.upgrade(_alembic_config(), revision)
+
+
 def get_session():
     """Return a brand-new SQLAlchemy session."""
     return SessionLocal()
@@ -57,42 +71,18 @@ def close_all_sessions():
 
 def safe_delete_db(db_path):
     """
-    Forces the database connection to close and deletes the file.
-    Retries up to 3 times to handle Windows file locking lag.
+    Close pooled connections and remove the SQLite file.
     """
     if not os.path.exists(db_path):
         return
 
-    print(f"Attempting to delete: {db_path}")
-    
-    # 0. Close internal SQLAlchemy sessions and dispose engine connection pool
     close_all_sessions()
-    
-    # DISPOSE THE ENGINE: This releases the file lock held by the connection pool
     global engine
     engine.dispose()
-
-    # 1. Force Python to clean up any lingering connection objects
-    gc.collect()
-    
-    # 2. Retry loop for Windows file system lag
-    for i in range(5): # Increased retries to 5
-        try:
-            if os.path.exists(db_path):
-                os.remove(db_path)
-            print("Database deleted successfully.")
-            
-            # Re-create engine after deletion if we plan to rebuild immediately
-            # (Note: create_database() usually re-uses the global engine, 
-            # so we just need to ensure the file is gone first)
-            return
-        except PermissionError:
-            print(f"File locked. Retrying in 1 second... ({i+1}/5)")
-            time.sleep(1.0)
-            # Try aggressive GC again
-            gc.collect()
-            
-    print(f"CRITICAL: Could not delete {db_path}. Please delete it manually.")
+    try:
+        os.remove(db_path)
+    except OSError as exc:
+        raise OSError(f"Could not delete {db_path}: {exc}") from exc
 
 
 def ensure_gamestate_schema():
@@ -777,18 +767,29 @@ Performance = PlayerGameStats
 # DATABASE INITIALISATION
 # ============================================================
 def create_database():
-    """Idempotently create tables and run schema migrations."""
-    Base.metadata.create_all(engine)
-    ensure_geolocation_schema()
-    ensure_school_schema()
-    ensure_gamestate_schema()
-    ensure_player_schema()
-    ensure_player_skill_schema()
-    ensure_player_milestone_schema()
-    ensure_coach_schema()
-    ensure_game_schema()
-    ensure_game_stats_schema()
-    ensure_pitch_repertoire_schema()
+    """Ensure the database exists and is upgraded via Alembic."""
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir)
+
+    cfg = _alembic_config()
+    is_existing_db = os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 0
+
+    current_rev = None
+    try:
+        with engine.connect() as connection:
+            context = MigrationContext.configure(connection)
+            current_rev = context.get_current_revision()
+    except Exception:
+        current_rev = None
+
+    if is_existing_db and current_rev is None:
+        try:
+            command.stamp(cfg, "head")
+        except Exception:
+            pass
+
+    upgrade_schema()
 
     with session_scope() as session:
         if not session.query(GameState).first():
@@ -801,8 +802,6 @@ def create_database():
                 active_player_id=None,
             )
             session.add(initial_state)
-
-            session.commit()
 
 
 if __name__ == "__main__":

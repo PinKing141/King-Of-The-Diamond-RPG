@@ -19,6 +19,7 @@ from game.skill_system import check_and_grant_skills, list_player_skill_keys
 from game.trait_logic import get_progression_speed_multiplier
 from game.pitch_mastery import MASTERY_THRESHOLDS, mastery_level_for_xp, mastery_progress
 from ui.ui_display import Colour
+from game.constants import _BALANCE as BALANCE
 
 logger = logging.getLogger(__name__)
 PROGRESSION_DEBUG = os.getenv("PROGRESSION_DEBUG", "").lower() in {"1", "true", "yes"}
@@ -153,6 +154,11 @@ def apply_scheduled_action(
     position = player.position
     is_academic_ok = is_academically_eligible(player, player.school)
 
+    costs = BALANCE.get('fatigue_costs', {})
+    xp_rates = BALANCE.get('xp_gains', {})
+    eff = BALANCE.get('training_efficiency', {})
+    risk = BALANCE.get('injury_risk', {})
+
     def _is_reserve_player(p: Player) -> bool:
         role = (getattr(p, 'role', '') or '').upper()
         jersey = getattr(p, 'jersey_number', None)
@@ -175,6 +181,7 @@ def apply_scheduled_action(
     summary = ""
     fatigue_change = 0
     stat_gains = {}
+    mastery_gains: dict = {}
 
     # --- INJURY CHECK ---
     # Only rigorous physical activities have risk
@@ -184,7 +191,7 @@ def apply_scheduled_action(
     )
     
     if is_rigorous:
-        intensity = 1.5 if 'match' in action_type else 1.0
+        intensity = risk.get('match_intensity', 1.5) if 'match' in action_type else risk.get('drill_intensity', 1.0)
         # Check risk (incorporating fatigue & conditioning)
         is_injured, severity = check_injury_risk(fatigue, intensity, conditioning)
         
@@ -211,23 +218,22 @@ def apply_scheduled_action(
     
     # 1. REST
     if action_type == 'rest':
-        # Conditioning affects recovery speed (Good cond = faster recovery)
-        recovered = 30 * mods.get('stamina_recovery', 1.0)
-        fatigue_change = -int(recovered)
-        summary = f"Rest Day: Recovered {int(recovered)} fatigue."
+        base_rest = costs.get('rest', -15)
+        fatigue_change = int(base_rest * mods.get('stamina_recovery', 1.0))
+        summary = f"Rest Day: Recovered {abs(fatigue_change)} fatigue."
 
     # 2. TEAM PRACTICE
     elif action_type == 'team_practice':
-        fatigue_change = 15
-        base_gain = 0.2 * mods.get('training_gain', 1.0)
+        fatigue_change = costs.get('team_practice', 15)
+        base_gain = xp_rates.get('team_practice_base', 0.2) * mods.get('training_gain', 1.0)
         stat_gains = {'control': base_gain, 'power': base_gain, 'contact': base_gain, 'stamina': base_gain}
         summary = "Team Practice: General drills."
 
     # 3. A-TEAM MATCH (Practice Match)
     elif action_type == 'practice_match':
         # Matches are high cost, high reward
-        fatigue_change = 25
-        base_gain = 0.5 * mods.get('training_gain', 1.0)
+        fatigue_change = costs.get('practice_match', 35)
+        base_gain = xp_rates.get('match_a_team_base', 0.5) * mods.get('training_gain', 1.0)
         stat_gains = {'control': base_gain, 'velocity': base_gain/5, 'power': base_gain, 'contact': base_gain}
         summary = "A-Team Practice Match: Intense competition!"
 
@@ -245,15 +251,16 @@ def apply_scheduled_action(
         # Assuming starters are jersey 1-9
         is_starter = (jersey_num is not None and jersey_num <= 9)
         
+        base_b_cost = costs.get('b_team_match', 25)
         if is_starter:
-            fatigue_change = 20
-            base_gain = 0.2 * mods.get('training_gain', 1.0)
+            fatigue_change = int(round(base_b_cost * 0.8))
+            base_gain = xp_rates.get('match_b_team_starter', 0.2) * mods.get('training_gain', 1.0)
             stat_gains = {'control': base_gain, 'stamina': base_gain}
             summary = "Played in B-Game. Too easy for a starter (Low gains)."
         else:
             # Reserves get GOOD XP here
-            fatigue_change = 30
-            base_gain = 0.7 * mods.get('training_gain', 1.0)
+            fatigue_change = int(round(base_b_cost * 1.2))
+            base_gain = xp_rates.get('match_b_team_reserve', 0.7) * mods.get('training_gain', 1.0)
             stat_gains = {'control': base_gain, 'power': base_gain, 'contact': base_gain, 'fielding': base_gain}
             if position == "Pitcher":
                 stat_gains['velocity'] = base_gain * 0.5
@@ -273,14 +280,14 @@ def apply_scheduled_action(
         
     # 6. SOCIAL
     elif action_type == 'social':
-        fatigue_change = 5
+        fatigue_change = costs.get('social', 5)
         # Morale boost could go here
         summary = "Social Activity: Reduced mental stress."
         
     # 7. MIND TRAINING
     elif action_type == 'mind':
-        fatigue_change = -5 # Light recovery
-        base_gain = 0.1 * mods.get('training_gain', 1.0)
+        fatigue_change = costs.get('mind', 0)  # Light recovery / reset
+        base_gain = xp_rates.get('mind_training_base', 0.1) * mods.get('training_gain', 1.0)
         stat_gains = {'control': base_gain, 'contact': base_gain} 
         summary = "Mind & Focus: Visualisation training."
 
@@ -305,8 +312,7 @@ def apply_scheduled_action(
                 "fatigue_change": 0,
                 "stat_changes": {},
             }
-
-        fatigue_change = 12
+        fatigue_change = costs.get('bullpen_session', 18)
         target = sorted(
             repertoire,
             key=lambda p: (getattr(p, "mastery_level", 0) or 0, getattr(p, "mastery_xp", 0) or 0),
@@ -338,8 +344,10 @@ def apply_scheduled_action(
     elif action_type and action_type.startswith('train_'):
         # Efficiency drops if too tired
         efficiency = 1.0
-        if fatigue > 50: efficiency = 0.7
-        if fatigue > 80: efficiency = 0.3
+        if fatigue > eff.get('threshold_exhausted', 80):
+            efficiency = eff.get('multiplier_exhausted', 0.3)
+        elif fatigue > eff.get('threshold_tired', 50):
+            efficiency = eff.get('multiplier_tired', 0.7)
         
         synergy = 1.0
         # Synergy: Bonus if drill matches Growth Style
@@ -368,7 +376,7 @@ def apply_scheduled_action(
         for k in stat_gains:
             stat_gains[k] *= (efficiency * synergy * mods.get('training_gain', 1.0))
             
-        fatigue_change = 10
+        fatigue_change = costs.get('drill_generic', 10)
         
         # Add feedback on conditioning for flavor text
         cond_note = ""
@@ -401,7 +409,6 @@ def apply_scheduled_action(
 
     xp_gains: dict = {}
     applied_stat_changes: dict = {}
-    mastery_gains: dict = {}
 
     for stat, value in stat_gains.items():
         variance = random.uniform(0.9, 1.1)

@@ -1,56 +1,37 @@
 """Shared gameplay configuration for UI + simulation layers."""
 from __future__ import annotations
 
+import json
+import os
 from typing import Dict, Tuple
 
-from game.config_loader import ConfigLoader
 
-# --- Action Cost + Metadata -------------------------------------------------
-_DEFAULT_ACTION_COSTS: Dict[str, int] = {
-    "rest": -15,
-    "team_practice": 20,
-    "practice_match": 35,
-    "b_team_match": 25,
-    "bullpen_session": 18,
-    "train_heavy": 15,
-    "train_light": 10,
-    "study": 5,
-    "social": 5,
-    "mind": 0,
-}
+def _load_balancing_data():
+    """Load balancing data from data/balancing.json with a small fallback."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(base_dir, "data", "balancing.json")
+    try:
+        with open(path, "r") as handle:
+            return json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {
+            "fatigue_costs": {"rest": -15, "team_practice": 20},
+            "action_metadata": {"rest": {"short": "REST", "colour": "GREEN"}},
+        }
+
+
+_BALANCE = _load_balancing_data()
+
+# --- EXPORTS (Used by Scheduler & UI) --------------------------------------
+ACTION_COSTS: Dict[str, int] = _BALANCE.get("fatigue_costs", {})
+ACTION_METADATA: Dict[str, Dict[str, str]] = _BALANCE.get("action_metadata", {})
+
+ACTION_METADATA_DEFAULT = {"short": "????", "desc": "Unassigned slot.", "colour": "RESET"}
 
 HEAVY_TRAINING_ACTIONS = {"train_power", "train_speed", "train_stamina"}
 LIGHT_TRAINING_ACTIONS = {"train_control", "train_contact"}
 
-_DEFAULT_ACTION_METADATA: Dict[str, Dict[str, str]] = {
-    "rest": {"short": "REST", "desc": "Recover fatigue and clear the head.", "colour": "GREEN"},
-    "team_practice": {"short": "TEAM", "desc": "Mandatory drills with the varsity squad.", "colour": "YELLOW"},
-    "practice_match": {"short": "GAME", "desc": "A-team practice game for prestige.", "colour": "RED"},
-    "b_team_match": {"short": "SCRM", "desc": "B-team scrimmage to climb the ladder.", "colour": "GOLD"},
-    "bullpen_session": {"short": "BULP", "desc": "Focused bullpen to grow pitch mastery.", "colour": "CYAN"},
-    "train_heavy": {"short": "HARD", "desc": "High-intensity strength & power focus.", "colour": "CYAN"},
-    "train_light": {"short": "DRIL", "desc": "Technique reps for finesse stats.", "colour": "CYAN"},
-    "study": {"short": "STDY", "desc": "Academics time to avoid suspension.", "colour": "BLUE"},
-    "social": {"short": "SOCL", "desc": "Team bonding to reduce stress.", "colour": "BLUE"},
-    "mind": {"short": "MIND", "desc": "Visualization / focus reset.", "colour": "CYAN"},
-}
-
-_ACTIONS_CONFIG = ConfigLoader.get_section("actions", default={}) or {}
-_ACTION_COST_OVERRIDES = _ACTIONS_CONFIG.get("costs", {}) if isinstance(_ACTIONS_CONFIG, dict) else {}
-_ACTION_METADATA_OVERRIDES = (
-    _ACTIONS_CONFIG.get("metadata", {}) if isinstance(_ACTIONS_CONFIG, dict) else {}
-)
-
-ACTION_COSTS: Dict[str, int] = {**_DEFAULT_ACTION_COSTS, **_ACTION_COST_OVERRIDES}
-
-ACTION_METADATA: Dict[str, Dict[str, str]] = {
-    **_DEFAULT_ACTION_METADATA,
-    **{k: v for k, v in _ACTION_METADATA_OVERRIDES.items() if isinstance(v, dict)},
-}
-
-ACTION_METADATA_DEFAULT = {"short": "????", "desc": "Unassigned slot.", "colour": "RESET"}
-
-# --- Mandatory Schedule Policies --------------------------------------------
+# --- Mandatory Schedule Policies -------------------------------------------
 MANDATORY_TEAM_POLICY: Dict[Tuple[int, int], str] = {
     (3, 1): "team_practice",  # Thursday afternoon
 }
