@@ -12,8 +12,14 @@ from typing import Dict, Optional, Tuple
 
 from core.rng import get_rng
 from match_engine.states import EventType
+from game.config_loader import ConfigLoader
 
 rng = get_rng()
+_baserun_cfg = ConfigLoader.get_section("baserunning", default={})
+BASE_DELIVERY_TIME = _baserun_cfg.get("base_delivery_time", 1.55)
+CONTROL_ADJ_PER_POINT = _baserun_cfg.get("control_adjustment_per_point", 0.002)
+ATHLETICISM_ADJ_PER_POINT = _baserun_cfg.get("athleticism_adjustment_per_point", 0.0015)
+CROWD_PRESSURE_SCALE = _baserun_cfg.get("crowd_pressure_scale", 0.1)
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -92,7 +98,7 @@ def prepare_runner_state(state, base_index: int) -> Optional[RunnerThreatState]:
         base_lead = 7.0 + rng.uniform(-0.4, 1.2)
         awareness = getattr(runner, "awareness", 50) or 50
         jump = 1.5 + (awareness - 50) * 0.03 + rng.uniform(-1.0, 1.25)
-        pressure = getattr(state, "crowd_intensity", 0.0) * 0.1
+        pressure = getattr(state, "crowd_intensity", 0.0) * CROWD_PRESSURE_SCALE
         threat = RunnerThreatState(
             runner=runner,
             base_index=base_index,
@@ -115,7 +121,12 @@ def _base_delivery_time(pitcher) -> float:
         return delivery
     control = getattr(pitcher, "control", 50) or 50
     athleticism = getattr(pitcher, "athleticism", getattr(pitcher, "mechanics", 50)) or 50
-    return max(1.2, 1.55 - (control - 50) * 0.002 - (athleticism - 50) * 0.0015)
+    return max(
+        1.2,
+        BASE_DELIVERY_TIME
+        - (control - 50) * CONTROL_ADJ_PER_POINT
+        - (athleticism - 50) * ATHLETICISM_ADJ_PER_POINT,
+    )
 
 
 def _catcher_pop_time(catcher) -> float:

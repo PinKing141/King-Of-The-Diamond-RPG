@@ -13,8 +13,7 @@ def test_run_match_forwards_tournament_name_to_prepare_match():
         patch("match_engine.controller.get_session", return_value=fake_session),
         patch("match_engine.controller.prepare_match") as prepare_mock,
         patch("match_engine.controller.CommentaryListener"),
-        patch("match_engine.controller.render_box_score_panel"),
-        patch("match_engine.controller.save_game_results"),
+        patch("match_engine.persistence.MatchPersistenceService.save_game_results"),
         patch("match_engine.controller.Scoreboard") as ScoreboardMock,
         patch("match_engine.controller.MatchController") as ControllerMock,
     ):

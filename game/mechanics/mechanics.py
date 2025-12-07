@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence, Tuple
 
 from core.rng import get_rng
@@ -58,15 +60,32 @@ class PitchingMechanicsProfile:
         }
 
 
-_ARM_SLOTS: Sequence[str] = (
-    "Over-the-Top",
-    "Three-Quarters",
-    "Sidearm",
-    "Low Three-Quarters",
+def _load_list(path: Path, default: Sequence[str]) -> Sequence[str]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            return tuple(str(item) for item in data)
+    except FileNotFoundError:
+        return tuple(default)
+    return tuple(default)
+
+
+DATA_ROOT = Path(__file__).resolve().parents[1] / "data"
+
+_ARM_SLOTS: Sequence[str] = _load_list(
+    DATA_ROOT / "arm_slots.json",
+    (
+        "Over-the-Top",
+        "Three-Quarters",
+        "Sidearm",
+        "Low Three-Quarters",
+    ),
 )
 _POSTURES = ("closed", "neutral", "open")
-_SIGNATURE_ADJECTIVES = (
-    "Lab", "Whip", "Tower", "Glide", "Orbit", "Storm", "Echo", "Pulse", "Spiral", "Latch"
+_SIGNATURE_ADJECTIVES = _load_list(
+    DATA_ROOT / "signature_adjectives.json",
+    ("Lab", "Whip", "Tower", "Glide", "Orbit", "Storm", "Echo", "Pulse", "Spiral", "Latch"),
 )
 _NOTES = (
     "Late hip fire",
@@ -84,7 +103,8 @@ def _seed_from_pitcher(pitcher, seed: Optional[int]) -> int:
     pitcher_id = getattr(pitcher, "id", None) or 0
     jersey = getattr(pitcher, "jersey_number", 0) or 0
     name = getattr(pitcher, "last_name", getattr(pitcher, "name", "")) or ""
-    return (pitcher_id * 7919) ^ (jersey * 271) ^ hash(name)
+    name_hash = int(hashlib.md5(name.encode("utf-8")).hexdigest(), 16)
+    return (pitcher_id * 7919) ^ (jersey * 271) ^ name_hash
 
 
 def _random_for_pitcher(pitcher, seed: Optional[int]) -> random.Random:

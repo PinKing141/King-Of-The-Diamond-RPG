@@ -39,5 +39,11 @@
     "match_b_team_starter": 0.2,
     "match_b_team_reserve": 0.7,
     "mind_training_base": 0.1
+  },
+  "baserunning": {
+    "base_delivery_time": 1.55,
+    "control_adjustment_per_point": 0.002,
+    "athleticism_adjustment_per_point": 0.0015,
+    "crowd_pressure_scale": 0.1
   }
 }

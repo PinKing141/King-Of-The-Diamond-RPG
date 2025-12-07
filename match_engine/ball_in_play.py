@@ -10,6 +10,7 @@ from world_sim.fielding_engine import (
     simulate_batted_ball,
 )
 from game.fielding_system import run_fielding_event
+from match_engine.states import HitType
 
 rng = get_rng()
 
@@ -141,7 +142,12 @@ class ContactResult:
         rbi_credit: bool = False,
         error_type: str | None = None,
     ):
-        self.hit_type = hit_type # "Out", "1B", "2B", "3B", "HR"
+        if isinstance(hit_type, HitType):
+            self.hit_type = hit_type
+        elif isinstance(hit_type, str) and hit_type in HitType._value2member_map_:
+            self.hit_type = HitType(hit_type)
+        else:
+            self.hit_type = hit_type  # fallback for legacy values
         self.description = description
         self.rbi = rbi
         self.outs = outs
@@ -322,12 +328,18 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
                 bad_hop_chance=bad_hop_chance,
             )
 
-    hit_type = fielding_play.hit_type
+    raw_hit_type = fielding_play.hit_type
+    if isinstance(raw_hit_type, HitType):
+        hit_type = raw_hit_type
+    elif isinstance(raw_hit_type, str) and raw_hit_type in HitType._value2member_map_:
+        hit_type = HitType(raw_hit_type)
+    else:
+        hit_type = raw_hit_type
     desc = fielding_play.description
-    if getattr(batted_ball, "wall_hit", False) and hit_type != "Out" and not fielding_play.error_type:
+    if getattr(batted_ball, "wall_hit", False) and hit_type != HitType.OUT and not fielding_play.error_type:
         desc = "Caroms off the wall for extra bases."
     error_on_play = bool(fielding_play.error_type)
-    credited_hit = not error_on_play and hit_type != "Out"
+    credited_hit = not error_on_play and hit_type != HitType.OUT
     error_position = fielding_play.primary_position
 
     if error_on_play:
@@ -349,7 +361,7 @@ def _manual_fielding_override(state, batted_ball, alignment, runners) -> object:
     snap = _pick_manual_fielder(batted_ball, alignment)
     if snap is None:
         # No defender found, treat as missed play single
-        return FieldingPlayResult("1B", "No one there.")
+        return FieldingPlayResult(HitType.SINGLE, "No one there.")
 
     is_user = True  # only called when human defense
     if isinstance(runners, list):
@@ -371,7 +383,7 @@ def _manual_fielding_override(state, batted_ball, alignment, runners) -> object:
 
     if outcome == "OUT":
         return FieldingPlayResult(
-            "Out",
+            HitType.OUT,
             desc,
             primary_position=getattr(snap, "position", None),
             caught=True,
@@ -381,7 +393,7 @@ def _manual_fielding_override(state, batted_ball, alignment, runners) -> object:
 
     if outcome == "ERROR":
         return FieldingPlayResult(
-            "1B",
+            HitType.SINGLE,
             desc or "Misplayed in the field.",
             primary_position=getattr(snap, "position", None),
             error_type="E_FIELD",
@@ -390,7 +402,7 @@ def _manual_fielding_override(state, batted_ball, alignment, runners) -> object:
 
     # SAFE / HIT default: treat as single in play
     return FieldingPlayResult(
-        "1B",
+        HitType.SINGLE,
         desc or "Ball falls in for a hit.",
         primary_position=getattr(snap, "position", None),
     )

@@ -20,6 +20,19 @@ class PlayMode(str, Enum):
     HERO = "HERO" # manual control for high-leverage moments
 
 
+class InningHalf(str, Enum):
+    TOP = "Top"
+    BOT = "Bot"
+
+
+class HitType(str, Enum):
+    OUT = "Out"
+    SINGLE = "1B"
+    DOUBLE = "2B"
+    TRIPLE = "3B"
+    HOMERUN = "HR"
+
+
 class EventType(str, Enum):
     """Canonical event names published on the EventBus."""
 
@@ -46,6 +59,9 @@ class EventType(str, Enum):
     PSYCHOLOGY_SHIFT = "PSYCHOLOGY_SHIFT"
     DUGOUT_CHATTER = "DUGOUT_CHATTER"
     RIVAL_CUT_IN = "RIVAL_CUT_IN"
+    PLAY_MODE_CHANGED = "PLAY_MODE_CHANGED"
+    SCOREBOARD_UPDATE = "SCOREBOARD_UPDATE"
+    PITCH_MASTERY_SUMMARY = "PITCH_MASTERY_SUMMARY"
 
 
-__all__ = ["MatchState", "EventType"]
+__all__ = ["MatchState", "PlayMode", "InningHalf", "HitType", "EventType"]

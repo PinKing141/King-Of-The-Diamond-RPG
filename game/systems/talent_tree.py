@@ -1,7 +1,9 @@
 """Lightweight talent tree helpers for the Phase 5 pitch arsenal update."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
 from game import pitch_types
@@ -38,84 +40,42 @@ class TalentNode:
     cost: int = 1
 
 
-TALENT_TREE: Dict[str, TalentNode] = {
-    "pitch_four_seam": TalentNode(
-        key="pitch_four_seam",
-        pitch_key="four_seam_fastball",
-        tier=1,
-        description="Foundation heater unlocked via basic fastball work.",
-        parents=(),
-        cost=1,
-    ),
-    "pitch_two_seam": TalentNode(
-        key="pitch_two_seam",
-        pitch_key="two_seam_fastball",
-        tier=1,
-        description="Adds arm-side run to the repertoire.",
-        parents=(),
-        cost=1,
-    ),
-    "pitch_slider": TalentNode(
-        key="pitch_slider",
-        pitch_key="slider",
-        tier=2,
-        description="Sharp glove-side bite unlocked after fastball foundation.",
-        parents=("pitch_four_seam",),
-        cost=2,
-    ),
-    "pitch_curveball": TalentNode(
-        key="pitch_curveball",
-        pitch_key="curveball",
-        tier=2,
-        description="Big depth breaker for players who trust their two-seamer.",
-        parents=("pitch_two_seam",),
-        cost=2,
-    ),
-    "pitch_changeup": TalentNode(
-        key="pitch_changeup",
-        pitch_key="changeup",
-        tier=2,
-        description="Off-speed feel unlocked once the heater is under control.",
-        parents=("pitch_four_seam",),
-        cost=2,
-    ),
-    "pitch_cutter_custom": TalentNode(
-        key="pitch_cutter_custom",
-        pitch_key="cutter_custom",
-        tier=3,
-        description="Signature cutter that branches off the two-seam/slider duo.",
-        parents=("pitch_two_seam", "pitch_slider"),
-        cost=3,
-    ),
-    "pitch_splitter": TalentNode(
-        key="pitch_splitter",
-        pitch_key="splitter",
-        tier=3,
-        description="Forkball-inspired dive unlocked after mastering the changeup.",
-        parents=("pitch_changeup",),
-        cost=3,
-    ),
-    "pitch_knuckleball": TalentNode(
-        key="pitch_knuckleball",
-        pitch_key="knuckleball",
-        tier=3,
-        description="Chaos pitch rewarded to those with relentless focus.",
-        parents=("pitch_curveball",),
-        cost=3,
-    ),
-}
+_TREE_CACHE: Dict[str, TalentNode] = {}
+
+
+def _load_talent_tree() -> Dict[str, TalentNode]:
+    if _TREE_CACHE:
+        return _TREE_CACHE
+    path = Path(__file__).resolve().parents[2] / "data" / "talent_tree.json"
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            raw_tree = json.load(handle)
+    except FileNotFoundError:
+        raw_tree = {}
+    for key, payload in raw_tree.items():
+        _TREE_CACHE[key] = TalentNode(
+            key=key,
+            pitch_key=payload.get("pitch_key", ""),
+            tier=int(payload.get("tier", 0)),
+            description=payload.get("description", ""),
+            parents=tuple(payload.get("parents", ())),
+            cost=int(payload.get("cost", 1)),
+        )
+    return _TREE_CACHE
 
 
 def get_talent_node(node_key: str) -> Optional[TalentNode]:
-    return TALENT_TREE.get(node_key)
+    return _load_talent_tree().get(node_key)
 
 
 def list_talent_nodes_by_tier(tier: int) -> List[TalentNode]:
-    return [node for node in TALENT_TREE.values() if node.tier == tier]
+    tree = _load_talent_tree()
+    return [node for node in tree.values() if node.tier == tier]
 
 
 def can_unlock_talent(player, node_key: str, owned_nodes: Optional[Iterable[str]] = None) -> bool:
-    node = TALENT_TREE.get(node_key)
+    tree = _load_talent_tree()
+    node = tree.get(node_key)
     if not node:
         return False
     owned: Set[str] = set(owned_nodes or [])

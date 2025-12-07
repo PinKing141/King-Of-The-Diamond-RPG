@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.event_bus import EventBus
 
-from .states import EventType
+from .states import EventType, HitType
 
 METER_MIN = -20
 METER_MAX = 20
@@ -15,7 +15,12 @@ ZONE_BONUS = 0.05
 BASE_POINT_SCALAR = 0.01
 STRIKEOUT_POINTS = 2
 DOUBLE_PLAY_POINTS = 4
-HIT_POINT_TABLE = {"1B": 1, "2B": 2, "3B": 3, "HR": 5}
+HIT_POINT_TABLE = {
+    HitType.SINGLE: 1,
+    HitType.DOUBLE: 2,
+    HitType.TRIPLE: 3,
+    HitType.HOMERUN: 5,
+}
 
 MOMENTUM_EVENT_WEIGHTS: Dict[str, int] = {
     "strikeout": STRIKEOUT_POINTS,
@@ -160,7 +165,11 @@ class MomentumSystem:
     def _handle_play_result(self, payload: Dict[str, Any]) -> None:
         batting = payload.get("batting_team") or self._batting_side_from_half(payload.get("half"))
         fielding = payload.get("fielding_team") or self._fielding_side_from_half(payload.get("half"))
-        hit_type = (payload.get("hit_type") or "").upper()
+        raw_hit_type = payload.get("hit_type")
+        if isinstance(raw_hit_type, str) and raw_hit_type in HitType._value2member_map_:
+            hit_type = HitType(raw_hit_type)
+        else:
+            hit_type = raw_hit_type
         double_play = bool(payload.get("double_play"))
         error_flag = bool(payload.get("error_on_play"))
 

@@ -35,7 +35,7 @@ from match_engine.confidence import (
     reset_rally_tracker,
     reset_slump_chain,
 )
-from match_engine.states import EventType, PlayMode
+from match_engine.states import EventType, HitType, PlayMode
 from world_sim.baserunning import (
     evaluate_slide_step,
     note_runner_pressure,
@@ -312,7 +312,7 @@ def _apply_squeeze_mods(batter_mods, intent: BuntIntent):
 def _resolve_bunt_contact(state, batter, pitcher, intent: BuntIntent, trait_mods):
     runner = _runner_at_base(state, intent.runner_base)
     if not runner:
-        return ContactResult("Out", "Squares early but no runner breaks.", credited_hit=False, special_play=intent.play)
+        return ContactResult(HitType.OUT, "Squares early but no runner breaks.", credited_hit=False, special_play=intent.play)
     threat = (getattr(state, "_cached_runner_threats", {}) or {}).get(intent.runner_base)
     contact_skill = (getattr(batter, "contact", 50) or 50) + trait_mods.get('contact', 0)
     if player_has_skill(batter, "bunt_master"):
@@ -342,7 +342,7 @@ def _resolve_bunt_contact(state, batter, pitcher, intent: BuntIntent, trait_mods
         if rng.random() < hit_chance:
             desc = "Drops a perfect squeeze bunt for an infield hit!"
             return ContactResult(
-                "1B",
+                HitType.SINGLE,
                 desc,
                 credited_hit=True,
                 special_play=intent.play,
@@ -350,7 +350,7 @@ def _resolve_bunt_contact(state, batter, pitcher, intent: BuntIntent, trait_mods
             )
         desc = "Executes the squeeze! Runner slides home."
         return ContactResult(
-            "Out",
+            HitType.OUT,
             desc,
             credited_hit=False,
             runner_advances=moves,
@@ -362,7 +362,7 @@ def _resolve_bunt_contact(state, batter, pitcher, intent: BuntIntent, trait_mods
         moves = [(intent.runner_base, -1, runner)]
         desc = "Bunted right back to the pitcher! Runner erased."
         return ContactResult(
-            "Out",
+            HitType.OUT,
             desc,
             credited_hit=False,
             runner_advances=moves,
@@ -370,7 +370,7 @@ def _resolve_bunt_contact(state, batter, pitcher, intent: BuntIntent, trait_mods
             extra_outs=1,
         )
     desc = "Can't deaden it—popup ends the squeeze."
-    return ContactResult("Out", desc, credited_hit=False, special_play=intent.play)
+    return ContactResult(HitType.OUT, desc, credited_hit=False, special_play=intent.play)
 
 
 def _apply_runner_advancements(state, assignments):
@@ -1002,12 +1002,15 @@ def _apply_strikeout_confidence(state, batter, pitcher):
 
 
 def _apply_contact_confidence(state, batter, pitcher, contact_res):
-    if contact_res.hit_type == "Out":
+    hit_type = contact_res.hit_type
+    if isinstance(hit_type, str) and hit_type in HitType._value2member_map_:
+        hit_type = HitType(hit_type)
+    if hit_type == HitType.OUT:
         adjust_confidence(state, getattr(batter, 'id', None), -4, reason="out")
         adjust_confidence(state, getattr(pitcher, 'id', None), 3, reason="heroics")
         return
-    boosts = {"1B": 5, "2B": 7, "3B": 9, "HR": 12}
-    base = boosts.get(contact_res.hit_type, 4)
+    boosts = {HitType.SINGLE: 5, HitType.DOUBLE: 7, HitType.TRIPLE: 9, HitType.HOMERUN: 12}
+    base = boosts.get(hit_type, 4)
     if not contact_res.credited_hit:
         base = max(2, base - 3)
     adjust_confidence(state, getattr(batter, 'id', None), base, reason="clutch_hit")
@@ -1511,7 +1514,11 @@ class AtBatStateMachine:
                         trait_mods=batter_trait_mods,
                     )
                 announce_play(contact_res)
-                reached_base = contact_res.hit_type != "Out"
+                hit_type = contact_res.hit_type
+                if isinstance(hit_type, str) and hit_type in HitType._value2member_map_:
+                    hit_type = HitType(hit_type)
+                    contact_res.hit_type = hit_type
+                reached_base = hit_type != HitType.OUT
                 was_slumping = reached_base and get_confidence(state, batter_id) <= -30
                 _apply_contact_confidence(state, batter, pitcher, contact_res)
                 error_flag = bool(getattr(contact_res, "error_on_play", False))
@@ -1529,13 +1536,13 @@ class AtBatStateMachine:
                 )
                 state.last_pitch_snapshot = snap
 
-                if contact_res.hit_type != "Out" and getattr(batter, "position", "").lower() == "pitcher":
+                if hit_type != HitType.OUT and getattr(batter, "position", "").lower() == "pitcher":
                     _trigger_presence(state, pitcher, "hit_allowed_to_pitcher", "Pitcher Hit Allowed")
-                if contact_res.hit_type != "Out" and _is_cleanup(batter) and contact_res.hit_type in {"2B", "3B", "HR"}:
+                if hit_type != HitType.OUT and _is_cleanup(batter) and hit_type in {HitType.DOUBLE, HitType.TRIPLE, HitType.HOMERUN}:
                     _trigger_presence(state, batter, "extra_base_hit", "Cleanup Slug")
 
                 runs_scored_on_play = 0
-                if contact_res.hit_type == "Out":
+                if hit_type == HitType.OUT:
                     outs_recorded = 1 + int(getattr(contact_res, "extra_outs", 0))
                     state.outs += outs_recorded
                     if not getattr(contact_res, "sacrifice", False):
@@ -1548,12 +1555,12 @@ class AtBatStateMachine:
                     batter_stats["at_bats"] += 1
                     if contact_res.credited_hit:
                         batter_stats["hits"] += 1
-                    if contact_res.hit_type == "HR" and contact_res.credited_hit:
+                    if hit_type == HitType.HOMERUN and contact_res.credited_hit:
                         batter_stats["homeruns"] += 1
 
                     pre_home = state.home_score
                     pre_away = state.away_score
-                    runs = advance_runners(state, contact_res.hit_type, batter)
+                    runs = advance_runners(state, hit_type, batter)
                     lead_change = _lead_changed(state, runs, pre_home, pre_away)
                     runs_scored_on_play = runs
 
@@ -1599,7 +1606,7 @@ class AtBatStateMachine:
                 state.latest_play_detail = {
                     "hit_type": contact_res.hit_type,
                     "outs_on_play": outs_logged,
-                    "double_play": outs_logged >= 2 and contact_res.hit_type == "Out",
+                    "double_play": outs_logged >= 2 and contact_res.hit_type == HitType.OUT,
                     "runs_scored": runs_scored_on_play,
                     "description": contact_res.description,
                     "credited_hit": contact_res.credited_hit,

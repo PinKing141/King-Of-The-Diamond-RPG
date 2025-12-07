@@ -1,7 +1,6 @@
 import json
 import os
 import sys
-import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -17,7 +16,8 @@ from game.loop.offseason_engine import (
     graduate_third_years,
     recruit_freshmen,
 )
-from ui.ui_display import Colour, clear_screen
+from core.event_bus import EventBus
+from ui.ui_display import Colour
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EPILOGUE_DATA_PATH = PROJECT_ROOT / "data" / "epilogues.json"
@@ -39,6 +39,19 @@ ATTRIBUTE_DEFAULTS = {
     "overall": 50,
     "clutch": 50,
 }
+
+
+def _emit_event(
+    event_bus: Optional[EventBus],
+    sink: Optional[List[Dict[str, Any]]],
+    event_type: str,
+    payload: Dict[str, Any],
+) -> None:
+    event = {"type": event_type, "payload": payload}
+    if sink is not None:
+        sink.append(event)
+    if event_bus:
+        event_bus.publish(event_type, payload)
 
 
 def _safe_attr_value(player: Player, attr: str, default: int) -> int:
@@ -307,23 +320,26 @@ def determine_career_outcome(player: Player, school: Optional[School], session) 
     return _fallback_story(player, school)
 
 
-def play_ending_sequence(title: str, desc: str, color: str, story: str) -> None:
-    clear_screen()
-    print("\n\n")
-    time.sleep(1)
-    print(f"    {color}--- EPILOGUE ---{Colour.RESET}")
-    time.sleep(2)
-    print(f"\n    {title}")
-    time.sleep(1.5)
-    print(f"    {desc}")
-    time.sleep(2)
-    print("\n" + "=" * 60 + "\n")
-    for line in story.split("\n"):
-        print(f"    {line}")
-        time.sleep(2.5)
-    print("\n" + "=" * 60 + "\n")
-    time.sleep(3)
-    input("    [Press Enter to close the book on this legend...]")
+def play_ending_sequence(
+    title: str,
+    desc: str,
+    color: str,
+    story: str,
+    *,
+    event_bus: Optional[EventBus] = None,
+    event_sink: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    _emit_event(
+        event_bus,
+        event_sink,
+        "SEASON_EPILOGUE",
+        {
+            "title": title,
+            "description": desc,
+            "color": color,
+            "story_lines": story.split("\n"),
+        },
+    )
 
 
 def _ensure_game_state(session) -> GameState:
@@ -336,7 +352,13 @@ def _ensure_game_state(session) -> GameState:
     return state
 
 
-def run_end_of_season_logic(user_player_id: Optional[int] = None) -> bool:
+def run_end_of_season_logic(
+    user_player_id: Optional[int] = None,
+    *,
+    event_bus: Optional[EventBus] = None,
+    event_sink: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    events = event_sink if event_sink is not None else []
     session = get_session()
     try:
         user_graduated = False
@@ -346,26 +368,46 @@ def run_end_of_season_logic(user_player_id: Optional[int] = None) -> bool:
                 user_graduated = True
                 school = user.school or session.query(School).get(user.school_id)
                 title, desc, color, story = determine_career_outcome(user, school, session)
-                play_ending_sequence(title, desc, color, story)
+                play_ending_sequence(title, desc, color, story, event_bus=event_bus, event_sink=events)
 
         if user_graduated:
             return True
 
-        print(f"\n{Colour.HEADER}=== END OF SEASON PROCESSING ==={Colour.RESET}")
+        _emit_event(
+            event_bus,
+            events,
+            "SEASON_LOG",
+            {"text": "=== END OF SEASON PROCESSING ===", "level": "header"},
+        )
 
-        print(" > 3rd Years are graduating...")
+        _emit_event(event_bus, events, "SEASON_LOG", {"text": "3rd Years are graduating...", "level": "info"})
         graduates = graduate_third_years(session)
         session.commit()
-        print(f"   ({graduates} players tossed their caps.)")
+        _emit_event(
+            event_bus,
+            events,
+            "SEASON_LOG",
+            {"text": f"{graduates} players tossed their caps.", "level": "detail"},
+        )
 
-        print(" > Offseason physical growth occurring...")
+        _emit_event(event_bus, events, "SEASON_LOG", {"text": "Offseason physical growth occurring...", "level": "info"})
         players: Iterable[Player] = session.query(Player).all()
         apply_physical_growth(players)
         session.commit()
 
-        print(" > Scouting new freshmen for 4000 schools (simulated)...")
+        _emit_event(
+            event_bus,
+            events,
+            "SEASON_LOG",
+            {"text": "Scouting new freshmen for 4000 schools (simulated)...", "level": "info"},
+        )
         new_player_count = recruit_freshmen(session)
-        print(f"   (Welcome to {new_player_count} new freshmen.)")
+        _emit_event(
+            event_bus,
+            events,
+            "SEASON_LOG",
+            {"text": f"Welcome to {new_player_count} new freshmen.", "level": "detail"},
+        )
 
         state = _ensure_game_state(session)
         state.current_year = (state.current_year or 2024) + 1
@@ -373,7 +415,12 @@ def run_end_of_season_logic(user_player_id: Optional[int] = None) -> bool:
         state.current_week = 1
         session.commit()
 
-        print(f"\n{Colour.gold}=== SEASON {state.current_year} START ==={Colour.RESET}")
+        _emit_event(
+            event_bus,
+            events,
+            "SEASON_LOG",
+            {"text": f"=== SEASON {state.current_year} START ===", "level": "success"},
+        )
         return False
     finally:
         session.close()

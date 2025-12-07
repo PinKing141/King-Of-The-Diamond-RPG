@@ -11,7 +11,7 @@ from ui.ui_display import (
 )
 from core.rng import get_rng
 from game.story.commentary_gen import generate_pitch_commentary
-from .states import EventType
+from .states import EventType, HitType
 
 rng = get_rng()
 
@@ -759,6 +759,9 @@ def announce_pitch(pitch_result):
 def announce_play(contact_result):
     if not _COMMENTARY_ENABLED:
         return
+    hit_type = getattr(contact_result, "hit_type", None)
+    if isinstance(hit_type, str) and hit_type in HitType._value2member_map_:
+        hit_type = HitType(hit_type)
     if getattr(contact_result, 'error_on_play', False):
         error_type = getattr(contact_result, 'error_type', None)
         label = "Throwing Error" if error_type == "E_THROW" else "Fielding Error"
@@ -766,14 +769,14 @@ def announce_play(contact_result):
         defender = contact_result.primary_position or "Defense"
         print(f"   >> {color}[{label}]{Colour.RESET} {defender}: {contact_result.description}")
         return
-    if contact_result.hit_type == "Out":
+    if hit_type == HitType.OUT:
         print(f"   >> {contact_result.description}")
         
         # Add flavor for strikeouts
         if "Strikeout" in contact_result.description:
              print(f"   >> {rng.choice(STRIKEOUT_PHRASES)}")
 
-    elif contact_result.hit_type == "HR":
+    elif hit_type == HitType.HOMERUN:
         # ASCII Art for Home Run
         print(f"\n{Colour.RED}")
         print(r"       _   _  ____  __  __  ___   ____  _   _  _   _ ")
@@ -784,8 +787,8 @@ def announce_play(contact_result):
         print(f"{Colour.RESET}")
         print(f"   >> ** {rng.choice(HOMERUN_PHRASES)} **")
         
-    elif contact_result.hit_type in ["1B", "2B", "3B"]:
-        base = contact_result.hit_type
+    elif hit_type in {HitType.SINGLE, HitType.DOUBLE, HitType.TRIPLE}:
+        base = hit_type.value
         print(f"   >> {Colour.GREEN}{base}! {rng.choice(HIT_PHRASES)}{Colour.RESET}")
     else:
         print(f"   >> {contact_result.description}")

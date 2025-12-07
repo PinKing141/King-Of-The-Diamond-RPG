@@ -4,9 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-import json
-
-
 from core.event_bus import EventBus
 
 from .pregame import prepare_match
@@ -14,110 +11,24 @@ from .match_sim import MatchSimulation, MatchupContext, PlayOutcome
 from .commentary import CommentaryListener, commentary_enabled, set_commentary_enabled
 from .scoreboard import Scoreboard
 from .manager_ai import manage_team_between_innings
-from .confidence import get_confidence_summary
 
 from .telemetry import ensure_collector, flush_telemetry
-from database.setup_db import get_session, Game, GameState, Performance, ensure_game_schema
+from database.setup_db import get_session
 
-from database.setup_db import get_session, Game, Performance, ensure_game_schema
-
-from game.personnel.personality_effects import evaluate_postgame_slumps
-from game.personnel.relationship_manager import apply_confidence_relationships, seed_relationships
-from .states import EventType, MatchState
+from game.personnel.relationship_manager import seed_relationships
+from match_engine.persistence import MatchPersistenceService
+from .states import EventType, MatchState, InningHalf
 from .batter_logic import AtBatStateMachine
 from .input_system import HumanBatterInput, CpuBatterInput
 from .momentum import MomentumSystem
 from .states import PlayMode
 from .brass_band import BrassBand
 
-from ui.ui_display import render_box_score_panel
-from ui.match_intro import render_match_intro
 from battery_system.battery_trust import apply_trust_buffer
 from game.mechanics.pitch_mastery import summarize_mastery_report, flush_pitch_xp
 
-
-def save_game_results(state):
-    """
-    Basic implementation of saving game results to DB.
-    """
-    # print("\nSaving Game Results...")
-    ensure_game_schema()
-    weather = getattr(state, 'weather', None)
-    umpire = getattr(state, 'umpire', None)
-    tilt = getattr(state, 'umpire_call_tilt', {}) or {}
-    home_id = getattr(state.home_team, 'id', None)
-    away_id = getattr(state.away_team, 'id', None)
-    home_tilt = tilt.get(home_id, {"favored": 0, "squeezed": 0})
-    away_tilt = tilt.get(away_id, {"favored": 0, "squeezed": 0})
-    error_summary = getattr(state, "error_summary", None)
-    g = Game(
-        season_year=1, # Should pull from global state ideally
-        tournament="Season Match",
-        home_school_id=state.home_team.id, # FIXED: home_school_id
-        away_school_id=state.away_team.id, # FIXED: away_school_id
-        home_score=state.home_score, 
-        away_score=state.away_score, 
-        is_completed=True,
-        weather_label=getattr(weather, 'label', None),
-        weather_condition=getattr(weather, 'condition', None),
-        weather_precip=getattr(weather, 'precipitation', None),
-        weather_temperature_f=getattr(weather, 'temperature_f', None),
-        weather_wind_speed=getattr(weather, 'wind_speed_mph', None),
-        weather_wind_direction=getattr(weather, 'wind_direction', None),
-        weather_summary=weather.describe() if weather else None,
-        umpire_name=getattr(umpire, 'name', None),
-        umpire_description=getattr(umpire, 'description', None),
-        umpire_zone_bias=getattr(umpire, 'zone_bias', None),
-        umpire_home_bias=getattr(umpire, 'home_bias', None),
-        umpire_temperament=getattr(umpire, 'temperament', None),
-        umpire_favored_home=home_tilt.get('favored', 0),
-        umpire_squeezed_home=home_tilt.get('squeezed', 0),
-        umpire_favored_away=away_tilt.get('favored', 0),
-        umpire_squeezed_away=away_tilt.get('squeezed', 0),
-        error_summary=json.dumps(error_summary) if error_summary is not None else None,
-        rivalry_summary=json.dumps(getattr(state, 'rival_postgame', None)) if getattr(state, 'rival_postgame', None) else None,
-    )
-    db_session = state.db_session
-    if db_session is None:
-        raise ValueError("MatchState missing db_session for persistence.")
-
-    db_session.add(g)
-    db_session.flush()
-
-    gamestate_row = db_session.query(GameState).first()
-    if gamestate_row is not None:
-        gamestate_row.last_error_summary = json.dumps(error_summary) if error_summary is not None else None
-        db_session.add(gamestate_row)
-    
-    # Save Player Stats
-    for p_id, s in state.stats.items():
-        team_id = state.player_team_map.get(p_id)
-        if team_id is None:
-            is_home = any(p.id == p_id for p in state.home_roster if p) or getattr(state.home_pitcher, 'id', None) == p_id
-            team_id = state.home_team.id if is_home else state.away_team.id
-        
-        perf = Performance(
-            game_id=g.id,
-            player_id=p_id,
-            team_id=team_id, # This is fine if Performance table kept team_id column as generic ID
-            at_bats=s["at_bats"],
-            hits=s["hits"],
-            homeruns=s["homeruns"],
-            rbi=s["rbi"],
-            strikeouts=s["strikeouts"],
-            walks=s["walks"],
-            innings_pitched=s["innings_pitched"],
-            strikeouts_pitched=s["strikeouts_pitched"],
-            runs_allowed=s["runs_allowed"],
-            confidence=state.confidence_map.get(p_id, 0)
-        )
-        db_session.add(perf)
-        
-    state.confidence_summary_snapshot = get_confidence_summary(state)
-    apply_confidence_relationships(db_session, state.confidence_summary_snapshot)
-    evaluate_postgame_slumps(state)
-    db_session.commit()
-    # print("Game Saved!")
+HALF_TOP = InningHalf.TOP.value
+HALF_BOT = InningHalf.BOT.value
 
 
 def _serialize_lineup(state, lineup: List[Any]) -> List[Dict[str, Any]]:
@@ -217,7 +128,7 @@ class MatchController:
         self.context = MatchContext(inning=state.inning, half=state.top_bottom)
         self._started = False
         self._needs_inning_setup = True
-        self._current_inning_runs = {"Top": 0, "Bot": 0}
+        self._current_inning_runs = {HALF_TOP: 0, HALF_BOT: 0}
         self._finished = False
         self._winner = None
 
@@ -299,10 +210,10 @@ class MatchController:
         manage_team_between_innings(self.state, "Away")
         self._state_change(
             "INNING_READY",
-            {"inning": self.state.inning, "half": "Top"},
+            {"inning": self.state.inning, "half": HALF_TOP},
         )
-        self._current_inning_runs = {"Top": 0, "Bot": 0}
-        self._begin_half("Top")
+        self._current_inning_runs = {HALF_TOP: 0, HALF_BOT: 0}
+        self._begin_half(HALF_TOP)
 
     def _begin_half(self, half: str) -> None:
         self.state.top_bottom = half
@@ -331,24 +242,24 @@ class MatchController:
         return None
 
     def _end_half(self) -> str:
-        if self.state.top_bottom == "Top":
+        if self.state.top_bottom == HALF_TOP:
             if self._should_skip_bottom():
                 return "record_skip"
-            self._begin_half("Bot")
+            self._begin_half(HALF_BOT)
             return "start_bottom"
         return "record_full"
 
     def _record_inning(self, *, skip_bottom: bool) -> None:
         inning_number = self.state.inning
-        top_runs = self._current_inning_runs["Top"]
-        bottom_runs = None if skip_bottom else self._current_inning_runs["Bot"]
+        top_runs = self._current_inning_runs[HALF_TOP]
+        bottom_runs = None if skip_bottom else self._current_inning_runs[HALF_BOT]
         self.scoreboard.record_inning(inning_number, top_runs, bottom_runs)
         self.scoreboard.print_board(self.state)
         flush_pitch_xp(self.state)
         self.state.inning += 1
-        self.state.top_bottom = "Top"
+        self.state.top_bottom = HALF_TOP
         self.context.inning = self.state.inning
-        self.context.half = "Top"
+        self.context.half = HALF_TOP
         self._needs_inning_setup = True
 
     def _should_skip_bottom(self) -> bool:
@@ -361,21 +272,21 @@ class MatchController:
     def _run_inning(self) -> None:
         inning_number = self.state.inning
         self._state_change("INNING_START", {"inning": inning_number})
-        top_runs = self._execute_half_inning("Top")
+        top_runs = self._execute_half_inning(HALF_TOP)
         if self._should_skip_bottom():
             self.scoreboard.record_inning(inning_number, top_runs, None)
             return
-        bottom_runs = self._execute_half_inning("Bot")
+        bottom_runs = self._execute_half_inning(HALF_BOT)
         self.scoreboard.record_inning(inning_number, top_runs, bottom_runs)
-        self.scoreboard.print_board(self.state)
+        self._emit(EventType.SCOREBOARD_UPDATE.value, self._scoreboard_snapshot())
 
     def _execute_half_inning(self, half: str) -> int:
         state = self.state
-        state.top_bottom = "Top" if half == "Top" else "Bot"
+        state.top_bottom = HALF_TOP if half == HALF_TOP else HALF_BOT
         state.outs = 0
         state.clear_bases()
-        start_runs = state.away_score if half == "Top" else state.home_score
-        lineup_attr = "away_lineup" if half == "Top" else "home_lineup"
+        start_runs = state.away_score if half == HALF_TOP else state.home_score
+        lineup_attr = "away_lineup" if half == HALF_TOP else "home_lineup"
         self._state_change("INNING_HALF", {"inning": state.inning, "half": state.top_bottom})
         while state.outs < 3:
             lineup = getattr(state, lineup_attr)
@@ -390,15 +301,15 @@ class MatchController:
                 # Backward compatibility for tests that monkeypatch a simple callable
                 AtBatStateMachine(state).run()
             setattr(state, lineup_attr, _rotate_lineup(getattr(state, lineup_attr)))
-            if half == "Bot" and self._home_walkoff_ready():
+            if half == HALF_BOT and self._home_walkoff_ready():
                 state.outs = 3
                 break
-        if half == "Top":
+        if half == HALF_TOP:
             return state.away_score - start_runs
         return state.home_score - start_runs
 
     def is_game_over(self) -> bool:
-        skip_bottom = self._should_skip_bottom() if self.state.top_bottom == "Top" else False
+        skip_bottom = self._should_skip_bottom() if self.state.top_bottom == HALF_TOP else False
         return self._should_end_game_after_half(skip_bottom=skip_bottom)
 
     def _should_continue(self) -> bool:
@@ -551,6 +462,7 @@ class MatchController:
         self.bus: EventBus = event_bus if isinstance(event_bus, EventBus) else EventBus()
         if not hasattr(state, "event_bus") or state.event_bus is None:
             state.event_bus = self.bus
+        self._install_fielding_trust_map(state)
         self.simulation = MatchSimulation(
             state,
             bus=self.bus,
@@ -560,7 +472,7 @@ class MatchController:
         self.context = MatchContext(inning=state.inning, half=state.top_bottom)
         self._started = False
         self._needs_inning_setup = True
-        self._current_inning_runs = {"Top": 0, "Bot": 0}
+        self._current_inning_runs = {HALF_TOP: 0, HALF_BOT: 0}
         self._finished = False
         self._winner = None
         self.telemetry = ensure_collector(state)
@@ -577,6 +489,35 @@ class MatchController:
             self.state.standing_orders = {"offense": "Work the Count", "defense": "Attack Zone"}
         # Mirror user preference to listeners
         self._emit(EventType.HERO_MODE_SETTING.value, {"hero_setting": self._hero_setting})
+
+    def _install_fielding_trust_map(self, state) -> None:
+        """Precompute light fielding trust scalars from relationship seeds."""
+
+        roster_map = getattr(state, "team_rosters", {}) or {}
+        session = getattr(state, "db_session", None)
+        if not session or not roster_map:
+            state.fielding_trust_scalar = {}
+            return
+        trust: Dict[int, float] = {}
+        for team_id, roster in roster_map.items():
+            if not roster:
+                continue
+            totals = []
+            for player in roster:
+                try:
+                    rel = seed_relationships(session, player)
+                except Exception:
+                    continue
+                captain = getattr(rel, "captain_rel", 50) or 50
+                battery = getattr(rel, "battery_rel", 50) or 50
+                totals.append((captain + battery) / 2.0)
+            if not totals:
+                continue
+            avg = sum(totals) / len(totals)
+            # High trust trims errors slightly; low trust inflates them a touch.
+            scalar = 1.0 - ((avg - 50.0) / 500.0)
+            trust[team_id] = max(0.9, min(1.08, scalar))
+        state.fielding_trust_scalar = trust
 
     def start_game(self):
         """Run the game to completion (legacy helper)."""
@@ -607,10 +548,12 @@ class MatchController:
                 logs = getattr(self.state, "logs", None)
                 if isinstance(logs, list):
                     logs.append("[Cut-In] HERO mode engages — cameras zoom for the showdown.")
-            if commentary_enabled():
-                print(f"   >> Play Mode: {play_mode} (orders: {self.state.standing_orders})")
             self._emit(
                 EventType.HERO_MODE_ENTER.value if play_mode == PlayMode.HERO.value else EventType.HERO_MODE_EXIT.value,
+                {"mode": play_mode, "standing_orders": self.state.standing_orders},
+            )
+            self._emit(
+                EventType.PLAY_MODE_CHANGED.value,
                 {"mode": play_mode, "standing_orders": self.state.standing_orders},
             )
             self._last_mode = play_mode
@@ -642,10 +585,10 @@ class MatchController:
         manage_team_between_innings(self.state, "Away")
         self._state_change(
             "INNING_READY",
-            {"inning": self.state.inning, "half": "Top"},
+            {"inning": self.state.inning, "half": HALF_TOP},
         )
-        self._current_inning_runs = {"Top": 0, "Bot": 0}
-        self._begin_half("Top")
+        self._current_inning_runs = {HALF_TOP: 0, HALF_BOT: 0}
+        self._begin_half(HALF_TOP)
 
     def _begin_half(self, half: str) -> None:
         self.state.top_bottom = half
@@ -671,7 +614,7 @@ class MatchController:
             )
         self._current_inning_runs[half] += outcome.runs_scored
         if (
-            half == "Bot"
+            half == HALF_BOT
             and outcome.runs_scored > 0
             and self._home_walkoff_ready()
             and not self._walkoff_logged
@@ -679,7 +622,7 @@ class MatchController:
             detail = play_detail.copy() if isinstance(play_detail, dict) else {}
             self.telemetry.record_walkoff(
                 inning=self.state.inning,
-                runs_scored=self._current_inning_runs["Bot"],
+                runs_scored=self._current_inning_runs[HALF_BOT],
                 detail=detail,
             )
             self._walkoff_logged = True
@@ -723,14 +666,14 @@ class MatchController:
         state = self.state
         score = 0
         inning = getattr(state, "inning", 1)
-        half = getattr(state, "top_bottom", "Top")
+        half = getattr(state, "top_bottom", HALF_TOP)
         outs = getattr(state, "outs", 0)
         runners = getattr(state, "runners", [None, None, None])
         bases_loaded = all(runners)
         risp = any(runners[1:])
         run_diff = abs(getattr(state, "home_score", 0) - getattr(state, "away_score", 0))
         late = inning >= 8
-        walkoff_window = half == "Bot" and inning >= 9 and getattr(state, "home_score", 0) <= getattr(state, "away_score", 0) + 1
+        walkoff_window = half == HALF_BOT and inning >= 9 and getattr(state, "home_score", 0) <= getattr(state, "away_score", 0) + 1
 
         if bases_loaded and outs == 2:
             score += 4
@@ -752,17 +695,17 @@ class MatchController:
         return score
 
     def _end_half(self) -> str:
-        if self.state.top_bottom == "Top":
+        if self.state.top_bottom == HALF_TOP:
             if self._should_skip_bottom():
                 return "record_skip"
-            self._begin_half("Bot")
+            self._begin_half(HALF_BOT)
             return "start_bottom"
         return "record_full"
 
     def _record_inning(self, *, skip_bottom: bool) -> None:
         inning_number = self.state.inning
-        top_runs = self._current_inning_runs["Top"]
-        bottom_runs = None if skip_bottom else self._current_inning_runs["Bot"]
+        top_runs = self._current_inning_runs[HALF_TOP]
+        bottom_runs = None if skip_bottom else self._current_inning_runs[HALF_BOT]
         self.scoreboard.record_inning(inning_number, top_runs, bottom_runs)
         self.scoreboard.print_board(self.state)
         summary = self.scoreboard.get_inning_summary(inning_number)
@@ -775,9 +718,9 @@ class MatchController:
             )
         flush_pitch_xp(self.state)
         self.state.inning += 1
-        self.state.top_bottom = "Top"
+        self.state.top_bottom = HALF_TOP
         self.context.inning = self.state.inning
-        self.context.half = "Top"
+        self.context.half = HALF_TOP
         self._needs_inning_setup = True
 
     def _should_skip_bottom(self) -> bool:
@@ -790,21 +733,21 @@ class MatchController:
     def _run_inning(self) -> None:
         inning_number = self.state.inning
         self._state_change("INNING_START", {"inning": inning_number})
-        top_runs = self._execute_half_inning("Top")
+        top_runs = self._execute_half_inning(HALF_TOP)
         if self._should_skip_bottom():
             self.scoreboard.record_inning(inning_number, top_runs, None)
             return
-        bottom_runs = self._execute_half_inning("Bot")
+        bottom_runs = self._execute_half_inning(HALF_BOT)
         self.scoreboard.record_inning(inning_number, top_runs, bottom_runs)
-        self.scoreboard.print_board(self.state)
+        self._emit(EventType.SCOREBOARD_UPDATE.value, self._scoreboard_snapshot())
 
     def _execute_half_inning(self, half: str) -> int:
         state = self.state
-        state.top_bottom = "Top" if half == "Top" else "Bot"
+        state.top_bottom = HALF_TOP if half == HALF_TOP else HALF_BOT
         state.outs = 0
         state.clear_bases()
-        start_runs = state.away_score if half == "Top" else state.home_score
-        lineup_attr = "away_lineup" if half == "Top" else "home_lineup"
+        start_runs = state.away_score if half == HALF_TOP else state.home_score
+        lineup_attr = "away_lineup" if half == HALF_TOP else "home_lineup"
         self._state_change("INNING_HALF", {"inning": state.inning, "half": state.top_bottom})
         while state.outs < 3:
             lineup = getattr(state, lineup_attr)
@@ -819,15 +762,15 @@ class MatchController:
                 # Backward compatibility for legacy tests that monkeypatch a simple callable
                 AtBatStateMachine(state).run()
             setattr(state, lineup_attr, _rotate_lineup(getattr(state, lineup_attr)))
-            if half == "Bot" and self._home_walkoff_ready():
+            if half == HALF_BOT and self._home_walkoff_ready():
                 state.outs = 3
                 break
-        if half == "Top":
+        if half == HALF_TOP:
             return state.away_score - start_runs
         return state.home_score - start_runs
 
     def is_game_over(self) -> bool:
-        skip_bottom = self._should_skip_bottom() if self.state.top_bottom == "Top" else False
+        skip_bottom = self._should_skip_bottom() if self.state.top_bottom == HALF_TOP else False
         return self._should_end_game_after_half(skip_bottom=skip_bottom)
 
     def _should_continue(self) -> bool:
@@ -926,6 +869,16 @@ class MatchController:
         }
         self._emit("GAME_OVER", payload)
 
+    def _scoreboard_snapshot(self) -> Dict[str, Any]:
+        return {
+            "innings": [list(inning) for inning in self.scoreboard.innings],
+            "home_score": self.state.home_score,
+            "away_score": self.state.away_score,
+            "home_team_name": getattr(self.state.home_team, "name", "Home"),
+            "away_team_name": getattr(self.state.away_team, "name", "Away"),
+            "errors": self.scoreboard.get_error_summary(),
+        }
+
     def _emit(self, event_name: str, payload: Optional[Dict[str, Any]] = None) -> None:
         if self.bus:
             self.bus.publish(event_name, payload or {})
@@ -984,10 +937,9 @@ def run_match(
         if manual_fielding_prompts:
             state.manual_fielding_prompts = True
         if not fast:
-            try:
-                render_match_intro(state)
-            except Exception:
-                pass
+            bus = getattr(state, "event_bus", None)
+            if bus:
+                bus.publish("MATCH_INTRO", {"home_team_id": home_id, "away_team_id": away_id})
         CommentaryListener(getattr(state, "event_bus", None))
         if not hasattr(state, "telemetry_store_in_db"):
             state.telemetry_store_in_db = True
@@ -999,13 +951,14 @@ def run_match(
             agency_adapter=agency_adapter,
         )
         winner = controller.start_game()
-        if not fast:
-            render_box_score_panel(scoreboard, state)
-            summary_line = summarize_mastery_report(state)
+        bus = getattr(state, "event_bus", None)
+        summary_line = summarize_mastery_report(state)
+        if bus:
+            bus.publish(EventType.SCOREBOARD_UPDATE.value, controller._scoreboard_snapshot())
             if summary_line:
-                print(f"\nPitch Mastery: {summary_line}")
+                bus.publish(EventType.PITCH_MASTERY_SUMMARY.value, {"summary": summary_line})
         if winner and persist_results:
-            save_game_results(state)
+            MatchPersistenceService.save_game_results(state)
             # Make sure downstream callers can inspect winner attributes after
             # this function closes the session.
             try:

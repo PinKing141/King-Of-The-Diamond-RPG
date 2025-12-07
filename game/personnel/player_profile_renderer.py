@@ -12,14 +12,8 @@ from sqlalchemy import func
 
 from database.setup_db import Player, PlayerGameStats, School
 from game.mechanics.pitch_mastery import mastery_progress
-from ui.ui_display import Colour, clear_screen
-from ui.ui_core import (
-    BAR_WIDTH as UI_BAR_WIDTH,
-    choose_theme,
-    colored_bar as ui_colored_bar,
-    simple_bar as ui_simple_bar,
-    slide_in_panel,
-)
+from ui.ui_display import Colour
+from core.event_bus import EventBus
 
 BOX_WIDTH = 78
 BAR_WIDTH = 18
@@ -200,15 +194,31 @@ def _gather_player_data(session, player_id: int) -> Optional[Dict]:
     }
 
 
-def _header_block(title: str, subtitle: str) -> None:
-    print(Colour.CYAN + "═" * BOX_WIDTH + Colour.RESET)
-    print(title.center(BOX_WIDTH))
+def _emit_profile_event(
+    event_bus: Optional[EventBus],
+    event_sink: Optional[List[Dict[str, Any]]],
+    event_type: str,
+    payload: Dict[str, Any],
+) -> None:
+    event = {"type": event_type, "payload": payload}
+    if event_sink is not None:
+        event_sink.append(event)
+    if event_bus:
+        event_bus.publish(event_type, payload)
+
+
+def _header_block(title: str, subtitle: str) -> List[str]:
+    lines = [
+        Colour.CYAN + "═" * BOX_WIDTH + Colour.RESET,
+        title.center(BOX_WIDTH),
+    ]
     if subtitle:
-        print(Colour.YELLOW + subtitle.center(BOX_WIDTH) + Colour.RESET)
-    print(Colour.CYAN + "═" * BOX_WIDTH + Colour.RESET)
+        lines.append(Colour.YELLOW + subtitle.center(BOX_WIDTH) + Colour.RESET)
+    lines.append(Colour.CYAN + "═" * BOX_WIDTH + Colour.RESET)
+    return lines
 
 
-def _profile_summary(data: Dict) -> None:
+def _profile_summary(data: Dict) -> List[str]:
     player: Player = data["player"]
     school = data["school"]
     display_name = " ".join(part for part in [getattr(player, "last_name", ""), getattr(player, "first_name", "")] if part).strip() or player.name
@@ -217,9 +227,9 @@ def _profile_summary(data: Dict) -> None:
         summary += f" | {player.height_cm} cm"
     if getattr(player, "weight_kg", None):
         summary += f" / {player.weight_kg} kg"
-    _header_block((display_name or player.name).upper(), summary)
+    lines = _header_block((display_name or player.name).upper(), summary)
     school_name = school.name if school else "Free Agent"
-    print(f"School: {school_name}")
+    lines.append(f"School: {school_name}")
     roles = []
     if getattr(player, "is_captain", False):
         roles.append("CAPTAIN")
@@ -230,20 +240,22 @@ def _profile_summary(data: Dict) -> None:
     if getattr(player, "role", None):
         roles.append(player.role.upper())
     ordered = [role for role in ROLE_PRIORITY if role in roles]
-    print(f"Roles: {', '.join(ordered) if ordered else 'None'}")
+    lines.append(f"Roles: {', '.join(ordered) if ordered else 'None'}")
     if player.position == "Pitcher":
         slot = getattr(player, "arm_slot", None) or "Three-Quarters"
-        print(f"Arm Slot: {slot}")
-    print("─" * BOX_WIDTH)
+        lines.append(f"Arm Slot: {slot}")
+    lines.append("─" * BOX_WIDTH)
+    return lines
 
 
-def _render_attribute_rows(data: Dict, knowledge_level: int) -> None:
+def _render_attribute_rows(data: Dict, knowledge_level: int) -> List[str]:
     player: Player = data["player"]
     deltas = data["deltas"]
+    lines: List[str] = []
     show_pitching = player.position == "Pitcher" or getattr(player, "is_two_way", False)
     show_fielding = player.position != "Pitcher" or getattr(player, "is_two_way", False)
     if show_pitching:
-        print(f"{Colour.GOLD}[ Pitching ]{Colour.RESET}")
+        lines.append(f"{Colour.GOLD}[ Pitching ]{Colour.RESET}")
         rows = [
             ("Velocity", player.velocity, deltas.get("velocity")),
             ("Control", player.control, deltas.get("control")),
@@ -256,10 +268,10 @@ def _render_attribute_rows(data: Dict, knowledge_level: int) -> None:
             max_value = 160 if label == "Velocity" else 100
             bar = _stat_bar(display or 0, max_value=max_value)
             val_txt = "--" if display is None else f"{int(display):>3}"
-            print(f"{label:<10} {bar}  {val_txt}  {_fmt_arrow(delta)}")
-        print()
+            lines.append(f"{label:<10} {bar}  {val_txt}  {_fmt_arrow(delta)}")
+        lines.append("")
     if show_fielding:
-        print(f"{Colour.GOLD}[ Batting / Fielding ]{Colour.RESET}")
+        lines.append(f"{Colour.GOLD}[ Batting / Fielding ]{Colour.RESET}")
         rows = [
             ("Contact", player.contact, deltas.get("contact")),
             ("Power", player.power, deltas.get("power")),
@@ -273,18 +285,20 @@ def _render_attribute_rows(data: Dict, knowledge_level: int) -> None:
             display = value if knowledge_level >= 2 else None if knowledge_level == 0 else value
             bar = _stat_bar(display or 0)
             val_txt = "--" if display is None else f"{int(display):>3}"
-            print(f"{label:<10} {bar}  {val_txt}  {_fmt_arrow(delta)}")
-        print()
+            lines.append(f"{label:<10} {bar}  {val_txt}  {_fmt_arrow(delta)}")
+        lines.append("")
+    return lines
 
 
-def _render_pitch_repertoire(player: Player, knowledge_level: int) -> None:
+def _render_pitch_repertoire(player: Player, knowledge_level: int) -> List[str]:
+    lines: List[str] = []
     if player.position != "Pitcher" and not getattr(player, "is_two_way", False):
-        return
+        return lines
     pitches = getattr(player, "pitch_repertoire", []) or []
-    print(f"{Colour.GOLD}[ Pitch Repertoire ]{Colour.RESET}")
+    lines.append(f"{Colour.GOLD}[ Pitch Repertoire ]{Colour.RESET}")
     if not pitches:
-        print("  --")
-        return
+        lines.append("  --")
+        return lines
     for pitch in pitches:
         name = getattr(pitch, "pitch_name", "Unnamed")
         quality = getattr(pitch, "quality", "--") if knowledge_level >= 3 else "--"
@@ -294,30 +308,34 @@ def _render_pitch_repertoire(player: Player, knowledge_level: int) -> None:
         level_txt = "Lv ?" if knowledge_level == 0 else f"Lv {level}"
         if knowledge_level >= 3 and next_xp is not None:
             level_txt = f"Lv {level} ({xp}/{next_xp})"
-        print(f"  {name:<18} Grade:{quality}  Break:{break_level}  Mastery:{level_txt}")
-    print()
+        lines.append(f"  {name:<18} Grade:{quality}  Break:{break_level}  Mastery:{level_txt}")
+    lines.append("")
+    return lines
 
 
-def _render_traits_block(data: Dict, knowledge_level: int) -> None:
+def _render_traits_block(data: Dict, knowledge_level: int) -> List[str]:
+    lines: List[str] = []
     traits = data.get("traits") or []
-    print(f"{Colour.GOLD}[ Traits ]{Colour.RESET}")
+    lines.append(f"{Colour.GOLD}[ Traits ]{Colour.RESET}")
     if not traits:
-        print("  No unique traits detected.")
-        return
+        lines.append("  No unique traits detected.")
+        return lines
     for trait in traits:
         desc = TRAIT_DESCRIPTIONS.get(trait, "") if knowledge_level >= 3 else ""
         if desc:
-            print(f"  • {trait}: {desc}")
+            lines.append(f"  • {trait}: {desc}")
         else:
-            print(f"  • {trait}")
-    print()
+            lines.append(f"  • {trait}")
+    lines.append("")
+    return lines
 
 
-def _render_personality_block(data: Dict, knowledge_level: int) -> None:
+def _render_personality_block(data: Dict, knowledge_level: int) -> List[str]:
+    lines: List[str] = []
     personality = data.get("personality") or {}
-    print(f"{Colour.GOLD}[ Personality ]{Colour.RESET}")
+    lines.append(f"{Colour.GOLD}[ Personality ]{Colour.RESET}")
     arch = personality.get("archetype", "Balanced")
-    print(f"  Archetype: {arch}")
+    lines.append(f"  Archetype: {arch}")
     for key in ("Leadership", "Composure", "Coachability", "Work Ethic"):
         if key not in personality:
             continue
@@ -325,157 +343,101 @@ def _render_personality_block(data: Dict, knowledge_level: int) -> None:
         show = value if knowledge_level >= 2 else None
         bar = _stat_bar(show or 0)
         label = "--" if show is None else f"{show:>3}"
-        print(f"  {key:<12} {bar}  {label}")
-    print()
+        lines.append(f"  {key:<12} {bar}  {label}")
+    lines.append("")
+    return lines
 
 
-def _render_season_stats(data: Dict, knowledge_level: int) -> None:
+def _render_season_stats(data: Dict, knowledge_level: int) -> List[str]:
+    lines: List[str] = []
     stats = data.get("season_stats") or {}
     player: Player = data["player"]
-    print(f"{Colour.GOLD}[ Season Snapshot ]{Colour.RESET}")
+    lines.append(f"{Colour.GOLD}[ Season Snapshot ]{Colour.RESET}")
     if stats.get("games") is None:
-        print("  No recorded games yet.")
-        return
+        lines.append("  No recorded games yet.")
+        return lines
     if player.position == "Pitcher":
         if knowledge_level == 0:
-            print("  Stats hidden.")
-            return
+            lines.append("  Stats hidden.")
+            return lines
         era = stats.get("era")
         ip = stats.get("ip")
         k = stats.get("k")
         bb = stats.get("bb")
-        print(f"  ERA: {era if era is not None else '--'} | IP: {ip or '--'} | K: {k or '--'} | BB: {bb or '--'}")
+        lines.append(f"  ERA: {era if era is not None else '--'} | IP: {ip or '--'} | K: {k or '--'} | BB: {bb or '--'}")
     else:
         if knowledge_level == 0:
-            print("  Stats hidden.")
-            return
+            lines.append("  Stats hidden.")
+            return lines
         avg = stats.get("avg")
         hr = stats.get("hr")
         rbi = stats.get("rbi")
         runs = stats.get("runs_scored")
-        print(f"  AVG: {avg if avg is not None else '--'} | HR: {hr or '--'} | RBI: {rbi or '--'} | R: {runs or '--'}")
-    print()
+        lines.append(f"  AVG: {avg if avg is not None else '--'} | HR: {hr or '--'} | RBI: {rbi or '--'} | R: {runs or '--'}")
+    lines.append("")
+    return lines
 
 
-def render_player_profile(session, player_id: int, knowledge_level: int = 3) -> None:
+def _build_profile_lines(data: Dict, knowledge_level: int) -> List[str]:
+    lines: List[str] = []
+    lines.extend(_profile_summary(data))
+    lines.extend(_render_attribute_rows(data, knowledge_level))
+    lines.extend(_render_pitch_repertoire(data["player"], knowledge_level))
+    lines.extend(_render_traits_block(data, knowledge_level))
+    lines.extend(_render_personality_block(data, knowledge_level))
+    lines.extend(_render_season_stats(data, knowledge_level))
+    return lines
+
+
+def render_player_profile(
+    session,
+    player_id: int,
+    knowledge_level: int = 3,
+    *,
+    event_bus: Optional[EventBus] = None,
+    event_sink: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[List[str]]:
     data = _gather_player_data(session, player_id)
     if not data:
-        print("Player not found.")
-        return
-    clear_screen()
-    _profile_summary(data)
-    _render_attribute_rows(data, knowledge_level)
-    _render_pitch_repertoire(data["player"], knowledge_level)
-    _render_traits_block(data, knowledge_level)
-    _render_personality_block(data, knowledge_level)
-    _render_season_stats(data, knowledge_level)
-    input(f"\n{Colour.GREEN}[Press Enter to return]{Colour.RESET}")
+        _emit_profile_event(event_bus, event_sink, "PLAYER_PROFILE_ERROR", {"player_id": player_id, "reason": "not_found"})
+        return None
+    lines = _build_profile_lines(data, knowledge_level)
+    _emit_profile_event(
+        event_bus,
+        event_sink,
+        "PLAYER_PROFILE_LINES",
+        {"player_id": player_id, "mode": "classic", "knowledge_level": knowledge_level, "lines": lines},
+    )
+    return lines
 
 
-# ---------------------------------------------------------------------------
-# Modern renderer using ui_core primitives (non-breaking alternative)
-# ---------------------------------------------------------------------------
-
-def render_player_profile_modern(session, player_id: int, *, theme_name: Optional[str] = None, fast: bool = False) -> None:
-    """Render a player profile using the reusable ui_core components.
-
-    Keeps the legacy renderer intact while offering a themeable option for future UI work.
-    """
-
+def render_player_profile_modern(
+    session,
+    player_id: int,
+    *,
+    theme_name: Optional[str] = None,
+    fast: bool = False,
+    event_bus: Optional[EventBus] = None,
+    event_sink: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[List[str]]:
     data = _gather_player_data(session, player_id)
     if not data:
-        print("Player not found.")
-        return
-
-    player = data["player"]
-    school = data["school"]
-    traits = data.get("traits", [])
-    personality = data.get("personality", {})
-    stats = data.get("season_stats", {})
-
-    clear_screen()
-    display_name = " ".join(part for part in [getattr(player, "last_name", ""), getattr(player, "first_name", "")] if part).strip() or player.name
-    header_lines = [
-        f"{display_name} / {player.position or '?'} | Year {getattr(player, 'year', '?')} | {getattr(player, 'height_cm', getattr(player, 'height', '?'))} cm",
-        f"School: {getattr(school, 'name', 'Unaffiliated')}"
-    ]
-    if (player.position or "").lower().startswith("pitch"):
-        slot = getattr(player, "arm_slot", None) or "Three-Quarters"
-        header_lines.append(f"Arm Slot: {slot}")
-    if fast:
-        for line in header_lines:
-            print(line)
-    else:
-        slide_in_panel(header_lines, width=78, delay=0.002)
-
-    print("\nATTRIBUTES")
-    primary = [
-        ("Velocity", getattr(player, "velocity", None)),
-        ("Control", getattr(player, "control", None)),
-        ("Movement", getattr(player, "movement", None)),
-        ("Stamina", getattr(player, "stamina", None)),
-    ]
-    hitting = [
-        ("Contact", getattr(player, "contact", None)),
-        ("Power", getattr(player, "power", None)),
-        ("Speed", getattr(player, "speed", None)),
-        ("Fielding", getattr(player, "fielding", None)),
-        ("Throwing", getattr(player, "throwing", None)),
-    ]
-    if (player.position or "").lower() == "catcher":
-        hitting.append(("Wall", getattr(player, "catcher_ability", None)))
-    for label, val in primary:
-        bar = ui_colored_bar(val, 100, theme_name)
-        print(f" {label:<10} {bar}  {val if val is not None else '--'}")
-    for label, val in hitting:
-        bar = ui_colored_bar(val, 100, theme_name)
-        print(f" {label:<10} {bar}  {val if val is not None else '--'}")
-
-    print("\nREPERTOIRE")
-    repertoire = getattr(player, "pitch_repertoire", []) or []
-    if repertoire:
-        for pitch in repertoire:
-            name = getattr(pitch, "pitch_name", "Pitch")
-            q = getattr(pitch, "quality", "--")
-            xp = getattr(pitch, "mastery_xp", 0)
-            level, next_xp = mastery_progress(xp)
-            mastery_note = f"Lv {level}"
-            if next_xp is not None:
-                mastery_note = f"Lv {level} ({xp}/{next_xp})"
-            print(f"  • {name} (Grade {q} | {mastery_note})")
-    elif (player.position or "").lower().startswith("pitch"):
-        print("  (No pitches recorded)")
-    else:
-        print("  N/A")
-
-    print("\nTRAITS")
-    if not traits:
-        print("  (None)")
-    else:
-        for t in traits:
-            desc = TRAIT_DESCRIPTIONS.get(t, "")
-            print(f"  • {t}: {desc}")
-
-    print("\nPERSONALITY")
-    for key, val in personality.items():
-        if key == "archetype":
-            print(f"  Archetype: {val}")
-            continue
-        bar = ui_simple_bar((val * 10) if isinstance(val, (int, float)) and val <= 10 else val, 100, UI_BAR_WIDTH)
-        print(f"  {key:<12}: {bar}  {val}")
-
-    print("\nSEASON SNAPSHOT")
-    if (player.position or "").lower().startswith("pitch"):
-        print(f"  ERA: {stats.get('era', '--')}  IP: {stats.get('ip', '--')}  K: {stats.get('k', '--')}  BB: {stats.get('bb', '--')}")
-    else:
-        print(f"  AVG: {stats.get('avg', '--')}  HR: {stats.get('hr', '--')}  RBI: {stats.get('rbi', '--')}  R: {stats.get('runs_scored', '--')}")
-
-    print("\n" + "═" * 78)
-    input("Press Enter to continue...")
+        _emit_profile_event(event_bus, event_sink, "PLAYER_PROFILE_ERROR", {"player_id": player_id, "reason": "not_found"})
+        return None
+    lines = _build_profile_lines(data, knowledge_level=3)
+    payload = {
+        "player_id": player_id,
+        "mode": "modern",
+        "theme": theme_name,
+        "fast": fast,
+        "lines": lines,
+    }
+    _emit_profile_event(event_bus, event_sink, "PLAYER_PROFILE_LINES", payload)
+    return lines
 
 
-def render_opponent_star_preview(session, player_id: int, knowledge_level: int) -> None:
-    render_player_profile(session, player_id, knowledge_level)
+def render_opponent_star_preview(session, player_id: int, knowledge_level: int) -> Optional[List[str]]:
+    return render_player_profile(session, player_id, knowledge_level)
 
 
 # ---------------------------------------------------------------------------
@@ -584,11 +546,14 @@ def render_team_scouting_report(
     school_id: int,
     scouting_level: int,
     rivalry_score: int = 0,
-) -> None:
+    *,
+    event_bus: Optional[EventBus] = None,
+    event_sink: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[List[str]]:
     school = session.get(School, school_id)
     if not school:
-        print("School not found.")
-        return
+        _emit_profile_event(event_bus, event_sink, "TEAM_SCOUTING_ERROR", {"school_id": school_id, "reason": "not_found"})
+        return None
     level = max(0, min(3, scouting_level))
     if rivalry_score >= 80 and level > 0:
         level -= 1
@@ -603,30 +568,32 @@ def render_team_scouting_report(
     full_roster = _build_full_roster(players)
     tendencies = _build_tendencies(players, ratings)
 
-    clear_screen()
-    print("═" * BOX_WIDTH)
-    print(f"TARGET: {school.name} | Prefecture: {school.prefecture}".center(BOX_WIDTH))
-    print("═" * BOX_WIDTH)
+    lines: List[str] = []
+    lines.append("═" * BOX_WIDTH)
+    lines.append(f"TARGET: {school.name} | Prefecture: {school.prefecture}".center(BOX_WIDTH))
+    lines.append("═" * BOX_WIDTH)
     if level == 0:
-        print("[ FOG OF WAR ] No intel. Purchase scouting to unlock data.")
+        lines.append("[ FOG OF WAR ] No intel. Purchase scouting to unlock data.")
     elif level == 1:
-        print("[ BASIC ESTIMATES ]")
-        print(_render_rating_line("Offense", ratings["offense"], masked=True))
-        print(_render_rating_line("Pitching", ratings["pitching"], masked=True))
-        print(_render_rating_line("Defense", ratings["defense"], masked=True))
-        print(_render_rating_line("Speed", ratings["speed"], masked=True))
-        print(_render_rating_line("Coaching IQ", ratings["coach"], masked=True))
-        print("\nRoster intel locked.")
+        lines.append("[ BASIC ESTIMATES ]")
+        lines.append(_render_rating_line("Offense", ratings["offense"], masked=True))
+        lines.append(_render_rating_line("Pitching", ratings["pitching"], masked=True))
+        lines.append(_render_rating_line("Defense", ratings["defense"], masked=True))
+        lines.append(_render_rating_line("Speed", ratings["speed"], masked=True))
+        lines.append(_render_rating_line("Coaching IQ", ratings["coach"], masked=True))
+        lines.append("")
+        lines.append("Roster intel locked.")
     elif level == 2:
-        print("[ PARTIAL ROSTER ]")
+        lines.append("[ PARTIAL ROSTER ]")
         for entry in masked_roster:
             attrs = f"{entry['attr_1']} | {entry['attr_2']} | {entry['attr_3']}"
-            print(f"#{entry['jersey']:>2} {entry['pos']:<3} {entry['masked_name']:<8}  {attrs}")
-        print("\nTeam Tendencies:")
+            lines.append(f"#{entry['jersey']:>2} {entry['pos']:<3} {entry['masked_name']:<8}  {attrs}")
+        lines.append("")
+        lines.append("Team Tendencies:")
         for line in tendencies["offense"] + tendencies["pitching"]:
-            print(f"  • {line}")
+            lines.append(f"  • {line}")
     else:
-        print("[ FULL INTEL ]")
+        lines.append("[ FULL INTEL ]")
         for entry in full_roster:
             if entry["pos"] == "Pit":
                 attrs = f"VEL {entry['velocity']} | CTL {entry['control']} | MOV {entry['movement']}"
@@ -634,11 +601,24 @@ def render_team_scouting_report(
                 attrs = f"CON {entry['contact']} | POW {entry['power']} | SPD {entry['speed']}"
             highlight = Colour.RED if (entry['pos'] == 'Pit' and entry['velocity'] and entry['velocity'] >= 150) else ""
             reset = Colour.RESET if highlight else ""
-            print(f"#{entry['jersey']:>2} {entry['pos']:<3} {highlight}{entry['name']:<20}{reset} {attrs}")
-        print("\nMatchup Notes:")
+            lines.append(f"#{entry['jersey']:>2} {entry['pos']:<3} {highlight}{entry['name']:<20}{reset} {attrs}")
+        lines.append("")
+        lines.append("Matchup Notes:")
         for line in tendencies["strengths"]:
-            print(f"  ✓ {line}")
+            lines.append(f"  ✓ {line}")
         for line in tendencies["weaknesses"]:
-            print(f"  ⚠ {line}")
-    print("\nFog level:", ["BLACKOUT", "BASIC", "MASKED", "FULL"][level])
-    input(f"\n{Colour.GREEN}[Press Enter to return]{Colour.RESET}")
+            lines.append(f"  ⚠ {line}")
+    lines.append("")
+    lines.append(f"Fog level: {["BLACKOUT", "BASIC", "MASKED", "FULL"][level]}")
+    _emit_profile_event(
+        event_bus,
+        event_sink,
+        "TEAM_SCOUTING_REPORT",
+        {
+            "school_id": school_id,
+            "scouting_level": level,
+            "rivalry_score": rivalry_score,
+            "lines": lines,
+        },
+    )
+    return lines

@@ -1,4 +1,5 @@
 from core.rng import get_rng
+from match_engine.states import HitType
 from world_sim.baserunning import (
     prepare_runner_state,
     resolve_steal_attempt as resolve_threat_steal,
@@ -33,14 +34,18 @@ def advance_runners(state, hit_type, batter):
     # Clear bases initially, we will repopulate them
     state.runners = [None, None, None]
     
-    if hit_type == "HR":
+    normalized_hit = hit_type
+    if isinstance(normalized_hit, str) and normalized_hit in HitType._value2member_map_:
+        normalized_hit = HitType(normalized_hit)
+
+    if normalized_hit == HitType.HOMERUN:
         scored_on_play = 1 # Batter scores
         if r3: scored_on_play += 1
         if r2: scored_on_play += 1
         if r1: scored_on_play += 1
         # Bases remain empty
-        
-    elif hit_type == "1B":
+
+    elif normalized_hit == HitType.SINGLE:
         # R3 Scores
         if r3: 
             scored_on_play += 1
@@ -69,7 +74,7 @@ def advance_runners(state, hit_type, batter):
         # Batter to 1st
         state.runners[0] = batter
 
-    elif hit_type == "2B":
+    elif normalized_hit == HitType.DOUBLE:
         # R3 Scores
         if r3: scored_on_play += 1
         # R2 Scores
@@ -88,7 +93,7 @@ def advance_runners(state, hit_type, batter):
         # Batter to 2nd
         state.runners[1] = batter
 
-    elif hit_type == "3B":
+    elif normalized_hit == HitType.TRIPLE:
         if r3: scored_on_play += 1
         if r2: scored_on_play += 1
         if r1: scored_on_play += 1

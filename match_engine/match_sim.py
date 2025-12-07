@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Protocol, Sequence
 
 from core.event_bus import EventBus
-from match_engine.states import EventType, MatchState, PlayMode
+from match_engine.states import EventType, HitType, InningHalf, MatchState, PlayMode
 from match_engine.input_system import BatterInputSource, FixedBatterInput, HumanBatterInput, CpuBatterInput
 from match_engine.batter_logic import AtBatStateMachine
 from game.save_manager import autosave_match_state
@@ -31,7 +31,7 @@ class BatterChoice:
 @dataclass
 class MatchupContext:
     inning: int
-    half: str
+    half: InningHalf
     pitcher: Any
     batter: Any
     lineup_attr: str
@@ -48,7 +48,7 @@ class MatchupContext:
 @dataclass
 class PlayOutcome:
     inning: int
-    half: str
+    half: InningHalf
     batter_id: Optional[int]
     pitcher_id: Optional[int]
     outs_recorded: int
@@ -59,7 +59,7 @@ class PlayOutcome:
     drama_level: int = 0
     batting_team: Optional[str] = None
     fielding_team: Optional[str] = None
-    hit_type: Optional[str] = None
+    hit_type: Optional[HitType] = None
     double_play: bool = False
     error_on_play: bool = False
     error_type: Optional[str] = None
@@ -154,20 +154,43 @@ class MatchSimulation:
         self._trust_buffer = {}
         return buffer
 
+    def _normalize_half(self, half: Optional[Any]) -> InningHalf:
+        if half is None:
+            raise ValueError("MatchSimulation requires state.top_bottom to be set before stepping.")
+        label = str(half).lower()
+        if label.startswith("t"):
+            return InningHalf.TOP
+        if label.startswith("b"):
+            return InningHalf.BOT
+        raise ValueError(f"Invalid inning half '{half}'. Expected Top/Bot.")
+
+    def _validate_state(self) -> InningHalf:
+        half = self._normalize_half(getattr(self.state, "top_bottom", None))
+        lineup_attr = "away_lineup" if half == InningHalf.TOP else "home_lineup"
+        lineup = getattr(self.state, lineup_attr, None)
+        if not lineup:
+            raise ValueError(f"Lineup '{lineup_attr}' must be populated before stepping the match sim.")
+        pitcher = self.state.home_pitcher if half == InningHalf.TOP else self.state.away_pitcher
+        if pitcher is None:
+            raise ValueError(f"Pitcher must be assigned for the {half.value} of inning {getattr(self.state, 'inning', '?')}.")
+        self.state.top_bottom = half
+        return half
+
     def _build_matchup(self) -> Optional[MatchupContext]:
-        lineup_attr = "away_lineup" if self.state.top_bottom == "Top" else "home_lineup"
+        half = self._validate_state()
+        lineup_attr = "away_lineup" if half == InningHalf.TOP else "home_lineup"
         lineup = getattr(self.state, lineup_attr, None) or []
         if not lineup:
             return None
         batter = lineup[0]
-        pitcher = self.state.home_pitcher if self.state.top_bottom == "Top" else self.state.away_pitcher
+        pitcher = self.state.home_pitcher if half == InningHalf.TOP else self.state.away_pitcher
         batter_id = getattr(batter, "id", None)
         pitcher_id = getattr(pitcher, "id", None)
         play_mode = getattr(self.state, "play_mode", PlayMode.SIM.value)
         self.state.fast_sim = str(play_mode).upper() == PlayMode.SIM.value
         return MatchupContext(
             inning=self.state.inning,
-            half=self.state.top_bottom,
+            half=half,
             pitcher=pitcher,
             batter=batter,
             lineup_attr=lineup_attr,
@@ -211,11 +234,7 @@ class MatchSimulation:
         batting_side = self._batting_side(self._current_matchup.half)
         fielding_side = self._fielding_side(self._current_matchup.half)
 
-        # Award a single away run early so ties resolve deterministically.
         runs_scored = 0
-        if self.state.inning == 1 and self.state.top_bottom == "Top" and self.state.outs == 1:
-            runs_scored = 1
-            self.state.away_score = getattr(self.state, "away_score", 0) + 1
 
         payload = {
             "inning": self._current_matchup.inning,
@@ -273,18 +292,15 @@ class MatchSimulation:
         return team_id in self.human_team_ids
 
     def _batting_side(self, half: Optional[str] = None) -> str:
-        label = (half or self.state.top_bottom or "Top").lower()
-        return "away" if label.startswith("t") else "home"
+        normalized_half = self._normalize_half(half or getattr(self.state, "top_bottom", None))
+        return "away" if normalized_half == InningHalf.TOP else "home"
 
     def _fielding_side(self, half: Optional[str] = None) -> str:
         return "home" if self._batting_side(half) == "away" else "away"
 
     def _home_walkoff_ready(self) -> bool:
-        return (
-            self.state.top_bottom == "Bot"
-            and self.state.inning >= 9
-            and getattr(self.state, "home_score", 0) > getattr(self.state, "away_score", 0)
-        )
+        half = self._normalize_half(getattr(self.state, "top_bottom", None))
+        return half == InningHalf.BOT and self.state.inning >= 9 and getattr(self.state, "home_score", 0) > getattr(self.state, "away_score", 0)
 
     def _is_rivalry_moment(self, matchup: MatchupContext) -> bool:
         ctx = getattr(self.state, "rival_match_context", None)

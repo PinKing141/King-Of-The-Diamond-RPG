@@ -1,0 +1,58 @@
+{
+  "pitch_four_seam": {
+    "pitch_key": "four_seam_fastball",
+    "tier": 1,
+    "description": "Foundation heater unlocked via basic fastball work.",
+    "parents": [],
+    "cost": 1
+  },
+  "pitch_two_seam": {
+    "pitch_key": "two_seam_fastball",
+    "tier": 1,
+    "description": "Adds arm-side run to the repertoire.",
+    "parents": [],
+    "cost": 1
+  },
+  "pitch_slider": {
+    "pitch_key": "slider",
+    "tier": 2,
+    "description": "Sharp glove-side bite unlocked after fastball foundation.",
+    "parents": ["pitch_four_seam"],
+    "cost": 2
+  },
+  "pitch_curveball": {
+    "pitch_key": "curveball",
+    "tier": 2,
+    "description": "Big depth breaker for players who trust their two-seamer.",
+    "parents": ["pitch_two_seam"],
+    "cost": 2
+  },
+  "pitch_changeup": {
+    "pitch_key": "changeup",
+    "tier": 2,
+    "description": "Off-speed feel unlocked once the heater is under control.",
+    "parents": ["pitch_four_seam"],
+    "cost": 2
+  },
+  "pitch_cutter_custom": {
+    "pitch_key": "cutter_custom",
+    "tier": 3,
+    "description": "Signature cutter that branches off the two-seam/slider duo.",
+    "parents": ["pitch_two_seam", "pitch_slider"],
+    "cost": 3
+  },
+  "pitch_splitter": {
+    "pitch_key": "splitter",
+    "tier": 3,
+    "description": "Forkball-inspired dive unlocked after mastering the changeup.",
+    "parents": ["pitch_changeup"],
+    "cost": 3
+  },
+  "pitch_knuckleball": {
+    "pitch_key": "knuckleball",
+    "tier": 3,
+    "description": "Chaos pitch rewarded to those with relentless focus.",
+    "parents": ["pitch_curveball"],
+    "cost": 3
+  }
+}
