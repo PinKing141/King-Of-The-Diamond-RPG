@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import time
 from typing import Optional
 
 from core.event_bus import EventBus
@@ -43,6 +44,7 @@ class BrassBand:
         self.bus: Optional[EventBus] = getattr(state, "event_bus", None)
         self.current_song: Optional[str] = None
         self.last_batter_id: Optional[int] = None
+        self._pending_theme_clear: Optional[float] = None
         self.support_tier = self._calculate_support_tier(getattr(state, "home_team", None))
         if self.bus:
             self.bus.subscribe(EventType.MATCH_STATE.value, self.on_state_change)
@@ -76,7 +78,17 @@ class BrassBand:
 
     # --- event hooks ------------------------------------------------
     def on_state_change(self, payload):  # pragma: no cover - driven by gameplay
-        if payload.get("state") != "STATE_WINDUP":
+        state_label = payload.get("state")
+        now = time.monotonic()
+        if self._pending_theme_clear and now >= self._pending_theme_clear:
+            self.current_song = None
+            self._pending_theme_clear = None
+        if state_label == "STATE_PITCH_FLIGHT" and self.current_song and "Theme" in self.current_song:
+            # Stop the walk-up theme once the pitch is underway (or schedule delay elsewhere).
+            self.current_song = None
+            self._pending_theme_clear = None
+            return
+        if state_label != "STATE_WINDUP":
             return
         batter_id = payload.get("batter_id")
         if batter_id is None or batter_id == self.last_batter_id:
@@ -130,16 +142,18 @@ class BrassBand:
         team_id = team_map.get(batter_id)
         user_team_id = getattr(self.state.home_team, "id", None)
         has_theme = getattr(player, "theme_song", None)
-        if has_theme and self.support_tier >= 2:
-            if team_id != user_team_id and self.support_tier < 3:
-                return
-            player_name = getattr(player, "last_name", getattr(player, "name", "Batter"))
-            prefix = "♫♫ (Orchestra)" if self.support_tier == 3 else "♪♪ (Band)"
-            text = f"{prefix} {player_name}'s Theme '{has_theme}' begins! {prefix}"
-            self._publish_song(text, "PERSONAL")
+        if not has_theme:
+            return  # No theme; stay silent on walk-up
+        if self.support_tier < 2:
             return
-        mood = self._current_mood()
-        self._play_context_music(mood)
+        if team_id != user_team_id and self.support_tier < 3:
+            return
+        player_name = getattr(player, "last_name", getattr(player, "name", "Batter"))
+        prefix = "♫♫ (Orchestra)" if self.support_tier == 3 else "♪♪ (Band)"
+        text = f"{prefix} {player_name}'s Theme '{has_theme}' begins! {prefix}"
+        self._publish_song(text, "PERSONAL")
+        # Schedule a light delay to clear theme after the windup/pitch window.
+        self._pending_theme_clear = time.monotonic() + 1.0
 
     def _publish_song(self, text: Optional[str], style: str) -> None:
         if not text or text == self.current_song:

@@ -288,6 +288,35 @@ def ensure_game_schema():
             conn.execute(text(stmt))
 
 
+def ensure_pitch_repertoire_schema():
+    inspector = inspect(engine)
+    if not inspector.has_table('pitch_repertoire'):
+        return
+
+    columns = {col['name'] for col in inspector.get_columns('pitch_repertoire')}
+    statements = []
+    if 'mastery_xp' not in columns:
+        statements.append("ALTER TABLE pitch_repertoire ADD COLUMN mastery_xp INTEGER DEFAULT 0")
+    if 'mastery_level' not in columns:
+        statements.append("ALTER TABLE pitch_repertoire ADD COLUMN mastery_level INTEGER DEFAULT 0")
+    if 'signature_tag' not in columns:
+        statements.append("ALTER TABLE pitch_repertoire ADD COLUMN signature_tag VARCHAR")
+    if 'signature_ready' not in columns:
+        statements.append("ALTER TABLE pitch_repertoire ADD COLUMN signature_ready BOOLEAN DEFAULT 0")
+    if 'signature_unlocked' not in columns:
+        statements.append("ALTER TABLE pitch_repertoire ADD COLUMN signature_unlocked BOOLEAN DEFAULT 0")
+
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+        conn.execute(text("UPDATE pitch_repertoire SET mastery_xp = COALESCE(mastery_xp, 0)"))
+        conn.execute(text("UPDATE pitch_repertoire SET mastery_level = COALESCE(mastery_level, 0)"))
+        # Backfill: pitches with zero XP should be unlearned (level 0).
+        conn.execute(text("UPDATE pitch_repertoire SET mastery_level = 0 WHERE mastery_xp <= 0"))
+        conn.execute(text("UPDATE pitch_repertoire SET signature_ready = COALESCE(signature_ready, 0)"))
+        conn.execute(text("UPDATE pitch_repertoire SET signature_unlocked = COALESCE(signature_unlocked, 0)"))
+
+
 def ensure_school_schema():
     inspector = inspect(engine)
     if not inspector.has_table('schools'):
@@ -702,6 +731,11 @@ class PitchRepertoire(Base):
     pitch_name = Column(String)
     quality = Column(Integer)
     break_level = Column(Integer)
+    mastery_xp = Column(Integer, default=0)
+    mastery_level = Column(Integer, default=0)
+    signature_tag = Column(String)
+    signature_ready = Column(Boolean, default=False)
+    signature_unlocked = Column(Boolean, default=False)
 
     player = relationship("Player", back_populates="pitch_repertoire")
 
@@ -735,6 +769,7 @@ ensure_gamestate_schema()
 ensure_coach_schema()
 ensure_game_schema()
 ensure_game_stats_schema()
+ensure_pitch_repertoire_schema()
 
 
 # ============================================================
@@ -751,6 +786,7 @@ def create_database():
     ensure_coach_schema()
     ensure_game_schema()
     ensure_game_stats_schema()
+    ensure_pitch_repertoire_schema()
     ensure_game_schema()
 
     with session_scope() as session:

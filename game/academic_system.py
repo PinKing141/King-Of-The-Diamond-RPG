@@ -137,6 +137,35 @@ def _grade_for_score(score: float):
     return "F", "Academic probation looming!"
 
 
+def score_to_letter_grade(score: int) -> str:
+    """Convert a 0-100 numeric score to a letter grade (F through A+)."""
+    if score >= 97:
+        return "A+"
+    if score >= 92:
+        return "A"
+    if score >= 88:
+        return "A-"
+    if score >= 78:
+        return "B+"
+    if score >= 70:
+        return "B"
+    if score >= 60:
+        return "B-"
+    if score >= 50:
+        return "C+"
+    if score >= 46:
+        return "C"
+    if score >= 43:
+        return "C-"
+    if score >= 39:
+        return "D+"
+    if score >= 34:
+        return "D"
+    if score >= 30:
+        return "D-"
+    return "F"
+
+
 def maybe_run_academic_exam(player: Player, current_week: int) -> Optional[Dict[str, str]]:
     exam = TEST_SCHEDULE.get(current_week)
     if not exam:
@@ -194,5 +223,6 @@ __all__ = [
     "is_academically_eligible",
     "required_score_for_school",
     "DEFAULT_PASSING_SCORE",
+    "score_to_letter_grade",
     "clamp",
 ]

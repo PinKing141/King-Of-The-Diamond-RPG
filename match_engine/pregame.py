@@ -17,6 +17,7 @@ from match_engine.brass_band import BrassBand
 from match_engine.psychology import PsychologyEngine
 from match_engine.dugout_listener import DugoutListener
 from game.mechanics import get_or_create_profile
+from game.lineup_logic import optimize_lineup, select_starting_nine
 from world.rivals import get_ledger
 from world_sim.weather import WeatherProfile, generate_weather_profile
 
@@ -177,6 +178,7 @@ class MatchState:
         self.confidence_story = {}
         self.pitcher_presence = {}
         self.pitch_sequence_memory = {}
+        self.pitch_mix_tracker = {}
         self.battery_trust_cache: dict[tuple[int, int], int] = {}
         self.battery_sync: dict[tuple[int, int], float] = {}
         self.times_through_order = {}
@@ -563,18 +565,20 @@ def prepare_match(
     home_players = db_session.query(Player).filter_by(school_id=home_id).order_by(Player.jersey_number).all()
     away_players = db_session.query(Player).filter_by(school_id=away_id).order_by(Player.jersey_number).all()
     
-    # Lineup Logic (First 9 non-pitchers, or just first 9 if small roster)
-    # Ideally, Roster Manager has set 'is_starter'
-    
-    home_lineup = [p for p in home_players if p.is_starter][:9]
-    if len(home_lineup) < 9: # Fallback
-        home_lineup = home_players[:9]
+    # Build starters with positional coverage, then order by philosophy
+    home_starters = select_starting_nine(home_players, getattr(home_team, "philosophy", None))
+    home_lineup = optimize_lineup(home_starters, getattr(home_team, "philosophy", None))
+    if len(home_lineup) < 9:
+        fill = [p for p in home_players if p not in home_lineup]
+        home_lineup = (home_lineup + fill)[:9]
     home_bench = [p for p in home_players if p not in home_lineup]
     _tag_lineup_slots(home_lineup)
 
-    away_lineup = [p for p in away_players if p.is_starter][:9]
+    away_starters = select_starting_nine(away_players, getattr(away_team, "philosophy", None))
+    away_lineup = optimize_lineup(away_starters, getattr(away_team, "philosophy", None))
     if len(away_lineup) < 9:
-        away_lineup = away_players[:9]
+        fill = [p for p in away_players if p not in away_lineup]
+        away_lineup = (away_lineup + fill)[:9]
     away_bench = [p for p in away_players if p not in away_lineup]
     _tag_lineup_slots(away_lineup)
     

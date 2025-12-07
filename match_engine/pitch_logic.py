@@ -12,6 +12,7 @@ from game.mechanics import (
     mechanics_adjustment_for_pitch,
 )
 from game.skill_system import player_has_skill
+from game.pitch_mastery import mastery_level_for_xp, record_pitch_xp
 from battery_system.battery_trust import adjust_battery_sync, get_battery_sync
 
 # Toggle: allow battle-math logs to be pushed into at-bat feeds without always printing.
@@ -50,6 +51,74 @@ def _adjust_pitcher_presence(state, pitcher_id, delta: float) -> None:
         return
     presence = _get_pitcher_presence(state, pitcher_id) + delta
     state.pitcher_presence[pitcher_id] = _clamp(presence, -4.0, 4.0)
+
+
+def _mix_tracker(state, pitcher_id):
+    tracker = getattr(state, "pitch_mix_tracker", None)
+    if tracker is None:
+        tracker = {}
+        state.pitch_mix_tracker = tracker
+    entry = tracker.get(pitcher_id)
+    inning_key = (getattr(state, "inning", 0), getattr(state, "top_bottom", "Top"))
+    if entry is None or entry.get("inning_key") != inning_key:
+        entry = {"inning_key": inning_key, "families": {}, "last": []}
+        tracker[pitcher_id] = entry
+    return entry
+
+
+def _apply_mix_bonuses(state, pitcher_id, family: str) -> tuple[float, float, float]:
+    entry = _mix_tracker(state, pitcher_id)
+    families = entry.get("families", {})
+    last = entry.get("last", [])
+    movement_bonus = 0.0
+    control_bonus = 0.0
+    deception_bonus = 0.0
+    if len(families) >= 3:
+        movement_bonus += 2.0
+        deception_bonus += 1.0
+    if len(last) >= 3 and all(f == family for f in last[-3:]):
+        control_bonus -= 2.0
+    return control_bonus, movement_bonus, deception_bonus
+
+
+def _record_pitch_family(state, pitcher_id, family: str) -> None:
+    entry = _mix_tracker(state, pitcher_id)
+    families = entry.setdefault("families", {})
+    families[family] = families.get(family, 0) + 1
+    trail = entry.setdefault("last", [])
+    trail.append(family)
+    if len(trail) > 6:
+        del trail[0]
+
+
+def _signature_modifiers(signature_tag: str, location: str) -> dict:
+    tag = (signature_tag or "").lower()
+    mods = {"ctrl": 0.0, "velo": 0.0, "move": 0.0, "deception": 0.0, "contact_tax": 0.0}
+    if tag == "late life":
+        mods["move"] += 3.0
+        mods["velo"] += 0.4
+    elif tag == "wipeout":
+        if location == "Chase":
+            mods["move"] += 2.5
+            mods["deception"] += 2.0
+        else:
+            mods["move"] += 1.5
+    elif tag == "fade":
+        mods["ctrl"] += 1.0
+        mods["move"] += 1.0
+        mods["contact_tax"] += 1.0
+    elif tag == "disappear":
+        if location == "Chase":
+            mods["deception"] += 2.5
+            mods["contact_tax"] += 1.5
+        else:
+            mods["deception"] += 1.0
+    elif tag == "heavy":
+        mods["contact_tax"] += 2.0
+        mods["move"] += 0.5
+    elif tag == "resolve":
+        mods["ctrl"] += 1.0
+    return mods
 
 
 def _get_sequence_bucket(state, pitcher_id):
@@ -584,13 +653,22 @@ def _call_with_umpire_bias(state, location: str) -> tuple[str, bool]:
 def get_arsenal(pitcher_id):
     with session_scope() as session:
         pitches = session.query(PitchRepertoire).filter_by(player_id=pitcher_id).all()
-    if not pitches:
-        # Default Arsenal if none found
-        return [
-            PitchRepertoire(pitch_name="4-Seam Fastball", quality=40, break_level=10),
-            PitchRepertoire(pitch_name="Slider", quality=30, break_level=40),
-        ]
-    return pitches
+    if pitches:
+        learned = []
+        for pitch in pitches:
+            lvl = getattr(pitch, "mastery_level", None)
+            if lvl is None:
+                lvl = mastery_level_for_xp(getattr(pitch, "mastery_xp", 0))
+            if lvl >= 1:
+                learned.append(pitch)
+        if learned:
+            return learned
+    # Default Arsenal if none learned/found
+    fallback = [
+        PitchRepertoire(pitch_name="4-Seam Fastball", quality=40, break_level=10, mastery_level=1),
+        PitchRepertoire(pitch_name="Slider", quality=30, break_level=40, mastery_level=1),
+    ]
+    return fallback
 
 def get_current_catcher(state):
     """
@@ -645,16 +723,20 @@ def resolve_pitch(
     count_snapshot = (state.balls, state.strikes)
     psychology_engine = getattr(state, "psychology_engine", None)
 
-    # --- 1. PITCH SELECTION (BATTERY NEGOTIATION) ---
+    # --- 1. PITCH SELECTION (BATTERY NEGOTIATION / MANUAL OVERRIDE) ---
+    manual_call = getattr(state, "manual_pitch_call", None)
     catcher = get_current_catcher(state)
 
-    from battery_system.battery_negotiation import run_battery_negotiation
-    
-    if catcher:
-        call_result = run_battery_negotiation(pitcher, catcher, batter, state)
+    if manual_call and manual_call.get("pitcher_id") == pitcher_id:
+        call_result = manual_call.get("call")
+        state.manual_pitch_call = None
     else:
-        from player_roles.pitcher_controls import player_pitch_turn
-        call_result = player_pitch_turn(pitcher, batter, state)
+        from battery_system.battery_negotiation import run_battery_negotiation
+        if catcher:
+            call_result = run_battery_negotiation(pitcher, catcher, batter, state)
+        else:
+            from player_roles.pitcher_controls import player_pitch_turn
+            call_result = player_pitch_turn(pitcher, batter, state)
 
     negotiated = _normalize_call(call_result)
     pitch = negotiated.pitch
@@ -690,6 +772,19 @@ def resolve_pitch(
 
     # --- 2. PITCH PHYSICS ---
     p_def = PITCH_TYPES.get(pitch.pitch_name, PITCH_TYPES["4-Seam Fastball"])
+    family = p_def.get("family", "Generic")
+
+    mastery_level = getattr(pitch, "mastery_level", None)
+    if mastery_level is None:
+        mastery_level = mastery_level_for_xp(getattr(pitch, "mastery_xp", 0))
+    mastery_level = max(0, int(mastery_level or 0))
+    mastery_scalar = 1.0 + (mastery_level - 1) * 0.015  # 1.5% per level
+    mastery_ctrl_bonus = (mastery_level - 1) * 0.4
+    mastery_velo_bonus = (mastery_level - 1) * 0.25
+
+    signature_tag = getattr(pitch, "signature_tag", None) if getattr(pitch, "signature_unlocked", False) else None
+    mix_ctrl, mix_move, mix_deception = _apply_mix_bonuses(state, pitcher_id, family)
+    sig_mods = _signature_modifiers(signature_tag, location) if signature_tag else {"ctrl": 0, "velo": 0, "move": 0, "deception": 0, "contact_tax": 0}
 
     mechanics_profile = None
     form_effect = None
@@ -736,16 +831,22 @@ def resolve_pitch(
     if adj_pitch_count > 80: fatigue_penalty = (adj_pitch_count - 80) * 0.2
     if adj_pitch_count > 100: fatigue_penalty += (adj_pitch_count - 100) * 0.5
     if adj_pitch_count > 90: control_penalty = (adj_pitch_count - 90) * 0.5
+    if mastery_level >= 4:
+        control_penalty = max(0.0, control_penalty - 1.0)
+    if mastery_level >= 5:
+        fatigue_penalty *= 0.95
     
     weather = getattr(state, 'weather', None)
     weather_effects = _weather_effects(state)
 
     # Final Values
     base_velocity = (getattr(pitcher, 'velocity', 0) or 0) + pitcher_trait_mods.get('velocity', 0)
+    base_velocity += mastery_velo_bonus
+    base_velocity += sig_mods.get("velo", 0.0)
     velocity = (base_velocity * p_def['velocity_mod']) - fatigue_penalty
     if extension_bonus:
         velocity += extension_bonus
-    base_movement = pitch.break_level * p_def['break_mod']
+    base_movement = pitch.break_level * p_def['break_mod'] * mastery_scalar
     movement_plane_mult = 1.0
     if p_def['type'] in ["Vertical", "Drop_Sink"]:
         movement_plane_mult = slot_mods['vertical_mult']
@@ -757,6 +858,9 @@ def resolve_pitch(
 
     base_control = (getattr(pitcher, 'control', 50) or 50) + pitcher_trait_mods.get('control', 0)
     effective_control = (base_control * slot_mods['control_penalty_mult']) - control_penalty
+    effective_control += mastery_ctrl_bonus
+    effective_control += mix_ctrl
+    effective_control += sig_mods.get("ctrl", 0.0)
     if mechanics_profile:
         mech_adj = mechanics_adjustment_for_pitch(mechanics_profile, p_def, location=location)
         velocity += mech_adj.velocity_bonus
@@ -778,6 +882,11 @@ def resolve_pitch(
     if tto_stage:
         effective_control -= 4 * tto_stage
         velocity -= tto_stage * 0.5
+
+    effective_movement += mix_move
+    mechanics_deception += mix_deception
+    effective_movement += sig_mods.get("move", 0.0)
+    mechanics_deception += sig_mods.get("deception", 0.0)
 
     if shakes:
         tension = shakes * max(0.8, (65 - trust_snapshot) / 10.0)
@@ -900,6 +1009,9 @@ def resolve_pitch(
                 logs = getattr(state, "logs", None)
                 if isinstance(logs, list):
                     logs.append("[Rivals] Hands shake — safe zone shrinks under rival glare.")
+        if rivalry_ctx.is_hero_pitching(pitcher_id) and signature_tag and mastery_level >= 4:
+            effective_control += 2
+            effective_movement += 1
 
     guess_payload = batter_mods.get('guess_payload')
     guess_match = _guess_matches(guess_payload, p_def, location) if guess_payload else None
@@ -985,7 +1097,9 @@ def resolve_pitch(
         if psychology_engine:
             leverage = 1.0 + max(0.0, getattr(state, "pressure_index", 0.0)) / 10.0
             psychology_engine.record_pitch(pitcher_id, batter_id, res_obj, leverage=leverage)
-        return res_obj
+            record_pitch_xp(state, pitcher_id, getattr(pitch, "pitch_name", None), res_obj, family=family)
+            _record_pitch_family(state, pitcher_id, family)
+            return res_obj
 
     if flow_offense != 1.0:
         eye_stat *= flow_offense
@@ -1096,6 +1210,10 @@ def resolve_pitch(
         hit_difficulty -= 5
         _battle_breakdown.append(("forced_call_relief", -5))
     
+    if sig_mods.get("contact_tax", 0):
+        hit_difficulty += sig_mods["contact_tax"]
+        _battle_breakdown.append(("signature", sig_mods["contact_tax"]))
+
     # Pitcher Control Check (Mistake pitch?)
     mistake_pitch = rng.randint(0, 100) > effective_control
     if mistake_pitch:

@@ -3,10 +3,13 @@ import os
 from typing import Optional, Tuple
 
 from database.setup_db import Player
+from game.health_utils import get_stamina_status, get_fatigue_status
+from game.academic_system import score_to_letter_grade
 
 class Colour:
     HEADER = '\033[95m'
     MAG = '\033[95m'
+    MAGENTA = '\033[95m'
     BLUE = '\033[94m'
     CYAN = '\033[96m'
     GREEN = '\033[92m'
@@ -66,17 +69,20 @@ def render_screen(conn, player_data):
     # --- STATUS BARS ---
     fatigue = int(player_data.get('fatigue', 0))
     morale = int(player_data.get('morale', 50))
-    
-    if fatigue < 30: f_col = Colour.GREEN
-    elif fatigue < 70: f_col = Colour.YELLOW
-    else: f_col = Colour.RED
-    
+    stamina_val = float(player_data.get('stamina', 0) or 0)
+
+    fat_label = get_fatigue_status(fatigue)
+    st_label, st_color = get_stamina_status(stamina_val)
+
+    f_col = Colour.GREEN if fat_label == "Low Risk" else Colour.YELLOW if fat_label in {"Accumulating", "High Risk"} else Colour.RED
+    st_col = getattr(Colour, st_color.upper(), Colour.RESET)
+
     if morale > 80: m_col = Colour.CYAN
     elif morale > 40: m_col = Colour.GREEN
     else: m_col = Colour.RED
 
     print("-" * 60)
-    print(f" Fatigue: {f_col}{'|' * (fatigue // 5)}{Colour.RESET} ({fatigue}%)")
+    print(f" Energy : {st_col}{st_label:<10}{Colour.RESET} | Injury Risk: {f_col}{fat_label}{Colour.RESET}")
     print(f" Morale : {m_col}{'|' * (morale // 5)}{Colour.RESET} ({morale}%)")
     print("=" * 60)
     _render_team_load_widget(conn, player_data)

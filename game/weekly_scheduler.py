@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from database.setup_db import Player, GameState
+from debug.debug_tools import input_with_debug
 from sqlalchemy.orm import object_session
 from game.constants import (
     ACTION_COSTS,
@@ -15,6 +16,7 @@ from game.constants import (
     HEAVY_TRAINING_ACTIONS,
     LIGHT_TRAINING_ACTIONS,
     MANDATORY_TEAM_POLICY,
+    BENCH_WEEKEND,
     SECOND_STRING_WEEKEND,
     SQUAD_FIRST_STRING,
     SQUAD_SECOND_STRING,
@@ -31,6 +33,7 @@ from game.academic_system import (
     is_academically_eligible,
     required_score_for_school,
 )
+from game.pitch_mastery import apply_mastery_decay, open_pitch_lab
 from game.dialogue_manager import run_dialogue_event
 from game.weekly_scheduler_core import (
     DAYS_OF_WEEK,
@@ -38,6 +41,7 @@ from game.weekly_scheduler_core import (
     WeekSummary,
     execute_schedule_core,
 )
+from game.academic_system import score_to_letter_grade
 from world.media_engine import generate_weekly_news
 
 
@@ -74,7 +78,7 @@ COACH_ORDER_DEFS: Tuple[CoachOrder, ...] = (
         description="Coach wants two high-intensity team reps.",
         requirement={
             "type": "action_count",
-            "actions": ["team_practice", "practice_match", "b_team_match"],
+            "actions": ["team_practice", "practice_match"],
             "count": 2,
         },
         reward_trust=5,
@@ -88,7 +92,7 @@ AUTO_SCHEDULE_TEMPLATE: Tuple[Tuple[str, str, str], ...] = (
     ("practice_match", "rest", "mind"),
     ("train_control", "team_practice", "rest"),
     ("train_contact", "study", "mind"),
-    ("b_team_match", "rest", "social"),
+    ("team_practice", "rest", "social"),
     ("rest", "mind", "social"),
 )
 
@@ -182,10 +186,35 @@ def _infer_squad_status(player: Optional[Player]) -> str:
     return SQUAD_SECOND_STRING
 
 
+def _is_reserve_player(player: Optional[Player]) -> bool:
+    if not player:
+        return False
+    role = (getattr(player, "role", "") or "").upper()
+    jersey = getattr(player, "jersey_number", None)
+    if role == "RESERVE":
+        return True
+    # Heuristic: deep reserves get late numbers (90+ or 99)
+    return jersey is not None and jersey >= 90
+
+
+def _is_bench_player(player: Optional[Player]) -> bool:
+    if not player:
+        return False
+    role = (getattr(player, "role", "") or "").upper()
+    jersey = getattr(player, "jersey_number", None)
+    if role == "BENCH":
+        return True
+    # Heuristic: bench is in the teens; exclude starters (1-9) and reserves (90+)
+    return jersey is not None and 10 <= jersey <= 89
+
+
 def build_mandatory_schedule(player: Optional[Player]) -> Dict[Tuple[int, int], str]:
     base = dict(MANDATORY_TEAM_POLICY)
     squad = _infer_squad_status(player)
-    weekend = FIRST_STRING_WEEKEND if squad == SQUAD_FIRST_STRING else SECOND_STRING_WEEKEND
+    if squad == SQUAD_FIRST_STRING:
+        weekend = FIRST_STRING_WEEKEND
+    else:
+        weekend = SECOND_STRING_WEEKEND if _is_reserve_player(player) else BENCH_WEEKEND
     base.update(weekend)
     return base
 
@@ -536,6 +565,21 @@ def _finalize_week_outcomes(
     else:
         session.commit()
 
+    maintained = False
+    if execution and getattr(execution, "results", None):
+        maintained = any(
+            any(token in (res.action or "").lower() for token in ("pitch", "bullpen"))
+            for res in execution.results
+        )
+    if getattr(player, "position", "") in {"Pitcher", "Two-Way", "Two-way"}:
+        decay_log: List[str] = []
+        try:
+            apply_mastery_decay(session, player, maintained=maintained, log=decay_log)
+        except Exception:
+            decay_log = []
+        for entry in decay_log:
+            summary.add_event(entry)
+
     school = getattr(player, "school", None)
     team_name = getattr(school, "name", "Team")
     try:
@@ -609,6 +653,22 @@ def generate_auto_schedule(player: Optional[Player], coach_order: Optional[Coach
             chosen = _safe_action_choice(template_action, projected_fatigue)
             schedule_state[day_idx][slot_idx] = chosen
             projected_fatigue = max(0, projected_fatigue + get_action_cost(chosen))
+
+    is_pitcher = player and (getattr(player, "position", "") or "").lower().startswith("pitch")
+    if is_pitcher:
+        planned_actions = [action for day in schedule_state for action in day if action]
+        if "bullpen_session" not in planned_actions:
+            replaceable: List[Tuple[int, int]] = []
+            for d_idx in range(7):
+                for s_idx in range(3):
+                    if (d_idx, s_idx) in mandatory_schedule:
+                        continue
+                    planned = schedule_state[d_idx][s_idx]
+                    if planned and (planned.startswith("train_") or planned in {"team_practice", "practice_match"}):
+                        replaceable.append((d_idx, s_idx))
+            target_slot = replaceable[0] if replaceable else None
+            if target_slot:
+                schedule_state[target_slot[0]][target_slot[1]] = "bullpen_session"
 
     return schedule_state, mandatory_schedule
 
@@ -771,7 +831,7 @@ def render_planning_ui(
                 f" Progress: {status_colour}{progress}/{target}{Colour.RESET} ({status_label})"
             )
 
-def get_slot_choice(current_action: Optional[str]) -> Optional[str]:
+def get_slot_choice(current_action: Optional[str], *, context=None, session=None, state=None) -> Optional[str]:
     """Prompts the user for an action selection, defaulting to the current value."""
     print("\nSelect Action (Enter = keep current plan):")
     if current_action:
@@ -779,15 +839,20 @@ def get_slot_choice(current_action: Optional[str]) -> Optional[str]:
     print(f" 1. {Colour.CYAN}TRAIN{Colour.RESET} (Drills)")
     print(f" 2. {Colour.GREEN}REST{Colour.RESET}  (Recover)")
     print(f" 3. {Colour.BLUE}LIFE{Colour.RESET}  (Study/Social)")
-    print(f" 4. {Colour.YELLOW}MATCH{Colour.RESET}  (B-Team Scrimmage)")
-    print(" 0. BACK")
+    print(" 0. BACK | X. EXIT PLANNING")
 
-    choice = input(">> ").strip().lower()
+    choice_raw = input_with_debug(">> ", context=context, session=session, state=state)
+    if choice_raw is None:
+        return None
+    choice = choice_raw.strip().lower()
     if choice == "":
         return current_action
 
+    if choice in {"x", "exit"}:
+        return "EXIT"
+
     if choice == '1':
-        print("   [P]ower  [S]peed  [St]amina  [C]ontrol  [Co]ntact  [B]ack")
+        print("   [P]ower  [S]peed  [St]amina  [C]ontrol  [Co]ntact  [Bu]llpen  [B]ack")
         sub = input("   Drill: ").lower().strip()
         mapping = {
             'p': 'train_power',
@@ -795,6 +860,7 @@ def get_slot_choice(current_action: Optional[str]) -> Optional[str]:
             'st': 'train_stamina',
             'c': 'train_control',
             'co': 'train_contact',
+            'bu': 'bullpen_session',
         }
         return mapping.get(sub)
 
@@ -807,15 +873,20 @@ def get_slot_choice(current_action: Optional[str]) -> Optional[str]:
         mapping = {'s': 'study', 'f': 'social', 'm': 'mind'}
         return mapping.get(sub)
 
-    if choice == '4':
-        return 'b_team_match'
-
     if choice == '0':
         return 'BACK'
 
     return None
  
-def plan_week_ui(start_fatigue: int, player: Optional[Player], coach_order: Optional[CoachOrder] = None):
+def plan_week_ui(
+    start_fatigue: int,
+    player: Optional[Player],
+    coach_order: Optional[CoachOrder] = None,
+    *,
+    context: Optional[GameContext] = None,
+    session=None,
+    state=None,
+):
     """Interactive weekly planner that accounts for squad status + trust."""
 
     start_fatigue = start_fatigue or 0
@@ -849,7 +920,10 @@ def plan_week_ui(start_fatigue: int, player: Optional[Player], coach_order: Opti
 
         mandatory_action = mandatory_schedule.get((day_idx, slot_idx))
         current_action = schedule_grid[day_idx][slot_idx]
-        action = get_slot_choice(current_action)
+        action = get_slot_choice(current_action, context=context, session=session, state=state)
+
+        if action == 'EXIT':
+            return None, None
 
         if action == 'BACK':
             if not history:
@@ -861,6 +935,12 @@ def plan_week_ui(start_fatigue: int, player: Optional[Player], coach_order: Opti
             continue
 
         if not action:
+            continue
+
+        # Coach controls B-team scrimmages; players cannot replace them.
+        if mandatory_action == 'b_team_match' and action != mandatory_action:
+            print(f"\n{Colour.WARNING}Coach assigned a B-Team scrimmage. You can't change this slot.{Colour.RESET}")
+            time.sleep(1)
             continue
 
         if mandatory_action and action != mandatory_action:
@@ -910,7 +990,17 @@ def plan_week_ui(start_fatigue: int, player: Optional[Player], coach_order: Opti
         team_snapshot,
         getattr(player, 'school', None),
     )
-    input(f"\n{Colour.GREEN}Schedule Complete. Press Enter to Execute.{Colour.RESET}")
+    confirm_exec_raw = input_with_debug(
+        f"\n{Colour.GREEN}Schedule Complete.{Colour.RESET} Press Enter to execute or [B] to discard and return: ",
+        context=context,
+        session=session,
+        state=state,
+    )
+    if confirm_exec_raw is None:
+        return None, None
+    confirm_exec = confirm_exec_raw.strip().lower()
+    if confirm_exec == 'b':
+        return None, None
 
     return schedule_grid, skipped_mandatory
 
@@ -922,8 +1012,11 @@ def execute_schedule_silent(context: GameContext, schedule_grid, current_week):
     return execution, summary
 
 
-def start_week(context: GameContext, current_week: int) -> None:
-    """Primary entry point for the weekly training phase."""
+def start_week(context: GameContext, current_week: int, state: Optional[GameState] = None) -> bool:
+    """Primary entry point for the weekly training phase.
+
+    Returns True when the week was executed, False if the user backed out.
+    """
     player, coach_order, exam_summary, event_text = _initialize_week(context, current_week)
     if not player:
         print("No active player is set. Load a save before planning the week.")
@@ -931,8 +1024,9 @@ def start_week(context: GameContext, current_week: int) -> None:
     _print_weekly_brief(player, current_week, coach_order)
 
     if exam_summary:
+        letter = score_to_letter_grade(int(exam_summary['score'])) if exam_summary.get('score') is not None else exam_summary.get('grade')
         print(
-            f"\n{Colour.CYAN}Exam: {exam_summary['exam_name']} -> {exam_summary['score']} ({exam_summary['grade']}){Colour.RESET}"
+            f"\n{Colour.CYAN}Exam: {exam_summary['exam_name']} -> {exam_summary['score']} ({letter}){Colour.RESET}"
         )
         print(f" {exam_summary['comment']}")
 
@@ -944,17 +1038,36 @@ def start_week(context: GameContext, current_week: int) -> None:
         print(
             f"\n{Colour.WARNING}Academic Warning:{Colour.RESET} Coach expects at least {needed} to keep you eligible."
         )
-
-    input("\nPress Enter to open the planning board...")
+    while True:
+        nav = input("\n[Enter] Planning | [L] Pitch Lab | [Q] Quit: ").strip().lower()
+        if nav in {"", "enter"}:
+            break
+        if nav == "q":
+            return False
+        if nav == "l":
+            open_pitch_lab(context.session, player)
+        else:
+            continue
 
     start_fatigue = player.fatigue or 0
-    schedule_grid, skipped_mandatory = plan_week_ui(start_fatigue, player, coach_order)
+    schedule_grid, skipped_mandatory = plan_week_ui(
+        start_fatigue,
+        player,
+        coach_order,
+        context=context,
+        session=context.session if context else None,
+        state=state,
+    )
+    if schedule_grid is None:
+        print(f"{Colour.WARNING}Planning cancelled. Returning to Week Prep...{Colour.RESET}")
+        time.sleep(1)
+        return False
 
     try:
         execution, summary = execute_schedule_silent(context, schedule_grid, current_week)
     except ValueError as err:
         print(f"Execution aborted: {err}")
-        return
+        return False
 
     summary.add_schedule_note("Player-planned week.")
     summary = _finalize_week_outcomes(
@@ -970,3 +1083,4 @@ def start_week(context: GameContext, current_week: int) -> None:
 
     render_weekly_dashboard(summary)
     input()
+    return True

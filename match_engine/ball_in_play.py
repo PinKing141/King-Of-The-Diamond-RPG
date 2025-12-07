@@ -3,15 +3,36 @@ from match_engine.confidence import apply_fielding_error_confidence
 from world.defense_profiles import get_defense_profile
 from world_sim.fielding_engine import (
     FENCE_DISTANCE_FT,
+    FieldingPlayResult,
     build_defense_alignment,
     resolve_fielding_play,
     simulate_batted_ball,
 )
+from game.fielding_system import run_fielding_event
 
 rng = get_rng()
 
 HOME_CONTACT_BONUS = 2
 HOME_POWER_BONUS = 0
+
+
+def _pick_manual_fielder(ball, defenders):
+    if not defenders:
+        return None
+    eligible = {"pitcher", "catcher", "first base", "second base", "shortstop", "third base"}
+    if getattr(ball, "ball_type", "ground") != "ground":
+        eligible = eligible | {"left field", "center field", "right field"}
+    landing = (getattr(ball, "landing_x", 0.0), getattr(ball, "landing_y", 0.0))
+    best = None
+    best_dist = float("inf")
+    for snap in defenders:
+        if snap.position.lower() not in eligible:
+            continue
+        dist = (snap.x - landing[0]) ** 2 + (snap.y - landing[1]) ** 2
+        if dist < best_dist:
+            best = snap
+            best_dist = dist
+    return best
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -24,6 +45,12 @@ def _defense_team_id(state):
     if getattr(state, "top_bottom", "Top") == "Top":
         return getattr(state.home_team, "id", None)
     return getattr(state.away_team, "id", None)
+
+
+def _human_controls_defense(state) -> bool:
+    team_id = _defense_team_id(state)
+    human_ids = getattr(state, "human_team_ids", set()) or set()
+    return team_id in human_ids
 
 
 def _user_controls_defense(state):
@@ -189,13 +216,31 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
         batted_ball.landing_y *= scale
         batted_ball.is_home_run = new_distance >= FENCE_DISTANCE_FT
 
-    fielding_play = resolve_fielding_play(
-        batted_ball,
-        alignment,
-        runner_speed=running,
-        profile=defense_profile,
-        environment_error_scalar=error_scalar,
-    )
+    # Optional manual/user fielding hook: only when enabled and the defense is human-controlled.
+    if getattr(state, "manual_fielding_prompts", False) and _human_controls_defense(state):
+        fielding_play = _manual_fielding_override(
+            state,
+            batted_ball,
+            alignment,
+            runners=getattr(state, "runners", {}),
+        )
+    else:
+        # Optional manual/user fielding hook: only when enabled and the defense is human-controlled.
+        if getattr(state, "manual_fielding_prompts", False) and _human_controls_defense(state):
+            fielding_play = _manual_fielding_override(
+                state,
+                batted_ball,
+                alignment,
+                runners=getattr(state, "runners", {}),
+            )
+        else:
+            fielding_play = resolve_fielding_play(
+                batted_ball,
+                alignment,
+                runner_speed=running,
+                profile=defense_profile,
+                environment_error_scalar=error_scalar,
+            )
 
     hit_type = fielding_play.hit_type
     desc = fielding_play.description
@@ -215,4 +260,55 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
         error_on_play=error_on_play,
         primary_position=error_position,
         error_type=fielding_play.error_type,
+    )
+
+
+def _manual_fielding_override(state, batted_ball, alignment, runners) -> object:
+    snap = _pick_manual_fielder(batted_ball, alignment)
+    if snap is None:
+        # No defender found, treat as missed play single
+        return FieldingPlayResult("1B", "No one there.")
+
+    is_user = True  # only called when human defense
+    if isinstance(runners, list):
+        runner_dict = {1: bool(runners[0]) if len(runners) > 0 else False,
+                       2: bool(runners[1]) if len(runners) > 1 else False,
+                       3: bool(runners[2]) if len(runners) > 2 else False}
+    else:
+        runner_dict = {1: bool(runners.get(1)), 2: bool(runners.get(2)), 3: bool(runners.get(3))}
+    res = run_fielding_event(
+        snap.player or snap,
+        is_user,
+        "GROUNDER" if batted_ball.ball_type == "ground" else "FLYBALL",
+        "INFIELD" if batted_ball.ball_type == "ground" else "OUTFIELD",
+        runner_dict,
+    )
+
+    outcome = res.get("result_code", "SAFE")
+    desc = res.get("narrative", "")
+
+    if outcome == "OUT":
+        return FieldingPlayResult(
+            "Out",
+            desc,
+            primary_position=getattr(snap, "position", None),
+            caught=True,
+            fielded_clean=True,
+            throw_completed=True,
+        )
+
+    if outcome == "ERROR":
+        return FieldingPlayResult(
+            "1B",
+            desc or "Misplayed in the field.",
+            primary_position=getattr(snap, "position", None),
+            error_type="E_FIELD",
+            fielded_clean=False,
+        )
+
+    # SAFE / HIT default: treat as single in play
+    return FieldingPlayResult(
+        "1B",
+        desc or "Ball falls in for a hit.",
+        primary_position=getattr(snap, "position", None),
     )

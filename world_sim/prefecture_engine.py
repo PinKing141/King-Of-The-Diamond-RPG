@@ -28,7 +28,12 @@ def _to_stub(school: School) -> SimpleNamespace:
     return SimpleNamespace(id=getattr(school, "id", None), name=getattr(school, "name", None))
 
 
-def _simulate_background_matches(user_school_id, *, feature_games: int = FEATURE_FOCUS_GAMES):
+def _simulate_background_matches(
+    user_school_id,
+    *,
+    feature_games: int = FEATURE_FOCUS_GAMES,
+    verbose: bool = False,
+):
     feature_pairs: List[Tuple[SimpleNamespace, SimpleNamespace]] = []
     quick_heads = []
 
@@ -64,10 +69,11 @@ def _simulate_background_matches(user_school_id, *, feature_games: int = FEATURE
         quick_slots = MAX_BACKGROUND_GAMES - len(tier_one_pairs)
         quick_pairs = _pair_schools(remaining_pool, quick_slots)
 
-        print(
-            f"   > Prefecture world: {len(feature_pairs)} feature games, {len(fast_pairs) + len(quick_pairs)} instant resolves...",
-            end="",
-        )
+        if verbose:
+            print(
+                f"   > Prefecture world: {len(feature_pairs)} feature games, {len(fast_pairs) + len(quick_pairs)} instant resolves...",
+                end="",
+            )
 
         # Resolve non-feature games via the fast statistical path to avoid heavy match engine costs.
         for home, away in (*fast_pairs, *quick_pairs):
@@ -84,11 +90,12 @@ def _simulate_background_matches(user_school_id, *, feature_games: int = FEATURE
             persist_results=False,
         )
 
-    if quick_heads:
-        notable = [f"{h} vs {a} ({score})" for h, a, score, upset in quick_heads if upset]
-        if notable:
-            print(f" upset radar: {', '.join(notable[:3])}", end="")
-    print(" done.")
+    if verbose:
+        if quick_heads:
+            notable = [f"{h} vs {a} ({score})" for h, a, score, upset in quick_heads if upset]
+            if notable:
+                print(f" upset radar: {', '.join(notable[:3])}", end="")
+        print(" done.")
 
 
 def simulate_background_matches(
@@ -96,6 +103,7 @@ def simulate_background_matches(
     *,
     async_mode: bool = False,
     feature_games: int = FEATURE_FOCUS_GAMES,
+    verbose: bool = False,
 ) -> Optional[threading.Thread]:
     """Simulate NPC practice games; optionally run asynchronously to avoid UI stalls."""
 
@@ -103,11 +111,11 @@ def simulate_background_matches(
         worker = threading.Thread(
             target=_simulate_background_matches,
             args=(user_school_id,),
-            kwargs={"feature_games": feature_games},
+            kwargs={"feature_games": feature_games, "verbose": verbose},
             daemon=True,
         )
         worker.start()
         return worker
 
-    _simulate_background_matches(user_school_id, feature_games=feature_games)
+    _simulate_background_matches(user_school_id, feature_games=feature_games, verbose=verbose)
     return None

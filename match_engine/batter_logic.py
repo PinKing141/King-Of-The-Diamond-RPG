@@ -12,6 +12,7 @@ from .commentary import (
     announce_score_change,
     commentary_enabled,
 )
+from match_engine.pitch_definitions import PITCH_TYPES
 from game.strike_zone_renderer import build_pitch_snapshot_lines
 from game.rng import get_rng
 from game.skill_system import (
@@ -1053,6 +1054,112 @@ def _record_ejection(state, player, label):
         name = getattr(player, 'last_name', getattr(player, 'name', 'Player'))
         print(f"   >> {name} is tossed after the argument! Umpire patience ran out.")
 
+
+def _prompt_swing_choice(state, pitcher, batter):
+    """Lightweight swing selector for manual debug flow."""
+    balls = getattr(state, "balls", 0)
+    strikes = getattr(state, "strikes", 0)
+    outs = getattr(state, "outs", 0)
+    print("\n[Swing Choice] Pick your approach")
+    print(f" Count {balls}-{strikes} | Outs {outs}")
+    print(" 1. Normal swing (balanced)")
+    print(" 2. Contact swing (safer, less pop)")
+    print(" 3. Power swing (risk/reward)")
+    print(" 4. Take pitch (no swing)")
+
+    default_action = "Swing"
+    default_mods = {"contact_mod": 0, "power_mod": 0, "eye_mod": 0}
+    choice = input(" Swing #: ").strip()
+
+    if choice == "2":
+        action = "Contact"
+        mods = {"contact_mod": 20, "power_mod": -30, "eye_mod": 10}
+    elif choice == "3":
+        action = "Power"
+        mods = {"contact_mod": -20, "power_mod": 25, "eye_mod": -10}
+    elif choice == "4":
+        action = "Take"
+        mods = {}
+    else:
+        action = default_action
+        mods = default_mods
+
+    try:
+        from player_roles.batter_controls import _prompt_batters_eye
+        guess_payload = _prompt_batters_eye()
+        if guess_payload:
+            mods["guess_payload"] = guess_payload
+    except Exception:
+        pass
+    return action, mods
+
+
+def _maybe_prompt_manual_pitch(state, pitcher, batter):
+    team_ids = getattr(state, "human_team_ids", set()) or set()
+    if not team_ids:
+        return
+    pitcher_team = getattr(pitcher, "team_id", getattr(pitcher, "school_id", None))
+    if pitcher_team not in team_ids:
+        return
+    try:
+        from match_engine.pitch_logic import get_arsenal
+        arsenal = get_arsenal(getattr(pitcher, "id", None)) or []
+    except Exception:
+        arsenal = []
+
+    options = []
+    for idx, pitch in enumerate(arsenal, start=1):
+        name = getattr(pitch, "pitch_name", "Pitch")
+        desc = (PITCH_TYPES.get(name) or {}).get("desc", "")
+        options.append((idx, name, desc))
+
+    if not options:
+        return
+
+    print("\n[Pitch Call] Choose pitch and location")
+    for idx, name, desc in options:
+        print(f"  {idx}. {name} - {desc}")
+    try:
+        sel_raw = input(" Pitch #: ").strip()
+        sel_idx = int(sel_raw) if sel_raw else 1
+    except ValueError:
+        sel_idx = 1
+    sel_idx = max(1, min(sel_idx, len(options)))
+    pitch_name = options[sel_idx - 1][1]
+
+    loc_map = {
+        "1": "Up-In",
+        "2": "Up",
+        "3": "Up-Out",
+        "4": "Mid-In",
+        "5": "Zone",
+        "6": "Mid-Out",
+        "7": "Down-In",
+        "8": "Down",
+        "9": "Down-Out",
+    }
+    print("  Location grid (1-9 like numpad):")
+    print("   7 8 9  (Up-In / Up / Up-Out)")
+    print("   4 5 6  (Mid-In / Zone / Mid-Out)")
+    print("   1 2 3  (Down-In / Down / Down-Out)")
+    loc_choice = input(" Location #: ").strip()
+    location = loc_map.get(loc_choice, "Zone")
+
+    # Build manual call wrapper expected by resolve_pitch override
+    class _ManualCall:
+        def __init__(self, pitch_name, location):
+            self.pitch = type("_P", (), {"pitch_name": pitch_name, "break_level": getattr(pitcher, "breaking_ball", 50) or 50})()
+            self.location = location
+            self.intent = "Manual"
+            self.shakes = 0
+            self.trust = 80
+            self.forced = True
+
+    state.manual_pitch_call = {
+        "pitcher_id": getattr(pitcher, "id", None),
+        "call": _ManualCall(pitch_name, location),
+    }
+
 class AtBatStateMachine:
     STATE_WINDUP = "STATE_WINDUP"
     STATE_PITCH_FLIGHT = "STATE_PITCH_FLIGHT"
@@ -1117,14 +1224,22 @@ class AtBatStateMachine:
                 "batter_id": batter_id,
                 "pitcher_id": pitcher_id,
             })
+
+            # --- USER INPUT CHECK (PITCH/CATCH) ---
+            if getattr(state, "manual_pitch_calls", False):
+                _maybe_prompt_manual_pitch(state, pitcher, batter)
             # --- USER INPUT CHECK (BATTER) ---
             batter_action = "Normal"
             batter_mods = {}
-            user_controls = _player_team_id(batter) == 1 and not sim_fast
+            human_team_ids = getattr(state, "human_team_ids", set()) or set()
+            user_controls = (_player_team_id(batter) in human_team_ids) and not sim_fast
 
             if user_controls:
-                from player_roles.batter_controls import player_bat_turn
-                batter_action, batter_mods = player_bat_turn(pitcher, batter, state)
+                if getattr(state, "manual_swing_prompts", False):
+                    batter_action, batter_mods = _prompt_swing_choice(state, pitcher, batter)
+                else:
+                    from player_roles.batter_controls import player_bat_turn
+                    batter_action, batter_mods = player_bat_turn(pitcher, batter, state)
             else:
                 batter_action, batter_mods = _apply_offense_orders(offense_order, state, batter_action, batter_mods)
                 guess_payload = _auto_batters_eye_guess(state, batter, pitcher, batter_tendencies)

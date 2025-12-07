@@ -26,6 +26,7 @@ from database.setup_db import (
 )
 from world.school_philosophy import PHILOSOPHY_MATRIX
 from game.archetypes import assign_player_archetype
+from game.pitch_mastery import mastery_level_for_xp
 from world.coach_generation import generate_coach_for_school
 from player_roles.two_way import roll_two_way_profile
 
@@ -714,6 +715,8 @@ def generate_stats(position, specific_pos, focus):
 def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
     # Generate PitchRepertoire objects
     arsenal = []
+    base_xp = 0
+    base_level = mastery_level_for_xp(base_xp)
     
     # Fastball
     fb_choice = "4-Seam Fastball"
@@ -724,7 +727,9 @@ def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
     fb = PitchRepertoire(
         pitch_name=fb_choice,
         quality=player_obj.control + random.randint(-5, 10),
-        break_level=player_obj.movement + random.randint(-10, 5) # using movement stat
+        break_level=player_obj.movement + random.randint(-10, 5), # using movement stat
+        mastery_xp=base_xp,
+        mastery_level=base_level,
     )
     arsenal.append(fb)
     
@@ -738,7 +743,9 @@ def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
         pitch = PitchRepertoire(
             pitch_name=p_name,
             quality=player_obj.movement + random.randint(-10, 10),
-            break_level=player_obj.movement + random.randint(-5, 15)
+            break_level=player_obj.movement + random.randint(-5, 15),
+            mastery_xp=base_xp,
+            mastery_level=base_level,
         )
         arsenal.append(pitch)
         

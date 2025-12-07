@@ -107,6 +107,8 @@ class WeekSummary:
             self.stat_gains[stat] += delta
         for stat, delta in (details.get("xp_gains") or {}).items():
             self.xp_gains[stat] += delta
+        for pitch, delta in (details.get("mastery_gains") or {}).items():
+            self.xp_gains[f"mastery:{pitch}"] += delta
 
         if details.get("skills_unlocked"):
             for skill in details["skills_unlocked"]:

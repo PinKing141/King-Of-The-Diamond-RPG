@@ -13,6 +13,7 @@ from match_engine.pitch_logic import get_arsenal, get_current_catcher, get_last_
 from match_engine.pitch_definitions import PITCH_TYPES
 from game.scouting_system import get_scouting_info
 from game.save_manager import autosave_match_state
+from game.pitch_mastery import flush_pitch_xp
 from match_engine.states import EventType, MatchState, PlayMode
 from player_roles import batter_controls as batter_ui
 from battery_system.battery_trust import (
@@ -120,6 +121,8 @@ class MatchSimulation:
         self.bus = bus or EventBus()
         self.loop_state: MatchState = MatchState.WAITING_FOR_PITCH
         self.human_team_ids = {team_id for team_id in (human_team_ids or []) if team_id is not None}
+        if not hasattr(self.state, "human_team_ids"):
+            self.state.human_team_ids = set(self.human_team_ids)
         self.agency_adapter = agency_adapter
         self.awaiting_player_choice: bool = False
         self._current_matchup: Optional[MatchupContext] = None

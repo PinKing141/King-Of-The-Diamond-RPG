@@ -32,6 +32,7 @@ from .brass_band import BrassBand
 from ui.ui_display import render_box_score_panel
 from ui.match_intro import render_match_intro
 from battery_system.battery_trust import apply_trust_buffer
+from game.pitch_mastery import summarize_mastery_report, flush_pitch_xp
 
 
 def save_game_results(state):
@@ -342,6 +343,7 @@ class MatchController:
         bottom_runs = None if skip_bottom else self._current_inning_runs["Bot"]
         self.scoreboard.record_inning(inning_number, top_runs, bottom_runs)
         self.scoreboard.print_board(self.state)
+        flush_pitch_xp(self.state)
         self.state.inning += 1
         self.state.top_bottom = "Top"
         self.context.inning = self.state.inning
@@ -760,6 +762,7 @@ class MatchController:
                 bottom_runs=summary["home_runs"],
                 skipped_bottom=skip_bottom,
             )
+        flush_pitch_xp(self.state)
         self.state.inning += 1
         self.state.top_bottom = "Top"
         self.context.inning = self.state.inning
@@ -914,6 +917,13 @@ def run_match(
     persist_results: bool = True,
     clutch_pitch: Optional[Dict[str, Any]] = None,
     tournament_name: Optional[str] = None,
+    human_team_ids: Optional[Sequence[int]] = None,
+    hero_setting: str = "often",
+    force_hero: bool = False,
+    agency_adapter: Optional[Callable[[MatchupContext], str]] = None,
+    manual_pitch_calls: bool = False,
+    manual_swing_prompts: bool = False,
+    manual_fielding_prompts: bool = False,
 ):
     """
     Main entry point. Call this to play a full game.
@@ -933,8 +943,19 @@ def run_match(
         )
         if not state:
             return None # Error handling
+        state.pitch_mastery_report = {}
         if fast:
             setattr(state, "fast_sim", True)
+        # Enable user-controlled pacing if requested
+        state.hero_setting = hero_setting
+        if force_hero:
+            state.play_mode = PlayMode.HERO.value
+        if manual_pitch_calls:
+            state.manual_pitch_calls = True
+        if manual_swing_prompts:
+            state.manual_swing_prompts = True
+        if manual_fielding_prompts:
+            state.manual_fielding_prompts = True
         if not fast:
             try:
                 render_match_intro(state)
@@ -944,10 +965,18 @@ def run_match(
         if not hasattr(state, "telemetry_store_in_db"):
             state.telemetry_store_in_db = True
         scoreboard = Scoreboard()
-        controller = MatchController(state, scoreboard)
+        controller = MatchController(
+            state,
+            scoreboard,
+            human_team_ids=human_team_ids,
+            agency_adapter=agency_adapter,
+        )
         winner = controller.start_game()
         if not fast:
             render_box_score_panel(scoreboard, state)
+            summary_line = summarize_mastery_report(state)
+            if summary_line:
+                print(f"\nPitch Mastery: {summary_line}")
         if winner and persist_results:
             save_game_results(state)
             # Make sure downstream callers can inspect winner attributes after

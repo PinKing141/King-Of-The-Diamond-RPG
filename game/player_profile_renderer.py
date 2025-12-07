@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from sqlalchemy import func
 
 from database.setup_db import Player, PlayerGameStats, School
+from game.pitch_mastery import mastery_progress
 from ui.ui_display import Colour, clear_screen
 from ui.ui_core import (
     BAR_WIDTH as UI_BAR_WIDTH,
@@ -83,10 +84,10 @@ def colored_bar(value: Optional[int], max_value: int = 100) -> str:
     return f"{col}{'█' * filled}{'░' * pad}{Colour.RESET}"
 
 
-def _stat_bar(value: Optional[int], width: int = BAR_WIDTH) -> str:
+def _stat_bar(value: Optional[int], width: int = BAR_WIDTH, *, max_value: int = 100) -> str:
     if value is None:
         return " " * width
-    pct = max(0, min(100, value)) / 100
+    pct = max(0, min(max_value, value)) / max_value
     filled = int(pct * width)
     return ("█" * filled) + ("▒" * (width - filled))
 
@@ -252,7 +253,8 @@ def _render_attribute_rows(data: Dict, knowledge_level: int) -> None:
         ]
         for label, value, delta in rows:
             display = value if knowledge_level >= 3 else None if knowledge_level == 0 else value
-            bar = _stat_bar(display or 0)
+            max_value = 160 if label == "Velocity" else 100
+            bar = _stat_bar(display or 0, max_value=max_value)
             val_txt = "--" if display is None else f"{int(display):>3}"
             print(f"{label:<10} {bar}  {val_txt}  {_fmt_arrow(delta)}")
         print()
@@ -285,7 +287,12 @@ def _render_pitch_repertoire(player: Player, knowledge_level: int) -> None:
         name = getattr(pitch, "pitch_name", "Unnamed")
         quality = getattr(pitch, "quality", "--") if knowledge_level >= 3 else "--"
         break_level = getattr(pitch, "break_level", "--") if knowledge_level >= 3 else "--"
-        print(f"  {name:<18} Grade:{quality}  Break:{break_level}")
+        xp = getattr(pitch, "mastery_xp", 0)
+        level, next_xp = mastery_progress(xp)
+        level_txt = "Lv ?" if knowledge_level == 0 else f"Lv {level}"
+        if knowledge_level >= 3 and next_xp is not None:
+            level_txt = f"Lv {level} ({xp}/{next_xp})"
+        print(f"  {name:<18} Grade:{quality}  Break:{break_level}  Mastery:{level_txt}")
     print()
 
 
@@ -426,7 +433,12 @@ def render_player_profile_modern(session, player_id: int, *, theme_name: Optiona
         for pitch in repertoire:
             name = getattr(pitch, "pitch_name", "Pitch")
             q = getattr(pitch, "quality", "--")
-            print(f"  • {name} (Grade {q})")
+            xp = getattr(pitch, "mastery_xp", 0)
+            level, next_xp = mastery_progress(xp)
+            mastery_note = f"Lv {level}"
+            if next_xp is not None:
+                mastery_note = f"Lv {level} ({xp}/{next_xp})"
+            print(f"  • {name} (Grade {q} | {mastery_note})")
     elif (player.position or "").lower().startswith("pitch"):
         print("  (No pitches recorded)")
     else:

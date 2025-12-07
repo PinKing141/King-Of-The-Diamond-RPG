@@ -173,6 +173,14 @@ def tick_pause(sec: float = 0.6) -> None:
     time.sleep(sec)
 
 
+# Navigation helpers -------------------------------------------------
+def show_page(fn, *args, clear: bool = True, **kwargs):
+    """Central place to clear the screen before rendering a new view."""
+    if clear:
+        clear_screen()
+    return fn(*args, **kwargs)
+
+
 __all__ = [
     "Colour",
     "clear_screen",
@@ -186,6 +194,7 @@ __all__ = [
     "reveal_lines",
     "panel",
     "tick_pause",
+    "show_page",
     "BAR_WIDTH",
     "THEMES",
     "DEFAULT_THEME",

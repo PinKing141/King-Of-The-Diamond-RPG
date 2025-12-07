@@ -5,7 +5,7 @@ import random
 from typing import List, Optional, Tuple
 
 from .health_system import check_injury_risk, apply_injury, get_performance_modifiers
-from database.setup_db import Player
+from database.setup_db import PitchRepertoire, Player
 from game.academic_system import resolve_study_session, clamp, is_academically_eligible
 from game.game_context import GameContext
 from game.personality_effects import adjust_player_morale, decay_slump
@@ -17,6 +17,7 @@ from game.player_progression import (
 from game.relationship_manager import register_morale_rebound
 from game.skill_system import check_and_grant_skills, list_player_skill_keys
 from game.trait_logic import get_progression_speed_multiplier
+from game.pitch_mastery import MASTERY_THRESHOLDS, mastery_level_for_xp, mastery_progress
 from ui.ui_display import Colour
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,13 @@ def apply_scheduled_action(
     jersey_num = player.jersey_number
     position = player.position
     is_academic_ok = is_academically_eligible(player, player.school)
+
+    def _is_reserve_player(p: Player) -> bool:
+        role = (getattr(p, 'role', '') or '').upper()
+        jersey = getattr(p, 'jersey_number', None)
+        if role == 'RESERVE':
+            return True
+        return jersey is not None and jersey >= 90
     
     # If injured, force rest (or specific rehab if implemented)
     if injury_days > 0:
@@ -170,7 +178,10 @@ def apply_scheduled_action(
 
     # --- INJURY CHECK ---
     # Only rigorous physical activities have risk
-    is_rigorous = action_type and (action_type.startswith('train_') or action_type in ['practice_match', 'team_practice', 'b_team_match'])
+    is_rigorous = action_type and (
+        action_type.startswith('train_')
+        or action_type in ['practice_match', 'team_practice', 'b_team_match', 'bullpen_session']
+    )
     
     if is_rigorous:
         intensity = 1.5 if 'match' in action_type else 1.0
@@ -222,6 +233,13 @@ def apply_scheduled_action(
 
     # 4. B-TEAM MATCH (New Feature)
     elif action_type == 'b_team_match':
+        if not _is_reserve_player(player):
+            return {
+                "status": "skipped",
+                "message": "Bench players cannot join B-Team scrimmages; coach keeps them out.",
+                "fatigue_change": 0,
+                "stat_changes": {},
+            }
         # Logic: If you are in the top 9 (Starter), this is too easy.
         # If you are 10-18 (Bench) or 99 (Reserve), this is valuable.
         # Assuming starters are jersey 1-9
@@ -265,6 +283,56 @@ def apply_scheduled_action(
         base_gain = 0.1 * mods.get('training_gain', 1.0)
         stat_gains = {'control': base_gain, 'contact': base_gain} 
         summary = "Mind & Focus: Visualisation training."
+
+    elif action_type == 'bullpen_session':
+        if position != "Pitcher" and not getattr(player, "is_two_way", False):
+            return {
+                "status": "skipped",
+                "message": "Bullpen work reserved for pitchers.",
+                "fatigue_change": 0,
+                "stat_changes": {},
+            }
+        repertoire: List[PitchRepertoire] = getattr(player, "pitch_repertoire", None) or []
+        if not repertoire:
+            try:
+                repertoire = context.session.query(PitchRepertoire).filter_by(player_id=player.id).all()
+            except Exception:
+                repertoire = []
+        if not repertoire:
+            return {
+                "status": "skipped",
+                "message": "No pitches recorded yet. Learn a pitch first.",
+                "fatigue_change": 0,
+                "stat_changes": {},
+            }
+
+        fatigue_change = 12
+        target = sorted(
+            repertoire,
+            key=lambda p: (getattr(p, "mastery_level", 0) or 0, getattr(p, "mastery_xp", 0) or 0),
+        )[0]
+        current_xp = int(getattr(target, "mastery_xp", 0) or 0)
+        level, next_threshold = mastery_progress(current_xp)
+        prev_threshold = MASTERY_THRESHOLDS[level - 1] if level > 0 else 0
+
+        if next_threshold is None:
+            summary = f"Bullpen tune-up: {target.pitch_name} already mastered."
+        else:
+            span = max(1, next_threshold - prev_threshold)
+            base_pct = random.uniform(0.05, 0.10)
+            inspiration = random.random() < 0.15
+            if inspiration:
+                base_pct = random.uniform(0.15, 0.20)
+            gain = max(1, int(round(span * base_pct)))
+            target.mastery_xp = current_xp + gain
+            target.mastery_level = mastery_level_for_xp(target.mastery_xp)
+            mastery_gains[target.pitch_name] = gain
+            context.session.add(target)
+            level_up_note = f" -> Lv{target.mastery_level}" if target.mastery_level > level else ""
+            inspiration_note = " (inspiration)" if inspiration else ""
+            summary = (
+                f"Bullpen Session: {target.pitch_name} +{gain} XP{level_up_note}{inspiration_note}."
+            )
 
     # 8. SPECIFIC DRILLS
     elif action_type and action_type.startswith('train_'):
@@ -333,6 +401,7 @@ def apply_scheduled_action(
 
     xp_gains: dict = {}
     applied_stat_changes: dict = {}
+    mastery_gains: dict = {}
 
     for stat, value in stat_gains.items():
         variance = random.uniform(0.9, 1.1)
@@ -433,6 +502,7 @@ def apply_scheduled_action(
         "fatigue_change": fatigue_change,
         "stat_changes": applied_stat_changes,
         "xp_gains": xp_gains,
+        "mastery_gains": mastery_gains,
         "breakthrough": breakthrough_event,
         "new_fatigue": new_fatigue,
         "skills_unlocked": unlocked_skills,

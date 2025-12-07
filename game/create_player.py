@@ -19,6 +19,7 @@ from game.relationship_manager import seed_relationships
 from game.personality import roll_player_personality
 from game.player_generation import maybe_assign_bad_trait
 from game.trait_logic import grant_user_creation_trait_rolls
+from game.pitch_mastery import mastery_level_for_xp
 from match_engine.pitch_definitions import PITCH_TYPES
 
 # --- GROWTH STYLE DEFINITIONS ---
@@ -74,6 +75,17 @@ DEFAULT_PITCH_ARSENAL = [pitch for pitch in ("4-Seam Fastball", "Slider", "Chang
 FASTBALL_PITCHES = {"4-Seam Fastball", "2-Seam Fastball", "Sinker", "Turbo Sinker", "Shuuto", "Cutter", "Power Cutter"}
 MIN_PITCHES = 1
 MAX_PITCHES = 4
+
+
+def _dedupe_preserve_order(items: Optional[List[str]]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+    for item in items or []:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
 
 _PREFECTURE_CACHE: Optional[List[str]] = None
 _CITY_CACHE: Dict[str, List[Dict[str, Any]]] = {}
@@ -230,7 +242,7 @@ def _print_option(title: str) -> None:
 
 
 def _validate_pitch_selection(selection: Optional[List[str]]) -> Tuple[bool, str]:
-    picks = [p for p in (selection or []) if p in PITCH_SELECTION_POOL]
+    picks = [p for p in _dedupe_preserve_order(selection) if p in PITCH_SELECTION_POOL]
     if len(picks) < MIN_PITCHES:
         return False, f"Select at least {MIN_PITCHES} pitches."
     if len(picks) > MAX_PITCHES:
@@ -378,13 +390,22 @@ def commit_player_to_db(session: Session, data) -> int:
 
 
 def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Optional[List[str]], stats: dict) -> None:
-    if not player or not pitch_names or player.position != "Pitcher":
+    if not player or player.position != "Pitcher":
+        return
+
+    picks = _dedupe_preserve_order([p for p in (pitch_names or []) if p in PITCH_SELECTION_POOL])
+    if not picks:
+        picks = list(DEFAULT_PITCH_ARSENAL)
+    picks = picks[:MAX_PITCHES]
+    if not picks:
         return
 
     control = stats.get('control') or getattr(player, 'control', 50) or 50
     movement = stats.get('movement') or getattr(player, 'movement', 50) or 50
+    base_xp = 0
+    base_level = mastery_level_for_xp(base_xp)
 
-    for name in pitch_names:
+    for name in picks:
         quality = max(30, min(95, int(control + random.randint(-6, 6))))
         break_level = max(30, min(95, int(movement + random.randint(-6, 6))))
         entry = PitchRepertoire(
@@ -392,6 +413,8 @@ def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Option
             pitch_name=name,
             quality=quality,
             break_level=break_level,
+            mastery_xp=base_xp,
+            mastery_level=base_level,
         )
         session.add(entry)
     session.commit()
@@ -766,13 +789,15 @@ def create_hero(session: Session) -> Optional[int]:
                 step += 1
                 continue
 
-            selected = list(data['pitch_arsenal'] or DEFAULT_PITCH_ARSENAL)
+            # Start empty; only the user's toggles populate this list.
+            selected = _dedupe_preserve_order(data.get('pitch_arsenal'))
             while True:
+                _render_creation_banner(step, data, STEP_TITLES.get(step, "Configure Pitch Arsenal"))
                 _print_option("Configure Pitch Arsenal")
                 print(f"Need {MIN_PITCHES}-{MAX_PITCHES} total pitches. Mix and match however you like.")
                 current_display = ", ".join(selected) if selected else "--"
                 print(f"Selected [{len(selected)}/{MAX_PITCHES}]: {current_display}")
-                print("Choices: toggle #, D=Done, R=Reset defaults, C=Clear, 0=Back")
+                print("Choices: toggle #, D=Done, R=Reset (empty), C=Clear, 0=Back")
                 for idx, pitch in enumerate(PITCH_SELECTION_POOL, start=1):
                     marker = "*" if pitch in selected else " "
                     fb_tag = " (FB)" if pitch in FASTBALL_PITCHES else ""
@@ -780,13 +805,13 @@ def create_hero(session: Session) -> Optional[int]:
 
                 sel = input("Command: ").strip().lower()
                 if sel in {'0', 'b'}:
-                    data['pitch_arsenal'] = selected
+                    data['pitch_arsenal'] = _dedupe_preserve_order(selected)
                     step -= 1
                     break
                 if sel in {'d', 'done'}:
                     valid, message = _validate_pitch_selection(selected)
                     if valid:
-                        data['pitch_arsenal'] = selected
+                        data['pitch_arsenal'] = _dedupe_preserve_order(selected)
                         step += 1
                         break
                     print(message)
@@ -796,7 +821,7 @@ def create_hero(session: Session) -> Optional[int]:
                     selected = []
                     continue
                 if sel in {'r', 'reset'}:
-                    selected = list(DEFAULT_PITCH_ARSENAL)
+                    selected = []
                     continue
                 if sel.isdigit():
                     idx = int(sel) - 1
@@ -832,8 +857,8 @@ def create_hero(session: Session) -> Optional[int]:
                 print(f"Arm Slot: {arm_slot}")
                 trait_txt = "Unlocked" if data.get('starter_trait') else "--"
                 print(f"Starter Trait: {trait_txt}")
-                pitch_summary = ", ".join(data.get('pitch_arsenal') or DEFAULT_PITCH_ARSENAL)
-                print(f"Pitches: {pitch_summary}")
+                arsenal = _dedupe_preserve_order(data.get('pitch_arsenal'))
+                print(f"Pitches: {', '.join(arsenal) if arsenal else '--'}")
             print("─" * FRAME_WIDTH)
             
             print("1. Start Game")

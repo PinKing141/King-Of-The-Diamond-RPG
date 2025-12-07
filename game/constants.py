@@ -11,6 +11,7 @@ _DEFAULT_ACTION_COSTS: Dict[str, int] = {
     "team_practice": 20,
     "practice_match": 35,
     "b_team_match": 25,
+    "bullpen_session": 18,
     "train_heavy": 15,
     "train_light": 10,
     "study": 5,
@@ -26,6 +27,7 @@ _DEFAULT_ACTION_METADATA: Dict[str, Dict[str, str]] = {
     "team_practice": {"short": "TEAM", "desc": "Mandatory drills with the varsity squad.", "colour": "YELLOW"},
     "practice_match": {"short": "GAME", "desc": "A-team practice game for prestige.", "colour": "RED"},
     "b_team_match": {"short": "SCRM", "desc": "B-team scrimmage to climb the ladder.", "colour": "GOLD"},
+    "bullpen_session": {"short": "BULP", "desc": "Focused bullpen to grow pitch mastery.", "colour": "CYAN"},
     "train_heavy": {"short": "HARD", "desc": "High-intensity strength & power focus.", "colour": "CYAN"},
     "train_light": {"short": "DRIL", "desc": "Technique reps for finesse stats.", "colour": "CYAN"},
     "study": {"short": "STDY", "desc": "Academics time to avoid suspension.", "colour": "BLUE"},
@@ -65,3 +67,7 @@ SECOND_STRING_WEEKEND: Dict[Tuple[int, int], str] = {
 
 SQUAD_FIRST_STRING = "FIRST_STRING"
 SQUAD_SECOND_STRING = "SECOND_STRING"
+BENCH_WEEKEND: Dict[Tuple[int, int], str] = {
+    (5, 0): "train_heavy",
+    (5, 1): "team_practice",
+}

@@ -396,6 +396,9 @@ def trigger_random_event(context: Optional[GameContext] = None, current_week: Op
     """
     Called weekly. Decides if an event happens, picks one, runs it, and saves changes.
     """
+    if current_week is not None and current_week <= 1:
+        return
+
     if random.random() > 0.40: # 40% chance
         return 
 

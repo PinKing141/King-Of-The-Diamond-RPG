@@ -7,7 +7,8 @@ import random
 from core.event_bus import EventBus
 from database.setup_db import create_database, GameState, School, Player, get_session, safe_delete_db
 from ui.ui_display import Colour, clear_screen, render_weekly_dashboard
-from ui.ui_core import choose_theme, panel, DEFAULT_THEME
+from ui.ui_core import choose_theme, panel, DEFAULT_THEME, show_page
+from debug.debug_tools import input_with_debug
 from game.weekly_scheduler import start_week, run_week_automatic
 from world_sim.tournament_sim import run_koshien_tournament, run_spring_koshien
 from world_sim.qualifiers import run_season_qualifiers
@@ -22,6 +23,19 @@ from match_engine.controller import MatchController
 from match_engine.commentary import CommentaryListener
 from config import DATA_FOLDER
 
+
+def _has_game_this_week(player, week: int) -> bool:
+    """Return True if this week has any scheduled match (practice or tournament)."""
+    try:
+        from game.weekly_scheduler import build_mandatory_schedule
+        mandatory = build_mandatory_schedule(player)
+        if any("match" in (action or "") for action in mandatory.values()):
+            return True
+    except Exception:
+        pass
+    # Known tournament trigger weeks (qualifiers, spring Koshien)
+    return week in {15, 48}
+
 # Ensure database tables exist
 create_database()
 
@@ -33,6 +47,17 @@ GLOBAL_EVENT_BUS = initialise_analytics(EventBus())
 # -----------------------------------------------------
 
 MAIN_MENU_THEME = DEFAULT_THEME
+
+MONTH_NAMES = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+]
+
+
+def print_week_header(current_year: int, current_month: int, current_week: int) -> None:
+    month_label = MONTH_NAMES[(current_month - 1) % 12] if current_month else "--"
+    print(f"{Colour.gold}>>> YEAR {current_year} | WEEK {current_week} / 50{Colour.RESET}")
+    print(f"Date: {month_label} (Month {current_month})")
 
 
 def print_banner(theme_name: str = MAIN_MENU_THEME):
@@ -170,7 +195,8 @@ def run_smart_simulation(context, session, state, target_week: int):
 
         user_school_id = player.school_id
         print(f"\r >> Processing Week {state.current_week}...", end="")
-        simulate_background_matches(user_school_id, async_mode=True)
+        # Show detailed world sim logs when fast-forwarding through weeks.
+        simulate_background_matches(user_school_id, async_mode=True, verbose=True)
 
         context.refresh_session()
         context.set_player(player.id, user_school_id)
@@ -346,14 +372,9 @@ def run_game_loop():
             user_school_id = user_player.school_id
             context.set_player(user_player.id, user_school_id)
 
+            clear_screen()
             print_banner()
-            month_names = [
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-            ]
-            month_label = month_names[(state.current_month - 1) % 12] if state.current_month else "--"
-            print(f"{Colour.gold}>>> YEAR {state.current_year} | WEEK {current_week} / 50{Colour.RESET}")
-            print(f"Date: {month_label} (Month {state.current_month})")
+            print_week_header(state.current_year, state.current_month, current_week)
 
             # -----------------------------------------
             # SEASON END
@@ -380,9 +401,8 @@ def run_game_loop():
                 continue
 
             # -----------------------------------------
-            # WORLD SIM EVENTS
+            # WORLD SIM EVENTS (silent in manual loop)
             # -----------------------------------------
-            print(f"{Colour.dim}Simulating world matches...{Colour.RESET}")
             simulate_background_matches(user_school_id)
 
             # -----------------------------------------
@@ -420,16 +440,90 @@ def run_game_loop():
                 run_spring_koshien(user_school_id)
 
             # -----------------------------------------
-            # TRAINING WEEK
+            # TRAINING WEEK (with pre-week menu)
             # -----------------------------------------
             context.refresh_session()
             context.set_player(user_player.id, user_school_id)
-            print(f"{Colour.dim}Opening schedule...{Colour.RESET}")
-            start_week(context, current_week)
+
+            def _snapshot_player(player):
+                school_name = getattr(player.school, "name", "Unknown") if getattr(player, "school", None) else "Unknown"
+                return {
+                    "current_year": state.current_year,
+                    "current_month": state.current_month,
+                    "current_week": current_week,
+                    "last_name": getattr(player, "last_name", ""),
+                    "first_name": getattr(player, "first_name", ""),
+                    "position": getattr(player, "position", ""),
+                    "jersey_number": getattr(player, "jersey_number", 0),
+                    "school_name": school_name,
+                    "school_id": getattr(player, "school_id", None),
+                    "player_id": getattr(player, "id", None),
+                    "year": getattr(player, "year", 1),
+                    "control": getattr(player, "control", 0),
+                    "power": getattr(player, "power", 0),
+                    "velocity": getattr(player, "velocity", 0),
+                    "contact": getattr(player, "contact", 0),
+                    "stamina": getattr(player, "stamina", 0),
+                    "running": getattr(player, "running", 0),
+                    "breaking_ball": getattr(player, "breaking_ball", 0),
+                    "fielding": getattr(player, "fielding", 0),
+                    "fatigue": getattr(player, "fatigue", 0),
+                    "morale": getattr(player, "morale", 50),
+                }
+
+            scouting_available = _has_game_this_week(user_player, current_week)
+
+            while True:
+                clear_screen()
+                print_banner()
+                print_week_header(state.current_year, state.current_month, current_week)
+                print(f"{Colour.dim}Prepare your week:{Colour.RESET}")
+                print("\nWeek Prep Options:")
+                print(" 1. Plan Week")
+                label = "2. Scouting Report" if scouting_available else "2. Scouting Report (locked — no game this week)"
+                print(f" {label}")
+                print(" 3. Character Sheet")
+                print(" 4. Save Game")
+                print(" 0. Back to Main Menu")
+
+                pre_choice = input_with_debug(">> ", context=context, session=session, state=state)
+                if pre_choice is None:
+                    continue
+                pre_choice = pre_choice.strip().lower()
+
+                if pre_choice == '1':
+                    print(f"{Colour.dim}Opening schedule...{Colour.RESET}")
+                    executed = show_page(start_week, context, current_week, state)
+                    if executed:
+                        break
+                    # If planning was cancelled, stay on Week Prep menu
+                    continue
+                if pre_choice == '2':
+                    if not scouting_available:
+                        print("Scouting is only available when a match is scheduled this week.")
+                        continue
+                    from ui.scouting_report import view_scouting_menu
+                    show_page(view_scouting_menu, context)
+                    continue
+                if pre_choice == '3':
+                    from ui.ui_display import render_screen
+                    show_page(render_screen, session, _snapshot_player(user_player))
+                    input("Press Enter to return...")
+                    continue
+                if pre_choice == '4':
+                    show_page(show_save_menu, "SAVE")
+                    continue
+                if pre_choice == '0':
+                    return
+                print("Invalid choice.")
+                continue
 
             # -----------------------------------------
             # MENU
             # -----------------------------------------
+            clear_screen()
+            print_banner()
+            print_week_header(state.current_year, state.current_month, current_week)
             print("\nOptions:")
             print(" [Enter] Next Week")
             print(" [S] Scouting / Roster")
@@ -437,7 +531,10 @@ def run_game_loop():
             print(" [A] Smart Sim (Delegate Weeks)")
             print(" [Q] Quit to Menu")
 
-            cmd = input(">> ").lower()
+            cmd_raw = input_with_debug(">> ", context=context, session=session, state=state)
+            if cmd_raw is None:
+                continue
+            cmd = cmd_raw.lower()
 
             if cmd == 's':
                 from ui.scouting_report import view_scouting_menu
@@ -447,9 +544,15 @@ def run_game_loop():
                 show_save_menu("SAVE")
                 continue
             elif cmd == 'a':
-                target_input = input(
-                    f"Simulate until week (>{state.current_week}): "
-                ).strip()
+                target_input = input_with_debug(
+                    f"Simulate until week (>{state.current_week}): ",
+                    context=context,
+                    session=session,
+                    state=state,
+                )
+                if target_input is None:
+                    continue
+                target_input = target_input.strip()
                 try:
                     target_week = int(target_input) if target_input else state.current_week + 1
                 except ValueError:
