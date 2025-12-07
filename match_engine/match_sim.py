@@ -352,6 +352,7 @@ class MatchSimulation:
             "batting_team_id": batting_team_id,
             "fielding_team_id": fielding_team_id,
             "momentum": self._momentum_snapshot(),
+            "last_pitch": getattr(self.state, "last_pitch_snapshot", None),
         }
         self.loop_state = MatchState.CONTACT_MOMENT
         self.bus.publish(EventType.BATTER_SWUNG.value, swing_payload)
@@ -380,6 +381,7 @@ class MatchSimulation:
                 "error_on_play": bool(play_detail.get("error_on_play")),
                 "error_type": play_detail.get("error_type"),
                 "error_position": play_detail.get("error_position"),
+                "last_pitch": getattr(self.state, "last_pitch_snapshot", None),
                 "momentum": self._momentum_snapshot(),
             },
         )
@@ -653,31 +655,40 @@ def _simulate_match(
     from game.coach_strategy import consume_strategy_mods
     from .controller import run_match as engine_run_match
 
+    auto_play_inputs = fast or silent
+    human_team_ids = [] if auto_play_inputs else None
+
     if fast:
         winner = engine_run_match(
             home_team.id,
             away_team.id,
             fast=True,
+            auto_play_inputs=auto_play_inputs,
             persist_results=persist_results,
             clutch_pitch=clutch_pitch,
             tournament_name=tournament_name,
+            human_team_ids=human_team_ids,
         )
     elif silent:
         with _suppress_print():
             winner = engine_run_match(
                 home_team.id,
                 away_team.id,
+                auto_play_inputs=auto_play_inputs,
                 clutch_pitch=clutch_pitch,
                 tournament_name=tournament_name,
                 persist_results=persist_results,
+                human_team_ids=human_team_ids,
             )
     else:
         winner = engine_run_match(
             home_team.id,
             away_team.id,
+            auto_play_inputs=auto_play_inputs,
             clutch_pitch=clutch_pitch,
             tournament_name=tournament_name,
             persist_results=persist_results,
+            human_team_ids=human_team_ids,
         )
 
     score_str = _fetch_latest_score(home_team.id, away_team.id, tournament_name)

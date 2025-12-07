@@ -267,6 +267,8 @@ def _render_attribute_rows(data: Dict, knowledge_level: int) -> None:
             ("Fielding", player.fielding, deltas.get("fielding")),
             ("Throwing", player.throwing, deltas.get("throwing")),
         ]
+        if (player.position or "").lower() == "catcher":
+            rows.append(("Wall", getattr(player, "catcher_ability", None), deltas.get("catcher_ability")))
         for label, value, delta in rows:
             display = value if knowledge_level >= 2 else None if knowledge_level == 0 else value
             bar = _stat_bar(display or 0)
@@ -420,6 +422,8 @@ def render_player_profile_modern(session, player_id: int, *, theme_name: Optiona
         ("Fielding", getattr(player, "fielding", None)),
         ("Throwing", getattr(player, "throwing", None)),
     ]
+    if (player.position or "").lower() == "catcher":
+        hitting.append(("Wall", getattr(player, "catcher_ability", None)))
     for label, val in primary:
         bar = ui_colored_bar(val, 100, theme_name)
         print(f" {label:<10} {bar}  {val if val is not None else '--'}")

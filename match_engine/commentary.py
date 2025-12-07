@@ -10,6 +10,7 @@ from ui.ui_display import (
     render_minigame_ui,
 )
 from game.rng import get_rng
+from game.commentary_gen import generate_pitch_commentary
 from .states import EventType
 
 rng = get_rng()
@@ -236,6 +237,21 @@ class CommentaryListener:
             return default
         return self._player_names.get(player_id, default)
 
+    def _compose_pitch_data(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Pick best available pitch snapshot for procedural commentary."""
+
+        pitch_data = (payload.get("last_pitch") or {}) if payload else {}
+        if not pitch_data and self._last_pitch:
+            pitch_data = dict(self._last_pitch)
+        if not pitch_data:
+            return None
+        pitch_data = dict(pitch_data)
+        if "result" not in pitch_data and payload:
+            pitch_data["result"] = payload.get("result_type") or payload.get("result")
+        if "pitch_name" not in pitch_data and payload:
+            pitch_data["pitch_name"] = payload.get("pitch_name") or payload.get("type")
+        return pitch_data
+
     def _team_label_from_id(self, team_id: Optional[int]) -> str:
         if team_id is None:
             return "Offense"
@@ -288,12 +304,19 @@ class CommentaryListener:
             return
         batter = self._player_label(payload.get("batter_id"), "Batter")
         pitcher = self._player_label(payload.get("pitcher_id"), "Pitcher")
-        flavor = rng.choice(STRIKEOUT_PHRASES)
-        print(f"      {Colour.CYAN}{pitcher} fans {batter}!{Colour.RESET} {flavor}")
+        pitch_data = self._compose_pitch_data(payload)
+        comment = generate_pitch_commentary(pitcher, batter, pitch_data or {}) if pitch_data else None
+        if comment:
+            print(f"      {Colour.CYAN}{comment}{Colour.RESET}")
+        else:
+            flavor = rng.choice(STRIKEOUT_PHRASES)
+            print(f"      {Colour.CYAN}{pitcher} fans {batter}!{Colour.RESET} {flavor}")
 
     def _on_play_result(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
             return
+        pitcher = self._player_label(payload.get("pitcher_id"), "Pitcher")
+        batter = self._player_label(payload.get("batter_id"), "Batter")
         description = payload.get("description", "Play resolves.")
         runs = payload.get("runs_scored", 0)
         drama_tag = _drama_tag(payload.get("drama_level"))
@@ -308,6 +331,20 @@ class CommentaryListener:
         if runs:
             batting_team = self._team_names.get("away" if (payload.get("half") == "Top") else "home", "Offense")
             print(f"   !! {Colour.gold}{runs} run(s) answer for {batting_team}!{Colour.RESET}")
+
+        comment = None
+        if payload.get("result_type") != "strikeout":
+            pitch_data = self._compose_pitch_data(payload)
+            if pitch_data:
+                result_tag = str(pitch_data.get("result") or "").lower()
+                contactish = bool(pitch_data.get("exit_velocity")) or bool(pitch_data.get("contact_quality")) or result_tag == "inplay"
+                blocked = result_tag == "blocked_pitch"
+                if contactish or blocked:
+                    if contactish and result_tag != "inplay":
+                        pitch_data["result"] = "inplay"
+                    comment = generate_pitch_commentary(pitcher, batter, pitch_data)
+        if comment:
+            print(f"      {Colour.CYAN}{comment}{Colour.RESET}")
         self._print_momentum(payload)
 
     def _on_momentum_shift(self, payload: Dict[str, Any]) -> None:

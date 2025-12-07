@@ -170,13 +170,29 @@ def ensure_player_schema():
         statements.append("ALTER TABLE players ADD COLUMN training_xp TEXT DEFAULT '{}'")
     if 'theme_song' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN theme_song VARCHAR")
+    if 'catcher_ability' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN catcher_ability INTEGER DEFAULT 0")
 
     if not statements:
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE players SET catcher_ability = COALESCE(catcher_ability, 0)"))
         return
 
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+        # Backfill: assign reasonable Wall to catchers when column is added
+        conn.execute(
+            text(
+                "UPDATE players SET catcher_ability = COALESCE(catcher_ability, 0)"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE players SET catcher_ability = ((fielding + discipline) / 2) "
+                "WHERE position = 'Catcher' AND COALESCE(catcher_ability, 0) = 0"
+            )
+        )
 
 
 def ensure_player_skill_schema():
@@ -470,6 +486,7 @@ class Player(Base):
     # Mental / Battery
     pitcher_personality = Column(String, nullable=True)
     catcher_leadership = Column(Integer, default=0)
+    catcher_ability = Column(Integer, default=0)
     battery_xp = Column(Integer, default=0)
     trust_baseline = Column(Integer, default=50)
     mental = Column(Integer, default=50)

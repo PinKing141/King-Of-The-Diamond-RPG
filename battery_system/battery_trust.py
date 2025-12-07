@@ -226,6 +226,16 @@ def adjust_battery_sync(container, pitcher_id: Optional[int], catcher_id: Option
     return new_value
 
 
+def trust_scaled_wall(catcher, trust_value: Optional[float]) -> float:
+    """Return wall score adjusted by current trust (low trust weakens blocking)."""
+
+    base = _clamp(getattr(catcher, "catcher_ability", 0) or 0, 0, 100) if catcher else 0
+    if trust_value is None:
+        return base
+    trust_delta = ((float(trust_value) or 50.0) - 50.0) * 0.25  # +/-12.5 at extremes
+    return _clamp(base + trust_delta, 0, 100)
+
+
 def apply_trust_buffer(buffer: Dict[Tuple[int, int], int]) -> None:
     """Commit aggregated trust deltas for a single game using one DB session."""
 
@@ -247,3 +257,36 @@ def apply_trust_buffer(buffer: Dict[Tuple[int, int], int]) -> None:
             if "database is locked" not in str(exc).lower() or attempt == 4:
                 raise
             time.sleep(0.1 * (attempt + 1))
+
+
+def summarize_battery_pair(container, pitcher, catcher) -> Dict[str, object]:
+    """Lightweight helper for UI/analysis to surface current battery chemistry."""
+
+    pitcher_id = getattr(pitcher, "id", None)
+    catcher_id = getattr(catcher, "id", None)
+    trust = get_trust_snapshot(container, pitcher_id, catcher_id)
+    sync = get_battery_sync(container, pitcher_id, catcher_id)
+    raw_wall = _clamp(getattr(catcher, "catcher_ability", 0) or 0, 0, 100) if catcher else 0
+    wall = trust_scaled_wall(catcher, trust)
+
+    label = "Unfamiliar"
+    if trust >= 90 and sync >= 1.5:
+        label = "Telepathic Battery"
+    elif wall >= 80 and trust >= 70:
+        label = "Stone Wall Battery"
+    elif sync <= -1.0:
+        label = "Out of Sync"
+    elif trust >= 75:
+        label = "Trusted Pair"
+    elif wall >= 70:
+        label = "Reliable Wall"
+
+    return {
+        "pitcher_id": pitcher_id,
+        "catcher_id": catcher_id,
+        "trust": trust,
+        "sync": sync,
+        "wall": wall,
+        "raw_wall": raw_wall,
+        "label": label,
+    }

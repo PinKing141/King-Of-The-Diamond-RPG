@@ -21,6 +21,7 @@ from game.skill_system import (
     gather_passive_skill_modifiers,
     player_has_skill,
 )
+from battery_system.battery_trust import adjust_battery_sync
 from player_roles.fielder_controls import prompt_defensive_shift, SHIFT_LABELS
 from match_engine.confidence import (
     adjust_confidence,
@@ -1057,6 +1058,8 @@ def _record_ejection(state, player, label):
 
 def _prompt_swing_choice(state, pitcher, batter):
     """Lightweight swing selector for manual debug flow."""
+    if getattr(state, "auto_play_inputs", False):
+        return "Swing", {"contact_mod": 0, "power_mod": 0, "eye_mod": 0}
     balls = getattr(state, "balls", 0)
     strikes = getattr(state, "strikes", 0)
     outs = getattr(state, "outs", 0)
@@ -1095,6 +1098,8 @@ def _prompt_swing_choice(state, pitcher, batter):
 
 
 def _maybe_prompt_manual_pitch(state, pitcher, batter):
+    if getattr(state, "auto_play_inputs", False):
+        return
     team_ids = getattr(state, "human_team_ids", set()) or set()
     if not team_ids:
         return
@@ -1331,6 +1336,14 @@ class AtBatStateMachine:
                 times_through_order=times_faced,
             )
             last_pitch_res = pitch_res
+            state.last_pitch_snapshot = {
+                "velocity": getattr(pitch_res, "velocity", 0),
+                "pitch_name": getattr(pitch_res, "pitch_name", None),
+                "pitch_family": getattr(pitch_res, "pitch_family", None),
+                "location": getattr(pitch_res, "location", None),
+                "result": getattr(pitch_res, "outcome", None),
+                "contact_quality": getattr(pitch_res, "contact_quality", None),
+            }
             tracker = _update_pitch_diagnostics(state, pitcher.id, pitch_res.outcome)
 
             announce_pitch(pitch_res)
@@ -1348,9 +1361,25 @@ class AtBatStateMachine:
             })
             if pitch_res.outcome == "Ball":
                 state.balls += 1
-                if getattr(pitch_res, 'special', None) == "wild_pitch":
+                special = getattr(pitch_res, 'special', None)
+                if special in {"wild_pitch", "passed_ball"}:
+                    label = "Wild pitch" if special == "wild_pitch" else "Passed ball"
                     if commentary_enabled():
-                        print("   >> Wild pitch! Everyone moves up 90 feet.")
+                        print(f"   >> {label}! Everyone moves up 90 feet.")
+                        call_ctx = getattr(state, "last_battery_call", {}) or {}
+                        trust_note = call_ctx.get("trust")
+                        wall_note = call_ctx.get("wall")
+                        archetype = call_ctx.get("label")
+                        detail_bits = []
+                        if archetype:
+                            detail_bits.append(archetype)
+                        if wall_note is not None:
+                            detail_bits.append(f"Wall {wall_note:.0f}")
+                        if trust_note is not None:
+                            detail_bits.append(f"Trust {float(trust_note):.0f}")
+                        if detail_bits:
+                            status = "Cross-up vibes" if trust_note is not None and float(trust_note) < 45 else "Battery note"
+                            print(f"      {status}: {' | '.join(detail_bits)}")
                     wild_runs = _advance_on_wild_pitch(state)
                     if wild_runs:
                         announce_score_change(wild_runs, getattr(batting_team, 'name', 'Unknown School'))
@@ -1359,25 +1388,52 @@ class AtBatStateMachine:
                         else:
                             state.home_score += wild_runs
                         pitcher_stats["runs_allowed"] += wild_runs
-                    adjust_confidence(state, getattr(pitcher, 'id', None), -6, reason="wild_pitch")
+                    pitcher_hit = -6 if special == "wild_pitch" else -2
+                    catcher_hit = -3 if special == "wild_pitch" else -6
+                    adjust_confidence(state, getattr(pitcher, 'id', None), pitcher_hit, reason="wild_pitch")
                     catcher = get_current_catcher(state)
                     if catcher:
-                        adjust_confidence(state, getattr(catcher, 'id', None), -3, reason="wild_pitch", contagious=False)
-                    record_pitcher_stress(state, pitcher_id, spike=True)
+                        adjust_confidence(state, getattr(catcher, 'id', None), catcher_hit, reason="wild_pitch", contagious=False)
+                        adjust_battery_sync(state, pitcher_id, getattr(catcher, 'id', None), -0.45 if special == "wild_pitch" else -0.25)
+                    record_pitcher_stress(state, pitcher_id, spike=(special == "wild_pitch"))
                     maybe_catcher_settle(state, pitcher_id)
-                    if state.balls == 4:
-                        if commentary_enabled():
-                            print("   >> WALK.")
-                        was_slumping = get_confidence(state, batter_id) <= -30
-                        state.runners[0] = batter 
-                        batter_stats["walks"] += 1
-                        pitcher_stats["walks"] += 1
-                        _apply_walk_confidence(state, batter, pitcher)
-                        record_pitcher_stress(state, pitcher_id, spike=True)
-                        record_rally_progress(state, offense_team_id, batter_id, reached_base=True)
-                        apply_slump_boost(state, batter_id, was_slumping, "walk")
-                        maybe_catcher_settle(state, pitcher_id)
-                        _trigger_presence(state, pitcher, "walk_batter", "Issued Walk")
+                elif special == "blocked_pitch":
+                    if commentary_enabled():
+                        call_ctx = getattr(state, "last_battery_call", {}) or {}
+                        wall_note = call_ctx.get("wall")
+                        trust_note = call_ctx.get("trust")
+                        archetype = call_ctx.get("label")
+                        detail_bits = []
+                        if archetype:
+                            detail_bits.append(archetype)
+                        if wall_note is not None:
+                            detail_bits.append(f"Wall {wall_note:.0f}")
+                        if trust_note is not None:
+                            detail_bits.append(f"Trust {float(trust_note):.0f}")
+                        detail = f" ({' | '.join(detail_bits)})" if detail_bits else ""
+                        print(f"   >> Blocked in the dirt. Runners hold.{detail}")
+                    # Tag the snapshot so commentary can surface block-specific lines.
+                    snap = getattr(state, "last_pitch_snapshot", {}) or {}
+                    snap["result"] = "blocked_pitch"
+                    state.last_pitch_snapshot = snap
+                    catcher = get_current_catcher(state)
+                    if catcher:
+                        adjust_confidence(state, getattr(catcher, 'id', None), 2, reason="blocked_pitch", contagious=False)
+                        adjust_battery_sync(state, pitcher_id, getattr(catcher, 'id', None), 0.12)
+                    adjust_confidence(state, getattr(pitcher, 'id', None), 1, reason="blocked_pitch")
+                if state.balls == 4:
+                    if commentary_enabled():
+                        print("   >> WALK.")
+                    was_slumping = get_confidence(state, batter_id) <= -30
+                    state.runners[0] = batter 
+                    batter_stats["walks"] += 1
+                    pitcher_stats["walks"] += 1
+                    _apply_walk_confidence(state, batter, pitcher)
+                    record_pitcher_stress(state, pitcher_id, spike=True)
+                    record_rally_progress(state, offense_team_id, batter_id, reached_base=True)
+                    apply_slump_boost(state, batter_id, was_slumping, "walk")
+                    maybe_catcher_settle(state, pitcher_id)
+                    _trigger_presence(state, pitcher, "walk_batter", "Issued Walk")
                     break
                     
             elif pitch_res.outcome == "Strike":
@@ -1437,6 +1493,19 @@ class AtBatStateMachine:
                 was_slumping = reached_base and get_confidence(state, batter_id) <= -30
                 _apply_contact_confidence(state, batter, pitcher, contact_res)
                 error_flag = bool(getattr(contact_res, "error_on_play", False))
+
+                # Enrich last pitch snapshot with batted-ball physics for commentary.
+                snap = getattr(state, "last_pitch_snapshot", {}) or {}
+                snap.update(
+                    {
+                        "exit_velocity": getattr(contact_res, "exit_velocity", None),
+                        "launch_angle": getattr(contact_res, "launch_angle", None),
+                        "distance": getattr(contact_res, "distance", None),
+                        "result": "inplay",
+                        "hit_type": getattr(contact_res, "hit_type", None),
+                    }
+                )
+                state.last_pitch_snapshot = snap
 
                 if contact_res.hit_type != "Out" and getattr(batter, "position", "").lower() == "pitcher":
                     _trigger_presence(state, pitcher, "hit_allowed_to_pitcher", "Pitcher Hit Allowed")

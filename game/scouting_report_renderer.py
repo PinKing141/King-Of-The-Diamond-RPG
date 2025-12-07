@@ -7,6 +7,8 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from database.setup_db import School, Player
+from game.battery_profiles import analyze_battery_chemistry
+from battery_system.battery_trust import summarize_battery_pair
 from ui.ui_core import clear_screen, colored_bar, simple_bar, panel, BAR_WIDTH
 
 
@@ -74,6 +76,31 @@ def render_level_3(school: School, full_ratings: Dict[str, int], roster: List[Di
         else:
             attrs = f"CON {p.get('contact','--')} | POW {p.get('power','--')} | SPD {p.get('speed','--')}"
         print(f" {jersey:<2} | {pos:<3} | {nm:<22} | {attrs}")
+
+    # Battery spotlight: pick a pitcher/catcher and surface chemistry title.
+    pitcher = next((p for p in roster if p.get("position") == "Pitcher"), None)
+    catcher = next((p for p in roster if p.get("position") == "Catcher"), None)
+    if pitcher and catcher:
+        class _Stub:
+            pass
+        p_stub = _Stub()
+        c_stub = _Stub()
+        for key, val in pitcher.items():
+            setattr(p_stub, key, val)
+        for key, val in catcher.items():
+            setattr(c_stub, key, val)
+        title, desc = analyze_battery_chemistry(p_stub, c_stub, trust_score=50)
+        state_stub = _Stub()
+        state_stub.fast_sim = True  # avoid DB lookups during scouting render
+        chemistry = summarize_battery_pair(state_stub, p_stub, c_stub)
+        print("\nBATTERY CHEMISTRY")
+        print(f"  {title}")
+        print(f"  {desc}")
+        if chemistry:
+            label = chemistry.get("label", "Unfamiliar")
+            trust = chemistry.get("trust", 50)
+            wall = chemistry.get("wall", 0)
+            print(f"  Archetype: {label} | Trust {int(trust)} | Wall {int(wall)}")
     print("\nMATCHUP STRENGTHS")
     for s in tendencies.get("strengths", []):
         print(f"  • {s}")

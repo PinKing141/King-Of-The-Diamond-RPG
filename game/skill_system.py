@@ -900,6 +900,24 @@ def _cond_game_heat_up(_: object, context: ConditionContext) -> bool:
         return False
 
 
+def _cond_high_wall_catcher(player, context: ConditionContext) -> bool:
+    """Pitcher trait gate: paired with an elite defensive catcher."""
+
+    position = str(getattr(player, "position", "") or getattr(player, "primary_position", "")).upper()
+    if position not in {"P", "PITCHER"}:
+        return False
+
+    wall = context.get("battery_wall") or context.get("catcher_wall")
+    if wall is None:
+        wall = getattr(context.get("battery_catcher"), "catcher_ability", None)
+    if wall is None:
+        return False
+
+    trust = context.get("battery_trust")
+    trust_ok = True if trust is None else trust >= 40
+    return trust_ok and wall >= 78
+
+
 register_condition("late_inning_pressure", _cond_late_inning_pressure)
 register_condition("high_pressure_moment", _cond_high_pressure_moment)
 register_condition("vs_left_handed_pitcher", _cond_vs_left_handed_pitcher)
@@ -937,6 +955,7 @@ register_condition("shortstop_assignment", _cond_shortstop_assignment)
 register_condition("third_base_assignment", _cond_third_base_assignment)
 register_condition("outfield_assignment", _cond_outfield_assignment)
 register_condition("game_heat_up", _cond_game_heat_up)
+register_condition("high_wall_catcher", _cond_high_wall_catcher)
 
 
 def player_has_skill(player, skill_key: str) -> bool:

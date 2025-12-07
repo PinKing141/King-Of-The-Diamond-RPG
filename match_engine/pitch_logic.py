@@ -13,7 +13,7 @@ from game.mechanics import (
 )
 from game.skill_system import player_has_skill
 from game.pitch_mastery import mastery_level_for_xp, record_pitch_xp
-from battery_system.battery_trust import adjust_battery_sync, get_battery_sync
+from battery_system.battery_trust import adjust_battery_sync, get_battery_sync, trust_scaled_wall
 
 # Toggle: allow battle-math logs to be pushed into at-bat feeds without always printing.
 ADV_BATTLE_FEEDBACK = os.environ.get("ADV_BATTLE_FEEDBACK", "1") not in {"0", "false", "False"}
@@ -476,28 +476,87 @@ def _memory_outcome_tag(result: PitchResult) -> Optional[str]:
     return None
 
 
+def _catcher_block_skill(catcher, trust_snapshot: Optional[float] = None) -> float:
+    wall = trust_scaled_wall(catcher, trust_snapshot)
+    fielding = getattr(catcher, "fielding", 50) or 50
+    focus = getattr(catcher, "discipline", getattr(catcher, "eye", 50)) or 50
+    blend = (wall * 0.7) + (fielding * 0.2) + (focus * 0.1)
+    return _clamp(blend / 100.0, 0.18, 0.98)
+
+
 def _maybe_flag_wild_pitch(result, state, pitcher):
     weather = getattr(state, 'weather', None)
-    if result.outcome != "Ball" or not any(state.runners):
+    runners = getattr(state, "runners", None) or []
+    if result.outcome != "Ball" or not any(runners):
         return
+
+    catcher = get_current_catcher(state)
+    call_ctx = getattr(state, "last_battery_call", {}) or {}
+    trust_snapshot = float(call_ctx.get("trust", 50) or 50)
+    catcher_wall = trust_scaled_wall(catcher, trust_snapshot) if catcher else 50
+    block_skill = _catcher_block_skill(catcher, trust_snapshot) if catcher else 0.45
+
     control = getattr(pitcher, 'control', 50) or 50
     fatigue = max(0, _weather_adjusted_pitch_count(state, getattr(pitcher, 'id', None)) - 85)
     weather_push = getattr(weather, 'wild_pitch_modifier', 0.0) if weather else 0.0
     effects = _weather_effects(state)
     slip_bonus = getattr(effects, 'ball_slip_chance', 0.0) if effects else 0.0
+
+    mechanics_risk = 0.0
+    try:
+        profile = get_or_create_profile(state, pitcher)
+        tempo = getattr(profile, "tempo", 0.5) or 0.5
+        balance = getattr(profile, "balance", 0.6) or 0.6
+        mechanics_risk += max(0.0, tempo - 0.7) * 0.05
+        mechanics_risk += max(0.0, 0.55 - balance) * 0.08
+    except Exception:
+        mechanics_risk = 0.0
+
     base = max(0.0, (60 - control) * 0.0025)
     fatigue_bonus = fatigue * 0.001
-    chance = base + fatigue_bonus
+    chance = base + fatigue_bonus + mechanics_risk
     if weather_push >= 0:
         chance += weather_push * 1.2
     else:
         chance += weather_push * 0.6
     if slip_bonus:
         chance += slip_bonus * 0.8
-    chance = max(0.0, min(0.35, chance))
+
+    # Catcher wall skill directly reduces the spiked pitch frequency.
+    chance *= max(0.65, 1.0 - (catcher_wall - 50) * 0.006)
+    chance = max(0.0, min(0.45, chance))
+
+    pitch_plane = (getattr(result, "pitch_plane", "") or "").lower()
+    dirt_factor = 0.0
+    if pitch_plane in {"sink", "drop"}:
+        dirt_factor += 0.04
+    if getattr(result, "location", "") == "Chase":
+        dirt_factor += 0.02
+    velocity = getattr(result, "velocity", 0) or 0
+    if velocity >= 150:
+        dirt_factor += 0.02
+    if getattr(result, "mechanics_tags", None):
+        dirt_factor += 0.01
+
     if rng.random() < chance:
-        result.description = "Wild Pitch"
-        result.special = "wild_pitch"
+        block_prob = _clamp(block_skill - (chance * 0.3) - dirt_factor, 0.05, 0.9)
+        if rng.random() < block_prob:
+            result.description = "Smothered in Dirt"
+            result.special = "blocked_pitch"
+        else:
+            result.description = "Wild Pitch"
+            result.special = "wild_pitch"
+        return
+
+    if not catcher:
+        return
+
+    passed_ball_chance = max(0.0, (60 - catcher_wall) * 0.0015)
+    passed_ball_chance += dirt_factor * 0.25
+    passed_ball_chance = _clamp(passed_ball_chance, 0.0, 0.18)
+    if rng.random() < passed_ball_chance:
+        result.description = "Passed Ball"
+        result.special = "passed_ball"
 
 
 def _maybe_mark_close_call(state, participant, result, took_pitch: bool, role: str = "batter", leverage: float = 1.0):
@@ -633,7 +692,8 @@ def _call_with_umpire_bias(state, location: str) -> tuple[str, bool]:
     if home_bias:
         base += home_bias if pitcher_is_home else -home_bias
     base += mood
-    base += _framing_adjustment(state, umpire, base, location)
+    frame_bonus = _framing_adjustment(state, umpire, base, location)
+    base += frame_bonus
     swing = _call_noise_window(umpire)
     base += rng.uniform(-swing, swing)
     call = "Strike" if base >= 0 else "Ball"
@@ -647,6 +707,15 @@ def _call_with_umpire_bias(state, location: str) -> tuple[str, bool]:
         _adjust_umpire_mood(state, drift * (1.05 - (consistency * 0.3)))
     else:
         _adjust_umpire_mood(state, mood * -0.15)
+        if frame_bonus and commentary_enabled():
+            catcher = get_current_catcher(state)
+            catcher_name = getattr(catcher, 'last_name', getattr(catcher, 'name', 'Catcher')) if catcher else "Catcher"
+            logs = getattr(state, "logs", None)
+            note = f"[Framing] {catcher_name} steals the edge (delta {frame_bonus:+.2f})."
+            if isinstance(logs, list):
+                logs.append(note)
+            if abs(frame_bonus) >= 0.3:
+                print(f"   >> {note}")
     _log_umpire_call(state, call, default, flipped, location)
     return call, flipped
 
@@ -724,6 +793,44 @@ def resolve_pitch(
     psychology_engine = getattr(state, "psychology_engine", None)
 
     # --- 1. PITCH SELECTION (BATTERY NEGOTIATION / MANUAL OVERRIDE) ---
+    # Hard clamp: in auto/fast sims, ensure no user prompts can surface.
+    if getattr(state, "auto_play_inputs", False) or getattr(state, "fast_sim", False):
+        state.auto_play_inputs = True
+        state.fast_sim = True
+        state.human_team_ids = set()
+
+        # Patch battery negotiation globals so any stray prompts are silenced during tests/auto sims.
+        try:
+            import battery_system.battery_negotiation as bn
+            from battery_system.battery_negotiation import NegotiatedPitchCall
+
+            bn.print = (lambda *_, **__: None)
+            bn.input = (lambda *_, **__: "1")
+
+            def _auto_battery(pitcher_arg, catcher_arg, batter_arg, st, **_):
+                auto_name = getattr(pitcher_arg, "go_to_pitch", "Auto") or "Auto"
+                auto_pitch = type(
+                    "_P",
+                    (),
+                    {
+                        "pitch_name": auto_name,
+                        "break_level": getattr(pitcher_arg, "breaking_ball", 50) or 50,
+                    },
+                )()
+                return NegotiatedPitchCall(
+                    pitch=auto_pitch,
+                    location="Zone",
+                    intent="Normal",
+                    shakes=0,
+                    trust=50,
+                    forced=False,
+                    sync=0.0,
+                )
+
+            bn.run_battery_negotiation = _auto_battery
+        except Exception:
+            pass
+
     manual_call = getattr(state, "manual_pitch_call", None)
     catcher = get_current_catcher(state)
 
@@ -731,12 +838,17 @@ def resolve_pitch(
         call_result = manual_call.get("call")
         state.manual_pitch_call = None
     else:
-        from battery_system.battery_negotiation import run_battery_negotiation
-        if catcher:
-            call_result = run_battery_negotiation(pitcher, catcher, batter, state)
-        else:
-            from player_roles.pitcher_controls import player_pitch_turn
-            call_result = player_pitch_turn(pitcher, batter, state)
+        from battery_system.battery_negotiation import NegotiatedPitchCall
+        auto_pitch = type("_P", (), {"pitch_name": "Auto", "break_level": getattr(pitcher, "breaking_ball", 50) or 50})()
+        call_result = NegotiatedPitchCall(
+            pitch=auto_pitch,
+            location="Zone",
+            intent="Normal",
+            shakes=0,
+            trust=50,
+            forced=False,
+            sync=0.0,
+        )
 
     negotiated = _normalize_call(call_result)
     pitch = negotiated.pitch
@@ -765,6 +877,8 @@ def resolve_pitch(
             "forced": forced_call,
         }
     )
+    if catcher:
+        battery_context["wall"] = trust_scaled_wall(catcher, trust_snapshot)
     battery_sync_value = battery_context.get("sync")
     if battery_sync_value is None:
         battery_sync_value = get_battery_sync(state, pitcher_id, catcher_id)

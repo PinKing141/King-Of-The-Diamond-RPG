@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+from battery_system.battery_trust import trust_scaled_wall
+
 
 def _team_score(state, team_id: Optional[int]) -> int:
 	if not state or team_id is None:
@@ -37,6 +39,18 @@ def _player_role(player) -> Optional[str]:
 	if not player:
 		return None
 	return getattr(player, "role", getattr(player, "player_role", getattr(player, "pitcher_role", None)))
+
+
+def _current_catcher(state):
+	"""Return the active catcher for the defense."""
+
+	if not state:
+		return None
+	lineup = state.home_lineup if getattr(state, "top_bottom", "Top") == "Top" else state.away_lineup
+	for p in lineup:
+		if getattr(p, "position", "").lower() == "catcher":
+			return p
+	return lineup[0] if lineup else None
 
 
 def _lookup_counter(state, attr_name: str, player_id: Optional[int]) -> int:
@@ -197,6 +211,15 @@ def get_at_bat_context(state, batter, pitcher) -> Dict[str, object]:
 	context["has_scouting_edge"] = context.get("has_scouting_edge")
 	context["has_scouting_edge"] = context.get("has_scouting_edge")
 	context["has_scouting_edge"] = context.get("has_scouting_edge")
+
+	catcher = _current_catcher(state)
+	last_call = getattr(state, "last_battery_call", {}) or {}
+	trust_snapshot = last_call.get("trust")
+	wall = trust_scaled_wall(catcher, trust_snapshot) if catcher else None
+	context["battery_trust"] = trust_snapshot
+	context["battery_wall"] = wall if wall is not None else getattr(catcher, "catcher_ability", None)
+	context["battery_label"] = last_call.get("label")
+	context["battery_catcher"] = catcher
 
 	return context
 

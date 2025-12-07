@@ -150,6 +150,9 @@ def render_battery_call_banner(
 ) -> None:
     """Display a short blurb describing the catcher sign that was just offered."""
 
+    if payload.get("silent"):
+        return
+
     phase = (payload.get("phase") or "initial").lower()
     prefix_map = {
         "initial": "[Catcher Sign]",
@@ -173,13 +176,19 @@ def render_battery_call_banner(
     shakes_left = max(0, shakes_allowed - shakes_used)
     trust_display = _format_trust(payload.get("trust"))
     sync_display = _format_sync(payload.get("sync"))
+    wall = payload.get("battery_wall")
+    wall_text = f" | Wall {int(wall):d}" if wall is not None else ""
+    chem_label = payload.get("battery_label")
+    chem_text = f" | {chem_label}" if chem_label else ""
     reason = payload.get("reason") or ""
     reason_suffix = f" — {reason}" if reason else ""
+    msg = payload.get("message") or ""
+    msg_suffix = f" [{msg}]" if msg else ""
     print(
-        f" {color}{prefix}{Colour.RESET} {catcher_name} wants {pitch_name} ({location}, {intent}){reason_suffix}"
+        f" {color}{prefix}{Colour.RESET} {catcher_name} wants {pitch_name} ({location}, {intent}){reason_suffix}{msg_suffix}"
     )
     print(
-        f"        Trust {trust_display} | Sync {sync_display} | Shakes left {shakes_left} | Battery with {pitcher_name}"
+        f"        Trust {trust_display} | Sync {sync_display} | Shakes left {shakes_left} | Battery with {pitcher_name}{wall_text}{chem_text}"
     )
 
 
@@ -191,11 +200,14 @@ def render_battery_shake_banner(
 ) -> None:
     """Show feedback when the pitcher shakes off the catcher."""
 
+    if payload.get("silent"):
+        return
+
     shakes_allowed = int(payload.get("shakes_allowed", 0) or 0)
     shakes_used = int(payload.get("shakes_used", 0) or 0)
     sync_display = _format_sync(payload.get("sync"))
     print(
-        f" {Colour.YELLOW}[Shake-Off]{Colour.RESET} {pitcher_name} waves off {catcher_name}. "
+        f" {Colour.YELLOW}[Shake-Off]{Colour.RESET} {pitcher_name} waves off {catcher_name}. Shaking off… "
         f"Shakes {shakes_used}/{shakes_allowed} | Sync {sync_display}"
     )
 
@@ -207,6 +219,9 @@ def render_battery_forced_banner(
     catcher_name: str = "Catcher",
 ) -> None:
     """Highlight when the catcher has to force a pitch after too many shakes."""
+
+    if payload.get("silent"):
+        return
 
     sync_display = _format_sync(payload.get("sync"))
     print(

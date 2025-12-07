@@ -329,6 +329,7 @@ def resolve_fielding_play(
     runner_speed: float,
     profile: DefenseProfile | None = None,
     environment_error_scalar: float = 1.0,
+    bad_hop_chance: float = 0.0,
 ) -> FieldingPlayResult:
     """Simulate the interaction between the ball and the defense."""
 
@@ -351,6 +352,8 @@ def resolve_fielding_play(
     distance_to_ball = _distance((fielder.x, fielder.y), landing_point)
     time_to_ball = reaction + distance_to_ball / range_speed
     runner_time = _runner_time_to_first(runner_speed)
+
+    trigger_bad_hop = ball.ball_type == "ground" and bad_hop_chance > 0 and _rng.random() < bad_hop_chance
 
     if ball.ball_type in {"fly", "line"}:
         if time_to_ball <= ball.hang_time:
@@ -377,6 +380,13 @@ def resolve_fielding_play(
 
     # Ground ball branch
     if time_to_ball <= ball.ground_time + 0.2:
+        if trigger_bad_hop:
+            return FieldingPlayResult(
+                "1B",
+                f"Bad hop eats up {fielder.label}!",
+                primary_position=fielder.position,
+                error_type="E_FIELD",
+            )
         transfer = _transfer_time(reliability)
         throw_time = _throw_time_to_first(fielder, profile, FIRST_BASE_COORD)
         total_defense_time = time_to_ball + transfer + throw_time

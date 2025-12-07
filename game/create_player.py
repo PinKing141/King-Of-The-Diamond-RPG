@@ -324,6 +324,13 @@ def roll_stats(position, is_monster=False):
         stats['velocity'] = 0
         stats['arm_slot'] = "Three-Quarters"
 
+    # Wall (catcher ability): reflexes + focus. Catchers get a derived value; others default to 0.
+    if position == "Catcher":
+        base_wall = (stats['fielding'] + random.randint(40, 70)) // 2
+        stats['catcher_ability'] = max(10, min(99, base_wall))
+    else:
+        stats['catcher_ability'] = 0
+
     return stats
 
 
@@ -350,6 +357,12 @@ def commit_player_to_db(session: Session, data) -> int:
         clean_stats['role'] = "STARTER"
     else:
         clean_stats.setdefault('is_starter', False)
+
+    # Ensure Wall stat exists for catchers even if upstream rolling missed it
+    if data.get('position') == "Catcher":
+        clean_stats['catcher_ability'] = clean_stats.get('catcher_ability', 0) or max(10, int((clean_stats.get('fielding', 50) + 50) / 2))
+    else:
+        clean_stats.setdefault('catcher_ability', 0)
 
     growth_tag = clean_stats.pop("growth_tag", None)
     traits = roll_player_personality(data.get('school'))

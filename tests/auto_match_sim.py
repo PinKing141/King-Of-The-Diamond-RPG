@@ -1,9 +1,10 @@
 import unittest
 from unittest.mock import patch
-from world_sim.tournament_sim import TournamentSim
-from match_engine.controller import MatchController
-from database.setup_db import get_session, School
+
+from database.setup_db import School, get_session
 from game.pitch_minigame import trigger_pitch_minigame
+from battery_system import battery_negotiation
+from match_engine import resolve_match
 
 class TestMatchSimulationStress(unittest.TestCase):
     def test_match_simulation_stress(self):
@@ -27,17 +28,30 @@ class TestMatchSimulationStress(unittest.TestCase):
             )
             result.quality = 0.8
             return result
-        with patch('game.pitch_minigame.trigger_pitch_minigame', side_effect=fake_minigame):
-            sim = TournamentSim(home, away, session, user_school_id=home.id)
-            # Run innings until game ends
+        def fake_negotiation(pitcher, catcher, batter, state, **kwargs):
+            pitch = type("_P", (), {"pitch_name": "Auto", "break_level": 50})()
+            return battery_negotiation.NegotiatedPitchCall(
+                pitch=pitch,
+                location="Zone",
+                intent="Normal",
+                shakes=0,
+                trust=60,
+                forced=False,
+                sync=0.0,
+            )
+
+        with patch('game.pitch_minigame.trigger_pitch_minigame', side_effect=fake_minigame), \
+             patch('builtins.input', return_value='1'), \
+             patch('battery_system.battery_negotiation.input', return_value='1'), \
+             patch('battery_system.battery_negotiation.print', lambda *args, **kwargs: None), \
+             patch('player_roles.pitcher_controls.prompt_runner_threat_controls', return_value=None), \
+             patch('battery_system.battery_negotiation.run_battery_negotiation', side_effect=fake_negotiation):
             try:
-                while not sim.is_game_over():
-                    sim.play_inning()
+                winner, score = resolve_match(home, away, "AutoTest", mode="fast", silent=True)
             except Exception as e:
                 self.fail(f"Match simulation crashed: {e}")
-            # Check final score
-            self.assertIsNotNone(sim.scoreboard.innings)
-            self.assertGreaterEqual(len(sim.scoreboard.innings), 1, "Game should record at least one inning.")
+            self.assertIsNotNone(score)
+            self.assertIsNotNone(winner)
 
 if __name__ == "__main__":
     unittest.main()

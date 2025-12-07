@@ -914,6 +914,7 @@ def run_match(
     away_id,
     *,
     fast: bool = False,
+    auto_play_inputs: bool = False,
     persist_results: bool = True,
     clutch_pitch: Optional[Dict[str, Any]] = None,
     tournament_name: Optional[str] = None,
@@ -946,6 +947,11 @@ def run_match(
         state.pitch_mastery_report = {}
         if fast:
             setattr(state, "fast_sim", True)
+        if auto_play_inputs or fast:
+            setattr(state, "auto_play_inputs", True)
+            setattr(state, "manual_pitch_calls", False)
+            setattr(state, "manual_swing_prompts", False)
+            state.human_team_ids = set()
         # Enable user-controlled pacing if requested
         state.hero_setting = hero_setting
         if force_hero:

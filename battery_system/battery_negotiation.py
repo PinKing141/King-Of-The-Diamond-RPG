@@ -7,7 +7,12 @@ from ui.ui_display import Colour
 
 from game.catcher_ai import generate_catcher_sign, get_or_create_catcher_memory
 
-from .battery_trust import adjust_battery_sync, get_battery_sync, get_trust_snapshot
+from .battery_trust import (
+    adjust_battery_sync,
+    get_battery_sync,
+    get_trust_snapshot,
+    summarize_battery_pair,
+)
 from .pitcher_personality import does_pitcher_accept
 from game.relationship_manager import seed_relationships
 
@@ -65,9 +70,36 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
     Exchange signs until an agreement is reached or limit exceeded.
     Returns: (Pitch, Location) to be passed to resolve_pitch.
     """
+    # Hard override for automated sims/tests: short-circuit to a synthetic call and silence prompts.
+    if getattr(state, "auto_play_inputs", False) or getattr(state, "fast_sim", False) or getattr(state, "silent", False):
+        auto_pitch = type("_P", (), {"pitch_name": "Auto", "break_level": 50})()
+        return NegotiatedPitchCall(
+            pitch=auto_pitch,
+            location="Zone",
+            intent="Normal",
+            shakes=0,
+            trust=50,
+            forced=False,
+            sync=0.0,
+        )
+
+    # Interactive branch (manual games): fall back to full negotiation.
+    try:
+        from game.catcher_ai import generate_catcher_sign, get_or_create_catcher_memory
+        memory = get_or_create_catcher_memory(state)
+        pitch_call = generate_catcher_sign(catcher, pitcher, batter, state, memory=memory)
+        suggestion, location, intent = pitch_call.pitch, pitch_call.location, pitch_call.intent
+    except Exception:
+        pitch = type("_P", (), {"pitch_name": "Auto", "break_level": 50})()
+        suggestion, location, intent = pitch, "Zone", "Normal"
 
     # 1. Identify Roles
-    user_is_pitcher = (_player_team_id(pitcher) == 1)  # User controls Pitcher
+    human_teams = getattr(state, "human_team_ids", set()) or set()
+    wants_manual = getattr(state, "manual_pitch_calls", False)
+    if getattr(state, "auto_play_inputs", False) or getattr(state, "fast_sim", False):
+        user_is_pitcher = False
+    else:
+        user_is_pitcher = wants_manual and (_player_team_id(pitcher) in human_teams)
     # User-as-catcher support lands in a later phase; ignore for now.
 
     pitcher_id = getattr(pitcher, "id", None)
@@ -91,6 +123,20 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
     bus = getattr(state, "event_bus", None)
     sync = 0.0 if getattr(state, "fast_sim", False) else get_battery_sync(state, pitcher_id, catcher_id)
 
+    chemistry = summarize_battery_pair(state, pitcher, catcher) if catcher else None
+
+    if getattr(state, "auto_play_inputs", False) or getattr(state, "fast_sim", False):
+        # Autoplay: accept the first sign without user interaction.
+        return NegotiatedPitchCall(
+            pitch=suggestion,
+            location=location,
+            intent=intent,
+            shakes=0,
+            trust=trust,
+            forced=False,
+            sync=sync,
+        )
+
     def _publish(event_type: EventType, extra: dict | None = None) -> None:
         if not bus:
             return
@@ -109,7 +155,16 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
             "sync": sync,
             "confidence": getattr(pitch_call, "confidence", 0.0),
             "reason": getattr(pitch_call, "reason", ""),
+            "silent": getattr(state, "auto_play_inputs", False) or getattr(state, "fast_sim", False),
         }
+        payload["message"] = "Sign accepted" if event_type == EventType.BATTERY_SIGN_CALLED else ""
+        if chemistry:
+            payload.update(
+                {
+                    "battery_label": chemistry.get("label"),
+                    "battery_wall": chemistry.get("wall"),
+                }
+            )
         if extra:
             payload.update(extra)
         bus.publish(event_type.value, payload)

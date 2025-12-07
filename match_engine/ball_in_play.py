@@ -1,4 +1,5 @@
 from game.rng import get_rng
+from game import stadiums
 from match_engine.confidence import apply_fielding_error_confidence
 from world.defense_profiles import get_defense_profile
 from world_sim.fielding_engine import (
@@ -14,6 +15,7 @@ rng = get_rng()
 
 HOME_CONTACT_BONUS = 2
 HOME_POWER_BONUS = 0
+METERS_TO_FEET = 3.28084
 
 
 def _pick_manual_fielder(ball, defenders):
@@ -72,6 +74,55 @@ def _flow_multiplier(state, team_id):
     return system.get_multiplier(team_id)
 
 
+def _stadium_from_state(state):
+    if state is None:
+        return stadiums.MUNICIPAL_FIELD
+    name = getattr(state, "stadium_name", None) or getattr(state, "stadium", None)
+    if isinstance(name, stadiums.StadiumPhysics):
+        return name
+    venue = getattr(state, "venue", None)
+    venue_name = getattr(venue, "name", None) if venue else None
+    return stadiums.get_stadium(name or venue_name)
+
+
+def _spray_direction(angle: float) -> str:
+    if angle <= -12:
+        return "left"
+    if angle >= 12:
+        return "right"
+    return "center"
+
+
+def _fence_profile(stadium_obj, spray_angle: float) -> tuple[float, float]:
+    direction = _spray_direction(spray_angle)
+    if direction == "left" and spray_angle > -22:
+        dist_m = stadium_obj.distance_left_center
+        height_m = stadium_obj.fence_height_left
+    elif direction == "right" and spray_angle < 22:
+        dist_m = stadium_obj.distance_right_center
+        height_m = stadium_obj.fence_height_right
+    elif direction == "left":
+        dist_m = stadium_obj.distance_left
+        height_m = stadium_obj.fence_height_left
+    elif direction == "right":
+        dist_m = stadium_obj.distance_right
+        height_m = stadium_obj.fence_height_right
+    else:
+        dist_m = stadium_obj.distance_center
+        height_m = stadium_obj.fence_height_center
+    return dist_m * METERS_TO_FEET, height_m * METERS_TO_FEET
+
+
+def _wall_outcome(ball, fence_distance_ft: float, fence_height_ft: float) -> str:
+    if ball.landing_distance < fence_distance_ft:
+        return "InPlay"
+    margin = ball.landing_distance - fence_distance_ft
+    if margin > 15.0:
+        return "Home Run"
+    estimated_height_at_wall = ball.apex_height * 0.4
+    return "Home Run" if estimated_height_at_wall > fence_height_ft else "Wall Hit"
+
+
 class ContactResult:
     def __init__(
         self,
@@ -122,6 +173,11 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
     flow_defense = _flow_multiplier(state, defense_id)
     pressure_index = getattr(state, "pressure_index", 0.0) if state else 0.0
 
+    stadium_obj = _stadium_from_state(state)
+    surface_friction = float(getattr(stadium_obj, "friction", 1.0) or 1.0)
+    bounce_restitution = float(getattr(stadium_obj, "bounce_restitution", 1.0) or 1.0)
+    bad_hop_chance = float(getattr(stadium_obj, "bad_hop_chance", 0.0) or 0.0)
+
     if flow_offense != 1.0:
         contact_quality *= flow_offense
         raw_power *= flow_offense
@@ -166,6 +222,10 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
         ground_speed_bonus = weather_effects.ground_ball_speed_bonus
         error_scalar += weather_effects.ball_slip_chance * 2.2
 
+    # Surface physics: friction influences rollers; bad hops increase error pressure.
+    ground_speed_bonus += (1.0 - surface_friction) * 12.0
+    error_scalar *= 1.0 + bad_hop_chance * 0.6
+
     error_scalar = max(0.6, min(1.8, error_scalar))
 
     if state and getattr(state, "top_bottom", "Top") == "Bot":
@@ -194,6 +254,7 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
     launch_low, launch_high = launch_ranges.get(trajectory, (10, 25))
     launch_angle = rng.uniform(launch_low, launch_high)
     base_exit_vel = raw_power * 0.6 + contact_quality * 0.45 + rng.uniform(-5, 5)
+    base_exit_vel *= max(0.9, min(1.1, bounce_restitution))
     if trajectory == "Grounder" and ground_speed_bonus:
         base_exit_vel += ground_speed_bonus
     exit_velocity = _clamp(base_exit_vel, 70, 115)
@@ -203,7 +264,25 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
     spray += getattr(batter, 'spray_tendency', 0) * 0.4
     spray_angle = _clamp(spray, -45, 45)
 
-    batted_ball = simulate_batted_ball(exit_velocity, launch_angle, spray_angle)
+    fence_distance, fence_height = _fence_profile(stadium_obj, spray_angle)
+    batted_ball = simulate_batted_ball(
+        exit_velocity,
+        launch_angle,
+        spray_angle,
+        fence_distance=fence_distance,
+    )
+
+    # Adjust grounders for surface friction and determine wall outcomes for flies.
+    if batted_ball.ball_type == "ground":
+        friction_scale = max(0.7, min(1.35, surface_friction))
+        batted_ball.ground_time *= friction_scale
+        batted_ball.landing_distance *= max(0.9, min(1.1, 1.0 + (1.0 - surface_friction) * 0.15))
+    else:
+        wall_result = _wall_outcome(batted_ball, fence_distance, fence_height)
+        if wall_result == "Home Run":
+            batted_ball.is_home_run = True
+        elif wall_result == "Wall Hit":
+            setattr(batted_ball, "wall_hit", True)
     defense_team = state.home_team if getattr(state, "top_bottom", "Top") == "Top" else state.away_team
     defense_profile = get_defense_profile(defense_team)
     alignment = build_defense_alignment(state, profile=defense_profile)
@@ -240,10 +319,13 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
                 runner_speed=running,
                 profile=defense_profile,
                 environment_error_scalar=error_scalar,
+                bad_hop_chance=bad_hop_chance,
             )
 
     hit_type = fielding_play.hit_type
     desc = fielding_play.description
+    if getattr(batted_ball, "wall_hit", False) and hit_type != "Out" and not fielding_play.error_type:
+        desc = "Caroms off the wall for extra bases."
     error_on_play = bool(fielding_play.error_type)
     credited_hit = not error_on_play and hit_type != "Out"
     error_position = fielding_play.primary_position
