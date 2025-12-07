@@ -108,6 +108,11 @@ def run_spring_koshien(user_school_id, context=None, qualifiers=None):
 
     try:
         qualifier_ids = qualifiers or []
+        if isinstance(qualifier_ids, str):
+            try:
+                qualifier_ids = json.loads(qualifier_ids)
+            except ValueError:
+                qualifier_ids = []
         if not qualifier_ids and context:
             qualifier_ids = context.get_temp_effect("spring_qualifier_ids", [])
 

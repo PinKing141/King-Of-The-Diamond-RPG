@@ -1,5 +1,6 @@
 {
   "events": {
+    "30": "third_year_retirement",
     "15": "summer_qualifiers",
     "32": "autumn_regionals",
     "40": "winter_camp",
@@ -7,6 +8,7 @@
   },
   "tournament_weeks": [15, 32, 48],
   "sim_interrupts": {
+    "30": "Third-years retire; set your new team.",
     "15": "Summer qualifiers demand manual coaching.",
     "32": "Autumn regionals decide Senbatsu invites.",
     "40": "Winter camp requires a player choice.",

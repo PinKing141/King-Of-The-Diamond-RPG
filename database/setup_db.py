@@ -96,6 +96,8 @@ def ensure_gamestate_schema():
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE gamestate ADD COLUMN active_player_id INTEGER"))
     statements = []
+    if 'spring_qualifier_ids' not in columns:
+        statements.append("ALTER TABLE gamestate ADD COLUMN spring_qualifier_ids TEXT")
     if 'last_error_summary' not in columns:
         statements.append("ALTER TABLE gamestate ADD COLUMN last_error_summary TEXT")
     if 'last_coach_order_result' not in columns:
@@ -753,6 +755,7 @@ class GameState(Base):
     current_month = Column(Integer)
     current_year = Column(Integer)
     active_player_id = Column(Integer, nullable=True)
+    spring_qualifier_ids = Column(Text, nullable=True)
     last_error_summary = Column(Text, nullable=True)
     last_coach_order_result = Column(Text, nullable=True)
     last_telemetry_blob = Column(Text, nullable=True)
@@ -790,6 +793,9 @@ def create_database():
             pass
 
     upgrade_schema()
+
+    # Apply lightweight column backfills for existing saves.
+    ensure_gamestate_schema()
 
     # Ensure tables exist for the currently bound engine (useful in tests that
     # monkeypatch the engine/session to an isolated SQLite file).

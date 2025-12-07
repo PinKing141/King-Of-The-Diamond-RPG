@@ -106,6 +106,7 @@ class SeasonConfigLoader:
             except FileNotFoundError:
                 cls._cache = {
                     "events": {
+                        "30": "third_year_retirement",
                         "15": "summer_qualifiers",
                         "32": "autumn_regionals",
                         "40": "winter_camp",

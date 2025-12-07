@@ -1,3 +1,4 @@
+import json
 import random
 import sys
 import time
@@ -12,6 +13,7 @@ from core.exceptions import KoshienException, ScheduleError
 from core.game_context import GameContext
 from game.save_manager import show_save_menu
 from game.loop.season_engine import run_end_of_season_logic
+from game.loop.offseason_engine import graduate_third_years
 from game.training_logic import run_training_camp_event
 from game.loop.weekly_scheduler import build_mandatory_schedule, run_week_automatic, start_week
 from ui.scouting_report import view_scouting_menu
@@ -260,6 +262,17 @@ class SeasonManager:
                 print(f"{Colour.FAIL}Eliminated in qualifiers.{Colour.RESET}")
                 run_koshien_tournament(user_school_id, reps, context=self.context)
 
+        elif event_type == "third_year_retirement":
+            print(f"\n{Colour.WARNING}Third-years retire after summer. Time for the new team to step up.{Colour.RESET}")
+            removed = graduate_third_years(self.session)
+            try:
+                self.session.commit()
+            except Exception:
+                self.session.rollback()
+                removed = 0
+            print(f"Removed {removed} graduating players. Set a new captain and lineup before autumn.")
+            input("Press Enter to continue...")
+
         elif event_type == "autumn_regionals":
             from world_sim.regional_sim import run_autumn_regionals
 
@@ -269,7 +282,10 @@ class SeasonManager:
 
             qualifiers = run_autumn_regionals(self.session, user_school_id, context=self.context)
             self.context.set_temp_effect("spring_qualifier_ids", qualifiers)
-            setattr(self.state, "spring_qualifier_ids", qualifiers)
+            try:
+                self.state.spring_qualifier_ids = json.dumps(qualifiers)
+            except Exception:
+                self.state.spring_qualifier_ids = None
             try:
                 self.session.commit()
             except Exception:
@@ -290,6 +306,11 @@ class SeasonManager:
         elif event_type == "spring_koshien":
             print(f"\n{Colour.CYAN}Spring Senbatsu Approaches.{Colour.RESET}")
             qualifiers = self.context.get_temp_effect("spring_qualifier_ids") or getattr(self.state, "spring_qualifier_ids", None)
+            if isinstance(qualifiers, str):
+                try:
+                    qualifiers = json.loads(qualifiers)
+                except ValueError:
+                    qualifiers = None
             run_spring_koshien(user_school_id, context=self.context, qualifiers=qualifiers)
 
     def _run_weekly_menu(self, user_player: Player) -> str:
