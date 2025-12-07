@@ -1,0 +1,10 @@
+{
+  "tournaments": {
+    "summer_qualifiers": [15],
+    "spring_koshien": [48]
+  },
+  "camps": {
+    "winter": [40]
+  },
+  "interrupt_weeks": [15, 40, 48]
+}

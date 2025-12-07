@@ -25,12 +25,17 @@ def player_pitch_turn(pitcher, batter, state):
     Handles the User Interaction for a pitching turn.
     Returns: (PitchRepertoire Object, Location String)
     """
+    if not hasattr(state, "user_slide_step_mode"):
+        state.user_slide_step_mode = "auto"
+
     print(f"\n{Colour.HEADER}--- PITCHER INTERFACE ---{Colour.RESET}")
     print(f"vs {batter.name} (Pow {batter.power} / Con {batter.contact})")
     print(f"Count: {state.balls}-{state.strikes} | Outs: {state.outs}")
     hints = describe_batter_tells(state, batter)
     if hints:
         print(f"Intel: {' | '.join(hints)}")
+    slide_status = _display_slide_mode(getattr(state, "user_slide_step_mode", "auto"))
+    print(f"Strategy: {Colour.gold}{slide_status}{Colour.RESET}")
     
     # Check runners for pickoff context
     has_runners = any(r is not None for r in state.runners)
@@ -46,6 +51,7 @@ def player_pitch_turn(pitcher, batter, state):
     if has_runners:
         print(f" {len(arsenal)+1}. PICKOFF ATTEMPT")
         print(f" {len(arsenal)+2}. PITCH OUT")
+        print(f" {len(arsenal)+3}. TOGGLE SLIDE STEP")
 
     # 3. Input Loop for Pitch/Action
     selected_pitch = None
@@ -53,7 +59,7 @@ def player_pitch_turn(pitcher, batter, state):
 
     while not selected_pitch and not special_action:
         try:
-            choice = input(f"Command (1-{len(arsenal) + (2 if has_runners else 0)}): ")
+            choice = input(f"Command (1-{len(arsenal) + (3 if has_runners else 0)}): ")
             idx = int(choice) - 1
             
             if 0 <= idx < len(arsenal):
@@ -62,6 +68,14 @@ def player_pitch_turn(pitcher, batter, state):
                 return None, "Pickoff" # Special return
             elif has_runners and idx == len(arsenal) + 1:
                 return None, "PitchOut" # Special return
+            elif has_runners and idx == len(arsenal) + 2:
+                current = getattr(state, "user_slide_step_mode", "auto")
+                state.user_slide_step_mode = _cycle_slide_mode(current)
+                print(f" >> Switched to: {_display_slide_mode(state.user_slide_step_mode)}")
+                # Continue the selection loop with updated strategy.
+                selected_pitch = None
+                special_action = None
+                continue
             else:
                 print("Invalid selection.")
         except ValueError:

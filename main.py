@@ -1,63 +1,19 @@
-import json
 import sys
 import os
 import time
-import random
 
-from core.event_bus import EventBus
 from database.setup_db import create_database, GameState, School, Player, get_session, safe_delete_db
-from ui.ui_display import Colour, clear_screen, render_weekly_dashboard
-from ui.ui_core import choose_theme, panel, DEFAULT_THEME, show_page
-from debug.debug_tools import input_with_debug
-from game.weekly_scheduler import start_week, run_week_automatic
-from world_sim.tournament_sim import run_koshien_tournament, run_spring_koshien
-from world_sim.qualifiers import run_season_qualifiers
-from world_sim.prefecture_engine import simulate_background_matches
-from game.create_player import create_hero 
-from game.season_engine import run_end_of_season_logic
-from game.training_logic import run_training_camp_event
-from game.save_manager import show_save_menu 
+from database.populate_japan import populate_world
+from ui.ui_display import Colour, clear_screen
+from ui.ui_core import choose_theme, panel, DEFAULT_THEME
+from game.create_player import create_hero
+from game.save_manager import show_save_menu
 from game.game_context import GameContext
-from game.analytics import initialise_analytics
-from match_engine.controller import MatchController
-from match_engine.commentary import CommentaryListener
-from config import DATA_FOLDER
+from game.season_manager import SeasonManager
+from config import DB_PATH
 
-
-def _has_game_this_week(player, week: int) -> bool:
-    """Return True if this week has any scheduled match (practice or tournament)."""
-    try:
-        from game.weekly_scheduler import build_mandatory_schedule
-        mandatory = build_mandatory_schedule(player)
-        if any("match" in (action or "") for action in mandatory.values()):
-            return True
-    except Exception:
-        pass
-    # Known tournament trigger weeks (qualifiers, spring Koshien)
-    return week in {15, 48}
-
-# Ensure database tables exist
-create_database()
-
-# Event bus + analytics initialisation
-GLOBAL_EVENT_BUS = initialise_analytics(EventBus())
-
-# -----------------------------------------------------
-# UI
-# -----------------------------------------------------
 
 MAIN_MENU_THEME = DEFAULT_THEME
-
-MONTH_NAMES = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-]
-
-
-def print_week_header(current_year: int, current_month: int, current_week: int) -> None:
-    month_label = MONTH_NAMES[(current_month - 1) % 12] if current_month else "--"
-    print(f"{Colour.gold}>>> YEAR {current_year} | WEEK {current_week} / 50{Colour.RESET}")
-    print(f"Date: {month_label} (Month {current_month})")
 
 
 def print_banner(theme_name: str = MAIN_MENU_THEME):
@@ -76,10 +32,6 @@ def print_banner(theme_name: str = MAIN_MENU_THEME):
     print(f"{theme['muted']}{subtitle.center(width)}{Colour.RESET}\n")
 
 
-# -----------------------------------------------------
-# FIRST TIME SETUP
-# -----------------------------------------------------
-
 def ensure_world_population(session):
     """Ensure the database has a populated world map."""
     try:
@@ -89,8 +41,6 @@ def ensure_world_population(session):
 
     if school_count < 10:
         print(f"{Colour.WARNING}World not populated. Running World Generator...{Colour.RESET}")
-        from database.populate_japan import populate_world
-
         populate_world()
         print(f"{Colour.GREEN}World Generation Complete.{Colour.RESET}")
         time.sleep(1)
@@ -101,7 +51,6 @@ def check_first_time_setup(session, state):
 
     ensure_world_population(session)
 
-    # 2. Player creation
     player = load_active_player(session, state)
     if player:
         return player
@@ -121,14 +70,10 @@ def check_first_time_setup(session, state):
     return session.get(Player, new_id)
 
 
-# -----------------------------------------------------
-# GAME STATE
-# -----------------------------------------------------
-
 def initialize_game_state(session):
     state = session.query(GameState).first()
     if not state:
-        state = GameState(current_day='MON', current_week=1, current_month=4, current_year=2024)
+        state = GameState(current_day="MON", current_week=1, current_month=4, current_year=2024)
         session.add(state)
         session.commit()
     return state
@@ -143,79 +88,10 @@ def load_active_player(session, state):
 def get_player_info(session, state):
     p = load_active_player(session, state)
     if p and p.school:
-        last_first = " ".join(part for part in [getattr(p, 'last_name', ''), getattr(p, 'first_name', '')] if part).strip()
+        last_first = " ".join(part for part in [getattr(p, "last_name", ""), getattr(p, "first_name", "")] if part).strip()
         display_name = last_first or p.name or "Unknown Player"
         return f"{display_name} ({p.position}) - {p.school.name} (Year {p.year})"
     return "Unknown Player"
-
-
-_SIM_INTERRUPT_PATH = os.path.join(DATA_FOLDER, "sim_interrupts.json")
-_DEFAULT_SIM_INTERRUPTS = {
-    15: "Summer qualifiers demand manual coaching.",
-    40: "Winter camp requires a player choice.",
-    48: "Spring Senbatsu selections need your approval.",
-}
-
-
-def load_sim_interrupts():
-    try:
-        with open(_SIM_INTERRUPT_PATH, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        if isinstance(raw, dict):
-            parsed = {int(k): str(v) for k, v in raw.items() if str(k).isdigit()}
-            return parsed or dict(_DEFAULT_SIM_INTERRUPTS)
-    except FileNotFoundError:
-        return dict(_DEFAULT_SIM_INTERRUPTS)
-    except Exception:
-        return dict(_DEFAULT_SIM_INTERRUPTS)
-    return dict(_DEFAULT_SIM_INTERRUPTS)
-
-
-def run_smart_simulation(context, session, state, target_week: int):
-    """Delegate consecutive weeks until an interrupt condition fires."""
-
-    sim_interrupts = load_sim_interrupts()
-    summaries = []
-    reason = None
-
-    while state.current_week < target_week:
-        player = load_active_player(session, state)
-        if not player:
-            reason = "No active player loaded."
-            break
-
-        if state.current_week in sim_interrupts:
-            reason = sim_interrupts[state.current_week]
-            break
-
-        # Story beats still deserve manual choices.
-        if random.random() <= 0.40:
-            reason = "Story event pending—take the reins."
-            break
-
-        user_school_id = player.school_id
-        print(f"\r >> Processing Week {state.current_week}...", end="")
-        # Show detailed world sim logs when fast-forwarding through weeks.
-        simulate_background_matches(user_school_id, async_mode=True, verbose=True)
-
-        context.refresh_session()
-        context.set_player(player.id, user_school_id)
-        _, summary = run_week_automatic(context, state.current_week)
-        summaries.append(summary)
-        if summary.stopped_by_interrupt:
-            reason = summary.interrupt_reasons[-1] if summary.interrupt_reasons else "Week interrupted."
-            break
-
-        state.current_week += 1
-        if state.current_week % 4 == 0:
-            state.current_month += 1
-            if state.current_month > 12:
-                state.current_month = 1
-        session.add(state)
-        session.commit()
-
-    print()
-    return summaries, reason
 
 
 def start_new_career_same_world():
@@ -230,7 +106,7 @@ def start_new_career_same_world():
             print(f"\nReplacing current lead: {active_player.name} will continue as an AI teammate.")
 
         confirm = input("Create a new first-year in the existing world? (y/n): ")
-        if confirm.lower() != 'y':
+        if confirm.lower() != "y":
             print("Cancelled new career setup.")
             time.sleep(1)
             return False
@@ -252,8 +128,6 @@ def start_new_career_same_world():
 
 def rebuild_world_database():
     """Delete the active database file and create a clean world."""
-    from config import DB_PATH
-
     if os.path.exists(DB_PATH):
         try:
             safe_delete_db(DB_PATH)
@@ -268,11 +142,28 @@ def rebuild_world_database():
     return True
 
 
-# -----------------------------------------------------
-# MAIN MENU
-# -----------------------------------------------------
+def launch_game_engine():
+    """Bootstraps the GameContext and hands off to the SeasonManager."""
+    session = get_session()
+    context = GameContext(session_factory=get_session)
+    session.expire_all()
+
+    try:
+        state = initialize_game_state(session)
+        user_player = check_first_time_setup(session, state)
+        if not user_player:
+            print("ERROR: Player not created.")
+            return
+
+        manager = SeasonManager(context, session, theme=MAIN_MENU_THEME)
+        manager.run_season_loop()
+    finally:
+        session.close()
+        context.close_session()
+
 
 def main_menu():
+    create_database()
     while True:
         print_banner(MAIN_MENU_THEME)
         session = get_session()
@@ -295,316 +186,36 @@ def main_menu():
         panel("Main Menu", menu_lines, theme=MAIN_MENU_THEME, width=70)
 
         choice = input("\nSelect: ")
+        session.close()
 
-        # -----------------------
-        # CONTINUE GAME
-        # -----------------------
-        if choice == '1':
-            session.close()
-            run_game_loop()
-
-        # -----------------------
-        # LOAD GAME
-        # -----------------------
-        elif choice == '2':
-            session.close()
+        if choice == "1":
+            launch_game_engine()
+        elif choice == "2":
             if show_save_menu("LOAD"):
                 continue
-
-        # -----------------------
-        # NEW GAME
-        # -----------------------
-        elif choice == '3':
-            session.close()
+        elif choice == "3":
             if start_new_career_same_world():
-                run_game_loop()
-
-        # -----------------------
-        # EXIT
-        # -----------------------
-        elif choice == '4':
+                launch_game_engine()
+        elif choice == "4":
             confirm = input(f"{Colour.RED}Rebuild entire world? This deletes all progress. (y/n): {Colour.RESET}")
-            if confirm.lower() == 'y':
-                session.close()
+            if confirm.lower() == "y":
                 if rebuild_world_database():
-                    run_game_loop()
-            else:
-                session.close()
-
-        elif choice == '5':
+                    launch_game_engine()
+        elif choice == "5":
             sys.exit()
 
-        session.close()
-
-
-# -----------------------------------------------------
-# GAME LOOP
-# -----------------------------------------------------
 
 def run_game_loop():
-    session = get_session()
-    context = GameContext(session_factory=get_session)
-    session.expire_all()
+    """Backwards compatibility wrapper for older entry points."""
+    launch_game_engine()
 
-    state = initialize_game_state(session)
-    user_player = check_first_time_setup(session, state)
-    if not user_player:
-        print("ERROR: Player not created.")
-        session.close()
-        context.close_session()
-        return
-
-    user_school_id = user_player.school_id
-    context.set_player(user_player.id, user_school_id)
-
-    # -----------------------
-    # MAIN WEEKLY LOOP
-    # -----------------------
-    try:
-        while True:
-            current_week = state.current_week
-
-            user_player = load_active_player(session, state)
-            if not user_player:
-                print("ERROR: Active player not found.")
-                break
-
-            user_school_id = user_player.school_id
-            context.set_player(user_player.id, user_school_id)
-
-            clear_screen()
-            print_banner()
-            print_week_header(state.current_year, state.current_month, current_week)
-
-            # -----------------------------------------
-            # SEASON END
-            # -----------------------------------------
-            if current_week > 50:
-                print(f"\n{Colour.HEADER}=== SEASON {state.current_year} COMPLETE ==={Colour.RESET}")
-
-                user_player = load_active_player(session, state)
-
-                if user_player.year == 3:
-                    print(f"\n{Colour.CYAN}CONGRATULATIONS ON YOUR GRADUATION!{Colour.RESET}")
-                    print("Thank you for playing Koshien RPG.")
-                    run_end_of_season_logic(user_player_id=context.player_id)
-                    input("Press Enter to exit...")
-                    break
-
-                print("The third-years are retiring. Preparing for next season...")
-                input("[Press Enter to Advance Year]")
-
-                run_end_of_season_logic()
-
-                session.expire_all()
-                state = session.query(GameState).first()
-                continue
-
-            # -----------------------------------------
-            # WORLD SIM EVENTS (silent in manual loop)
-            # -----------------------------------------
-            simulate_background_matches(user_school_id)
-
-            # -----------------------------------------
-            # SUMMER QUALIFIERS
-            # -----------------------------------------
-            if current_week == 15:
-                print(f"\n{Colour.RED}!!! THE SUMMER KOSHIEN QUALIFIERS !!!{Colour.RESET}")
-                input("Press Enter to begin...")
-
-                reps = run_season_qualifiers(user_school_id)
-                user_qualified = any(s.id == user_school_id for s in reps)
-
-                if user_qualified:
-                    print(f"{Colour.gold}YOU WON THE PREFECTURE!{Colour.RESET}")
-                    run_koshien_tournament(user_school_id, reps)
-                else:
-                    print(f"{Colour.FAIL}Eliminated in qualifiers.{Colour.RESET}")
-                    run_koshien_tournament(user_school_id, reps)
-
-            # -----------------------------------------
-            # WINTER CAMP
-            # -----------------------------------------
-            if current_week == 40:
-                print(f"\n{Colour.WARNING}Winter Training Camp begins.{Colour.RESET}")
-                if input("Participate? (y/n): ").lower() == 'y':
-                    run_training_camp_event(context)
-                else:
-                    print("You skipped camp.")
-
-            # -----------------------------------------
-            # SPRING KOSHIEN
-            # -----------------------------------------
-            if current_week == 48:
-                print(f"\n{Colour.CYAN}Spring Senbatsu Approaches.{Colour.RESET}")
-                run_spring_koshien(user_school_id)
-
-            # -----------------------------------------
-            # TRAINING WEEK (with pre-week menu)
-            # -----------------------------------------
-            context.refresh_session()
-            context.set_player(user_player.id, user_school_id)
-
-            def _snapshot_player(player):
-                school_name = getattr(player.school, "name", "Unknown") if getattr(player, "school", None) else "Unknown"
-                return {
-                    "current_year": state.current_year,
-                    "current_month": state.current_month,
-                    "current_week": current_week,
-                    "last_name": getattr(player, "last_name", ""),
-                    "first_name": getattr(player, "first_name", ""),
-                    "position": getattr(player, "position", ""),
-                    "jersey_number": getattr(player, "jersey_number", 0),
-                    "school_name": school_name,
-                    "school_id": getattr(player, "school_id", None),
-                    "player_id": getattr(player, "id", None),
-                    "year": getattr(player, "year", 1),
-                    "control": getattr(player, "control", 0),
-                    "power": getattr(player, "power", 0),
-                    "velocity": getattr(player, "velocity", 0),
-                    "contact": getattr(player, "contact", 0),
-                    "stamina": getattr(player, "stamina", 0),
-                    "running": getattr(player, "running", 0),
-                    "breaking_ball": getattr(player, "breaking_ball", 0),
-                    "fielding": getattr(player, "fielding", 0),
-                    "fatigue": getattr(player, "fatigue", 0),
-                    "morale": getattr(player, "morale", 50),
-                }
-
-            scouting_available = _has_game_this_week(user_player, current_week)
-
-            while True:
-                clear_screen()
-                print_banner()
-                print_week_header(state.current_year, state.current_month, current_week)
-                print(f"{Colour.dim}Prepare your week:{Colour.RESET}")
-                print("\nWeek Prep Options:")
-                print(" 1. Plan Week")
-                label = "2. Scouting Report" if scouting_available else "2. Scouting Report (locked — no game this week)"
-                print(f" {label}")
-                print(" 3. Character Sheet")
-                print(" 4. Save Game")
-                print(" 0. Back to Main Menu")
-
-                pre_choice = input_with_debug(">> ", context=context, session=session, state=state)
-                if pre_choice is None:
-                    continue
-                pre_choice = pre_choice.strip().lower()
-
-                if pre_choice == '1':
-                    print(f"{Colour.dim}Opening schedule...{Colour.RESET}")
-                    executed = show_page(start_week, context, current_week, state)
-                    if executed:
-                        break
-                    # If planning was cancelled, stay on Week Prep menu
-                    continue
-                if pre_choice == '2':
-                    if not scouting_available:
-                        print("Scouting is only available when a match is scheduled this week.")
-                        continue
-                    from ui.scouting_report import view_scouting_menu
-                    show_page(view_scouting_menu, context)
-                    continue
-                if pre_choice == '3':
-                    from ui.ui_display import render_screen
-                    show_page(render_screen, session, _snapshot_player(user_player))
-                    input("Press Enter to return...")
-                    continue
-                if pre_choice == '4':
-                    show_page(show_save_menu, "SAVE")
-                    continue
-                if pre_choice == '0':
-                    return
-                print("Invalid choice.")
-                continue
-
-            # -----------------------------------------
-            # MENU
-            # -----------------------------------------
-            clear_screen()
-            print_banner()
-            print_week_header(state.current_year, state.current_month, current_week)
-            print("\nOptions:")
-            print(" [Enter] Next Week")
-            print(" [S] Scouting / Roster")
-            print(" [D] Save Game")
-            print(" [A] Smart Sim (Delegate Weeks)")
-            print(" [Q] Quit to Menu")
-
-            cmd_raw = input_with_debug(">> ", context=context, session=session, state=state)
-            if cmd_raw is None:
-                continue
-            cmd = cmd_raw.lower()
-
-            if cmd == 's':
-                from ui.scouting_report import view_scouting_menu
-                view_scouting_menu(context)
-                continue
-            elif cmd == 'd':
-                show_save_menu("SAVE")
-                continue
-            elif cmd == 'a':
-                target_input = input_with_debug(
-                    f"Simulate until week (>{state.current_week}): ",
-                    context=context,
-                    session=session,
-                    state=state,
-                )
-                if target_input is None:
-                    continue
-                target_input = target_input.strip()
-                try:
-                    target_week = int(target_input) if target_input else state.current_week + 1
-                except ValueError:
-                    print("Invalid week.")
-                    continue
-                if target_week <= state.current_week:
-                    target_week = state.current_week + 1
-                target_week = min(50, target_week)
-                # Advance once before automation, mirroring the normal flow.
-                state.current_week += 1
-                if state.current_week % 4 == 0:
-                    state.current_month += 1
-                    if state.current_month > 12:
-                        state.current_month = 1
-                session.commit()
-                if state.current_week >= target_week:
-                    continue
-                summaries, reason = run_smart_simulation(context, session, state, target_week)
-                if summaries:
-                    render_weekly_dashboard(summaries[-1])
-                    input()
-                if reason:
-                    print(f"\n{Colour.WARNING}Smart Sim stopped: {reason}{Colour.RESET}")
-                    input("Press Enter to continue...")
-                session.refresh(state)
-                continue
-            elif cmd == 'q':
-                break
-
-            # Advance week
-            state.current_week += 1
-
-            if state.current_week % 4 == 0:
-                state.current_month += 1
-                if state.current_month > 12:
-                    state.current_month = 1
-
-            session.commit()
-    finally:
-        session.close()
-        context.close_session()
-
-
-# -----------------------------------------------------
-# MAIN ENTRY
-# -----------------------------------------------------
 
 def main():
     try:
         main_menu()
     except KeyboardInterrupt:
         print("\n\nGame Exited.")
+
 
 if __name__ == "__main__":
     main()

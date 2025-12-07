@@ -25,6 +25,7 @@ from game.personality_effects import evaluate_postgame_slumps
 from game.relationship_manager import apply_confidence_relationships, seed_relationships
 from .states import EventType, MatchState
 from .batter_logic import AtBatStateMachine
+from .input_system import HumanBatterInput, CpuBatterInput
 from .momentum import MomentumSystem
 from .states import PlayMode
 from .brass_band import BrassBand
@@ -377,7 +378,13 @@ class MatchController:
         lineup_attr = "away_lineup" if half == "Top" else "home_lineup"
         self._state_change("INNING_HALF", {"inning": state.inning, "half": state.top_bottom})
         while state.outs < 3:
-            AtBatStateMachine(state).run()
+            lineup = getattr(state, lineup_attr)
+            batter = lineup[0] if lineup else None
+            team_id = getattr(batter, "team_id", getattr(batter, "school_id", None))
+            human_team_ids = getattr(state, "human_team_ids", set()) or set()
+            user_controls = team_id in human_team_ids
+            input_source = HumanBatterInput() if user_controls else CpuBatterInput()
+            AtBatStateMachine(state, input_source=input_source).run()
             setattr(state, lineup_attr, _rotate_lineup(getattr(state, lineup_attr)))
             if half == "Bot" and self._home_walkoff_ready():
                 state.outs = 3
@@ -796,7 +803,13 @@ class MatchController:
         lineup_attr = "away_lineup" if half == "Top" else "home_lineup"
         self._state_change("INNING_HALF", {"inning": state.inning, "half": state.top_bottom})
         while state.outs < 3:
-            AtBatStateMachine(state).run()
+            lineup = getattr(state, lineup_attr)
+            batter = lineup[0] if lineup else None
+            team_id = getattr(batter, "team_id", getattr(batter, "school_id", None))
+            human_team_ids = getattr(state, "human_team_ids", set()) or set()
+            user_controls = team_id in human_team_ids
+            input_source = HumanBatterInput() if user_controls else CpuBatterInput()
+            AtBatStateMachine(state, input_source=input_source).run()
             setattr(state, lineup_attr, _rotate_lineup(getattr(state, lineup_attr)))
             if half == "Bot" and self._home_walkoff_ready():
                 state.outs = 3

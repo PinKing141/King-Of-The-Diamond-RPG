@@ -35,6 +35,7 @@ from game.academic_system import (
 )
 from game.pitch_mastery import apply_mastery_decay, open_pitch_lab
 from game.dialogue_manager import run_dialogue_event
+from game.exceptions import ScheduleError
 from game.weekly_scheduler_core import (
     DAYS_OF_WEEK,
     SLOTS,
@@ -209,14 +210,20 @@ def _is_bench_player(player: Optional[Player]) -> bool:
 
 
 def build_mandatory_schedule(player: Optional[Player]) -> Dict[Tuple[int, int], str]:
-    base = dict(MANDATORY_TEAM_POLICY)
-    squad = _infer_squad_status(player)
-    if squad == SQUAD_FIRST_STRING:
-        weekend = FIRST_STRING_WEEKEND
-    else:
-        weekend = SECOND_STRING_WEEKEND if _is_reserve_player(player) else BENCH_WEEKEND
-    base.update(weekend)
-    return base
+    if not player:
+        return {}
+
+    try:
+        base = dict(MANDATORY_TEAM_POLICY)
+        squad = _infer_squad_status(player)
+        if squad == SQUAD_FIRST_STRING:
+            weekend = FIRST_STRING_WEEKEND
+        else:
+            weekend = SECOND_STRING_WEEKEND if _is_reserve_player(player) else BENCH_WEEKEND
+        base.update(weekend)
+        return base
+    except Exception as exc:
+        raise ScheduleError(f"Failed to build mandatory schedule for {getattr(player, 'name', 'player')}: {exc}") from exc
 
 
 def _get_active_player(context: GameContext) -> Optional[Player]:

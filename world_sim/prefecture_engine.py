@@ -6,7 +6,7 @@ from sqlalchemy.sql.expression import func
 
 from database.setup_db import session_scope, School
 from game.rng import get_rng
-from match_engine import resolve_match
+from match_engine.resolver import resolve_match
 
 from .sim_utils import quick_resolve_match
 

@@ -1,5 +1,5 @@
 """Compatibility shim that forwards legacy helpers to resolve_match."""
-from .match_sim import resolve_match
+from .resolver import resolve_match
 
 
 def sim_match(*args, **kwargs):  # pragma: no cover - transitional helper

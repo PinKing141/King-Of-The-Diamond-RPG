@@ -3,7 +3,12 @@ from types import SimpleNamespace
 from core.event_bus import EventBus
 from match_engine import batter_logic, base_running
 from match_engine.states import EventType
-from world_sim.baserunning import PickoffOutcome, RunnerThreatState, SlideStepResult
+from world_sim.baserunning import (
+    PickoffOutcome,
+    RunnerThreatState,
+    SlideStepResult,
+    evaluate_slide_step,
+)
 
 
 def _make_state_with_runner():
@@ -13,6 +18,26 @@ def _make_state_with_runner():
         event_bus=EventBus(),
         crowd_intensity=4.0,
     )
+
+
+def test_evaluate_slide_step_penalties():
+    """Ensure slide step applies control/velocity tax while speeding up delivery."""
+    pitcher = SimpleNamespace(
+        id=1,
+        control=50,
+        delivery_time=None,
+        athleticism=50,
+    )
+
+    standard = evaluate_slide_step(pitcher, use_slide_step=False)
+    assert standard.control_penalty == 0
+    assert standard.velocity_penalty == 0
+
+    slide = evaluate_slide_step(pitcher, use_slide_step=True)
+    assert slide.used_slide_step is True
+    assert slide.delivery_time < standard.delivery_time
+    assert slide.control_penalty > 0
+    assert slide.velocity_penalty > 0
 
 
 def test_capture_runner_threats_emits_baserun_events():

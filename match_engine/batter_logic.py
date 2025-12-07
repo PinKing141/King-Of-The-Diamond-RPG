@@ -156,14 +156,21 @@ def _apply_slide_step_modifiers(state, pitcher, pitcher_trait_mods, runner_threa
         use_slide = False
     else:
         use_slide = _should_slide_step(state, pitcher, runner_threats, fatigue_level)
-    if not use_slide:
-        state._pending_delivery_time = baseline.delivery_time
-        return baseline
-    result = evaluate_slide_step(pitcher, use_slide_step=True, fatigue_level=fatigue_level)
-    pitcher_trait_mods['control'] = pitcher_trait_mods.get('control', 0) - result.control_penalty
-    pitcher_trait_mods['velocity'] = pitcher_trait_mods.get('velocity', 0) - result.velocity_penalty
-    state._pending_delivery_time = result.delivery_time
-    return result
+
+    slide_profile = baseline if not use_slide else evaluate_slide_step(
+        pitcher,
+        use_slide_step=True,
+        fatigue_level=fatigue_level,
+    )
+
+    # Persist delivery timing and slide penalties for the upcoming pitch/steal logic.
+    state._pending_delivery_time = slide_profile.delivery_time
+    state._pending_slide_step = slide_profile
+    if slide_profile.control_penalty:
+        pitcher_trait_mods["control"] = pitcher_trait_mods.get("control", 0) - slide_profile.control_penalty
+    if slide_profile.velocity_penalty:
+        pitcher_trait_mods["velocity"] = pitcher_trait_mods.get("velocity", 0) - slide_profile.velocity_penalty
+    return slide_profile
 
 
 def _execute_pickoff_attempt(state, pitcher, runner_threats, target_idx: int) -> bool:
@@ -171,6 +178,12 @@ def _execute_pickoff_attempt(state, pitcher, runner_threats, target_idx: int) ->
     if not threat:
         return False
     outcome = simulate_pickoff(state, threat=threat, pitcher=pitcher)
+    try:
+        pid = getattr(pitcher, "id", None)
+        if pid is not None:
+            state.pitch_counts[pid] = state.pitch_counts.get(pid, 0) + outcome.stamina_cost
+    except Exception:
+        pass
     cache = getattr(state, "_cached_runner_threats", {}) or {}
     cache.pop(target_idx, None)
     if commentary_enabled():
@@ -1171,9 +1184,10 @@ class AtBatStateMachine:
     STATE_CONTACT = "STATE_CONTACT"
     STATE_RESOLVE = "STATE_RESOLVE"
 
-    def __init__(self, state):
+    def __init__(self, state, input_source=None):
         self.state = state
         self.bus = getattr(state, "event_bus", None)
+        self.input_source = input_source
 
     def _emit_state(self, state_name: str, payload: Optional[dict[str, object]] = None) -> None:
         if self.bus:
@@ -1239,12 +1253,19 @@ class AtBatStateMachine:
             human_team_ids = getattr(state, "human_team_ids", set()) or set()
             user_controls = (_player_team_id(batter) in human_team_ids) and not sim_fast
 
-            if user_controls:
-                if getattr(state, "manual_swing_prompts", False):
-                    batter_action, batter_mods = _prompt_swing_choice(state, pitcher, batter)
-                else:
-                    from player_roles.batter_controls import player_bat_turn
-                    batter_action, batter_mods = player_bat_turn(pitcher, batter, state)
+            if user_controls and getattr(state, "manual_swing_prompts", False):
+                batter_action, batter_mods = _prompt_swing_choice(state, pitcher, batter)
+            elif self.input_source is not None:
+                batter_action, batter_mods = self.input_source.get_batting_decision({
+                    "pitcher": pitcher,
+                    "batter": batter,
+                    "state": state,
+                    "offense_order": offense_order,
+                    "batter_tendencies": batter_tendencies,
+                })
+            elif user_controls:
+                from player_roles.batter_controls import player_bat_turn
+                batter_action, batter_mods = player_bat_turn(pitcher, batter, state)
             else:
                 batter_action, batter_mods = _apply_offense_orders(offense_order, state, batter_action, batter_mods)
                 guess_payload = _auto_batters_eye_guess(state, batter, pitcher, batter_tendencies)
@@ -1257,6 +1278,7 @@ class AtBatStateMachine:
                 prompt_runner_threat_controls(pitcher, state)
 
             state._pending_delivery_time = None
+            state._pending_slide_step = None
             slide_trait_mods = {}
             runner_threats = _capture_runner_threats(state)
             slide_profile = None

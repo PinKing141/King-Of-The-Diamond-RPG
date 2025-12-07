@@ -11,6 +11,7 @@ from database.setup_db import (
     get_session,
     GameState,
 )
+from game.exceptions import SaveCorruptError, SaveError, SaveNotFoundError
 
 
 def _backup_database(source_path, target_path):
@@ -32,6 +33,8 @@ def _gamestate_present():
     session = get_session()
     try:
         return session.query(GameState).first() is not None
+    except sqlite3.OperationalError:
+        return False
     finally:
         session.close()
 
@@ -176,7 +179,7 @@ def autosave_match_state(*, state=None, reason: str = "mid-match") -> None:
 def save_game(slot_num):
     """Snapshot the active database into the requested save slot."""
     if not os.path.exists(DB_PATH):
-        return False, "No active game to save."
+        raise SaveError("No active game database found to save.")
 
     target_path = os.path.join(USER_DATA_DIR, f"save_slot_{slot_num}.db")
 
@@ -184,15 +187,17 @@ def save_game(slot_num):
         close_all_sessions()
         _backup_database(DB_PATH, target_path)
         return True, f"Game saved to Slot {slot_num}."
-    except Exception as e:
-        return False, f"Error saving game: {e}"
+    except sqlite3.Error as exc:
+        raise SaveError(f"Database error during save: {exc}")
+    except OSError as exc:
+        raise SaveError(f"Disk error during save: {exc}")
 
 def load_game(slot_num):
     """Restore the active database from a save slot, verifying GameState afterward."""
     source_path = os.path.join(USER_DATA_DIR, f"save_slot_{slot_num}.db")
 
     if not os.path.exists(source_path):
-        return False, "Save slot not found."
+        raise SaveNotFoundError(f"Slot {slot_num} is empty.")
 
     try:
         close_all_sessions()
@@ -203,11 +208,13 @@ def load_game(slot_num):
         create_database()  # ensures schema + GameState row
 
         if not _gamestate_present():
-            return False, "Save loaded but GameState data is missing."
+            raise SaveCorruptError("Save file loaded, but GameState table is missing or empty.")
 
         return True, f"Loaded Slot {slot_num}."
-    except Exception as e:
-        return False, f"Error loading save: {e}"
+    except sqlite3.DatabaseError as exc:
+        raise SaveCorruptError(f"Save file is not a valid database: {exc}")
+    except OSError as exc:
+        raise SaveError(f"System error loading save: {exc}")
 
 def delete_save(slot_num):
     target_path = os.path.join(USER_DATA_DIR, f"save_slot_{slot_num}.db")
@@ -215,6 +222,25 @@ def delete_save(slot_num):
         os.remove(target_path)
         return True, "Deleted."
     return False, "Not found."
+
+
+def delete_autosave():
+    """Removes the temporary match resume data."""
+    deleted = False
+    if os.path.exists(AUTOSAVE_PATH):
+        try:
+            os.remove(AUTOSAVE_PATH)
+            deleted = True
+        except OSError:
+            pass
+
+    if os.path.exists(AUTOSAVE_META):
+        try:
+            os.remove(AUTOSAVE_META)
+        except OSError:
+            pass
+
+    return deleted
 
 def show_save_menu(mode="SAVE"):
     """
@@ -240,9 +266,18 @@ def show_save_menu(mode="SAVE"):
                 print(f" {i}. Slot {i}  [Empty]")
                 
         print(" 0. Back")
+        print(" 9. Clear Autosave")
         
         choice = input("\nSelect Slot: ")
         if choice == '0': return False
+
+        if choice == '9':
+            if delete_autosave():
+                print(f"{Colour.GREEN}Autosave cleared.{Colour.RESET}")
+            else:
+                print("No autosave found.")
+            import time; time.sleep(1)
+            continue
         
         try:
             slot = int(choice)
@@ -250,8 +285,11 @@ def show_save_menu(mode="SAVE"):
                 if mode == "SAVE":
                     confirm = input(f"Overwrite Slot {slot}? (y/n): ") if slot in existing_slots else 'y'
                     if confirm.lower() == 'y':
-                        success, msg = save_game(slot)
-                        print(msg)
+                        try:
+                            success, msg = save_game(slot)
+                            print(f"{Colour.GREEN}{msg}{Colour.RESET}")
+                        except SaveError as exc:
+                            print(f"{Colour.FAIL}Save Failed: {exc}{Colour.RESET}")
                         import time; time.sleep(1)
                         return True
                 
@@ -262,8 +300,15 @@ def show_save_menu(mode="SAVE"):
                     else:
                         confirm = input(f"Load Slot {slot}? Unsaved progress will be lost. (y/n): ")
                         if confirm.lower() == 'y':
-                            success, msg = load_game(slot)
-                            print(msg)
+                            try:
+                                success, msg = load_game(slot)
+                                print(f"{Colour.GREEN}{msg}{Colour.RESET}")
+                            except SaveCorruptError as exc:
+                                print(f"{Colour.FAIL}CORRUPT SAVE: {exc}{Colour.RESET}")
+                            except SaveNotFoundError as exc:
+                                print(f"{Colour.WARNING}{exc}{Colour.RESET}")
+                            except SaveError as exc:
+                                print(f"{Colour.FAIL}Load Error: {exc}{Colour.RESET}")
                             import time; time.sleep(1)
                             return True
             else:

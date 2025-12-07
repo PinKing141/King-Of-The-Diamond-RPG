@@ -199,7 +199,7 @@ def execute_schedule_core(
     if context.school_id is None:
         raise ValueError("GameContext missing school_id; cannot execute schedule.")
 
-    from match_engine import resolve_match  # Local import avoids circular dependency
+        from match_engine.resolver import resolve_match  # Local import avoids circular dependency
 
     my_team = session.get(Team, context.school_id)
     if not my_team:

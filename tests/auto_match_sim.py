@@ -4,7 +4,7 @@ from unittest.mock import patch
 from database.setup_db import School, get_session
 from game.pitch_minigame import trigger_pitch_minigame
 from battery_system import battery_negotiation
-from match_engine import resolve_match
+from match_engine.resolver import resolve_match
 
 class TestMatchSimulationStress(unittest.TestCase):
     def test_match_simulation_stress(self):

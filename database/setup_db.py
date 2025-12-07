@@ -21,8 +21,6 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship, synonym
 from sqlalchemy import inspect
 from contextlib import contextmanager
 
-# Add parent directory to path to find config.py
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import DB_PATH
 
 # Make directory for DB if missing
@@ -775,24 +773,11 @@ Team = School
 Performance = PlayerGameStats
 
 
-# Ensure critical schema migrations run when the module loads so legacy
-# saves pick up new progression columns without requiring a manual script.
-ensure_geolocation_schema()
-ensure_school_schema()
-ensure_player_schema()
-ensure_player_skill_schema()
-ensure_player_milestone_schema()
-ensure_gamestate_schema()
-ensure_coach_schema()
-ensure_game_schema()
-ensure_game_stats_schema()
-ensure_pitch_repertoire_schema()
-
-
 # ============================================================
 # DATABASE INITIALISATION
 # ============================================================
 def create_database():
+    """Idempotently create tables and run schema migrations."""
     Base.metadata.create_all(engine)
     ensure_geolocation_schema()
     ensure_school_schema()
@@ -804,7 +789,6 @@ def create_database():
     ensure_game_schema()
     ensure_game_stats_schema()
     ensure_pitch_repertoire_schema()
-    ensure_game_schema()
 
     with session_scope() as session:
         if not session.query(GameState).first():

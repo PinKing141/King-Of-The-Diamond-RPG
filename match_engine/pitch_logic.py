@@ -792,6 +792,17 @@ def resolve_pitch(
     count_snapshot = (state.balls, state.strikes)
     psychology_engine = getattr(state, "psychology_engine", None)
 
+    # Slide step context (populated by batter_logic when runners threaten).
+    slide_profile = getattr(state, "_pending_slide_step", None)
+    if slide_profile is None:
+        slide_profile = SimpleNamespace(
+            used_slide_step=False,
+            delivery_time=None,
+            control_penalty=0.0,
+            velocity_penalty=0.0,
+            stamina_cost=0.0,
+        )
+
     # --- 1. PITCH SELECTION (BATTERY NEGOTIATION / MANUAL OVERRIDE) ---
     # Hard clamp: in auto/fast sims, ensure no user prompts can surface.
     if getattr(state, "auto_play_inputs", False) or getattr(state, "fast_sim", False):
@@ -939,6 +950,13 @@ def resolve_pitch(
     
     # Fatigue Calculation
     adj_pitch_count = _weather_adjusted_pitch_count(state, pitcher_id)
+    # Slide step and pickoff throws tax stamina; treat them as fractional pitches.
+    if getattr(slide_profile, "stamina_cost", 0):
+        adj_pitch_count += slide_profile.stamina_cost
+        try:
+            state.pitch_counts[pitcher_id] = state.pitch_counts.get(pitcher_id, 0) + slide_profile.stamina_cost
+        except Exception:
+            pass
     fatigue_penalty = 0
     control_penalty = 0
     
@@ -958,6 +976,7 @@ def resolve_pitch(
     base_velocity += mastery_velo_bonus
     base_velocity += sig_mods.get("velo", 0.0)
     velocity = (base_velocity * p_def['velocity_mod']) - fatigue_penalty
+    velocity -= getattr(slide_profile, "velocity_penalty", 0.0)
     if extension_bonus:
         velocity += extension_bonus
     base_movement = pitch.break_level * p_def['break_mod'] * mastery_scalar
@@ -972,6 +991,7 @@ def resolve_pitch(
 
     base_control = (getattr(pitcher, 'control', 50) or 50) + pitcher_trait_mods.get('control', 0)
     effective_control = (base_control * slot_mods['control_penalty_mult']) - control_penalty
+    effective_control -= getattr(slide_profile, "control_penalty", 0.0)
     effective_control += mastery_ctrl_bonus
     effective_control += mix_ctrl
     effective_control += sig_mods.get("ctrl", 0.0)
@@ -1375,6 +1395,8 @@ def resolve_pitch(
         if commentary_enabled():
             print(f"   >> {line}")
     
+    resolved = None
+
     if contact_quality < 0:
         res = PitchResult(pitch.pitch_name, location, "Strike", "Swinging Miss", velocity)
         _attach_battle_debug(res)
@@ -1389,7 +1411,7 @@ def resolve_pitch(
         )
         _commit_sequence_memory(state, pitcher_id, batter_id, pitch.pitch_name, p_def, location, velocity)
         _adjust_pitcher_presence(state, pitcher_id, 0.25)
-        return res
+        resolved = res
     elif contact_quality < 20:
         res = PitchResult(pitch.pitch_name, location, "Foul", "Tipped", velocity)
         _attach_battle_debug(res)
@@ -1403,7 +1425,7 @@ def resolve_pitch(
         )
         _commit_sequence_memory(state, pitcher_id, batter_id, pitch.pitch_name, p_def, location, velocity)
         _adjust_pitcher_presence(state, pitcher_id, 0.05)
-        return res
+        resolved = res
     else:
         # In Play
         res = PitchResult(pitch.pitch_name, location, "InPlay", "Contact", velocity)
@@ -1429,4 +1451,10 @@ def resolve_pitch(
             _adjust_pitcher_presence(state, pitcher_id, -0.2)
         else:
             _adjust_pitcher_presence(state, pitcher_id, 0.05)
-        return res
+        resolved = res
+
+    if resolved is not None:
+        return resolved
+
+    fallback = PitchResult(pitch.pitch_name, location, "Ball", "Ball", velocity)
+    return _finalize_result(fallback)

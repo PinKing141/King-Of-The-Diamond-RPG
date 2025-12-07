@@ -1,0 +1,13 @@
+{
+  "events": {
+    "15": "summer_qualifiers",
+    "40": "winter_camp",
+    "48": "spring_koshien"
+  },
+  "tournament_weeks": [15, 48],
+  "sim_interrupts": {
+    "15": "Summer qualifiers demand manual coaching.",
+    "40": "Winter camp requires a player choice.",
+    "48": "Spring Senbatsu selections need your approval."
+  }
+}

@@ -5,9 +5,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-# Ensure project root is importable
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from database.setup_db import (
     GameState,
     Player,

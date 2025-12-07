@@ -71,3 +71,60 @@ class ConfigLoader:
 
 
 __all__ = ["ConfigLoader"]
+
+
+class SeasonConfigLoader:
+    """Loads season schedule, event triggers, and simulation interrupts."""
+
+    _cache: Dict[str, Any] = {}
+    _loaded: bool = False
+    _lock: RLock = RLock()
+    _path: Optional[Path] = None
+
+    @classmethod
+    def _default_path(cls) -> Path:
+        base = Path(__file__).resolve().parents[1]
+        return base / "data" / "season_config.json"
+
+    @classmethod
+    def configure(cls, *, path: Optional[str] = None) -> None:
+        cls._path = Path(path).expanduser().resolve() if path else None
+        cls._loaded = False
+        cls._cache = {}
+
+    @classmethod
+    def _ensure_loaded(cls) -> None:
+        if cls._loaded:
+            return
+        with cls._lock:
+            if cls._loaded:
+                return
+            path = cls._path or cls._default_path()
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    cls._cache = json.load(handle)
+            except FileNotFoundError:
+                cls._cache = {
+                    "events": {"15": "summer_qualifiers", "40": "winter_camp", "48": "spring_koshien"},
+                    "tournament_weeks": [15, 48],
+                    "sim_interrupts": {},
+                }
+            cls._loaded = True
+
+    @classmethod
+    def get_event_for_week(cls, week: int) -> Optional[str]:
+        cls._ensure_loaded()
+        return cls._cache.get("events", {}).get(str(week))
+
+    @classmethod
+    def is_tournament_week(cls, week: int) -> bool:
+        cls._ensure_loaded()
+        return week in cls._cache.get("tournament_weeks", [])
+
+    @classmethod
+    def get_interrupt_message(cls, week: int) -> Optional[str]:
+        cls._ensure_loaded()
+        return cls._cache.get("sim_interrupts", {}).get(str(week))
+
+
+__all__ = ["ConfigLoader", "SeasonConfigLoader"]

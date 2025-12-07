@@ -10,7 +10,7 @@ from game.pitch_minigame import (
     trigger_pitch_minigame,
 )
 from game.rng import get_rng
-from match_engine import resolve_match
+from match_engine.resolver import resolve_match
 from ui.ui_display import Colour, clear_screen
 from .sim_utils import quick_resolve_match
 

@@ -40,7 +40,7 @@ from game.skill_system import (
     sync_player_skills,
 )
 from game.trait_catalog import SKILL_DEFINITIONS
-from match_engine import match_sim
+from match_engine.resolver import resolve_match
 from sqlalchemy import func
 
 
@@ -105,7 +105,7 @@ class SimulationRunner:
         for idx in range(1, games + 1):
             with session_scope() as session:
                 home, away = self._random_school_pair(session)
-            winner, score = match_sim.resolve_match(
+            winner, score = resolve_match(
                 home,
                 away,
                 tournament_name="Ghost Game",

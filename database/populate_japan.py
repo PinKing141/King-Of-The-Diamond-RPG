@@ -10,8 +10,6 @@ import pykakasi
 import traceback
 from collections import defaultdict
 
-# Fix Imports for subfolder location
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import NAME_DB_PATH, CITIES_DB_PATH
 from match_engine.pitch_definitions import PITCH_TYPES
 from database.setup_db import (
