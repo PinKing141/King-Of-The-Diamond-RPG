@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional
 
+from game.story.captain_speech import run_team_huddle
+
 from ui.ui_display import Colour, clear_screen
 
 
@@ -61,8 +63,44 @@ def _scouting_logs(state) -> List[str]:
     return [line for line in logs if isinstance(line, str) and line.startswith("[Scouting Card]")]
 
 
-def render_match_intro(state, *, echo: bool = True) -> List[str]:
-    """Render a pre-game scouting card style intro and return lines."""
+def _should_trigger_huddle(state, mode: str) -> bool:
+    if mode == "never":
+        return False
+    if mode == "always":
+        return True
+
+    tournament = getattr(state, "tournament_name", None) or getattr(state, "tournament", None) or ""
+    round_name = getattr(state, "round_name", None) or getattr(state, "stage", None) or ""
+    elimination = bool(getattr(state, "is_elimination", False))
+    rivalry = bool(getattr(state, "rival_name", None))
+
+    t_lower = str(tournament).lower()
+    r_lower = str(round_name).lower()
+    if "koshien" in t_lower or "national" in t_lower:
+        return True
+    if elimination:
+        return True
+    if any(tag in r_lower for tag in ["final", "semi", "quarter"]):
+        return True
+    if rivalry:
+        return True
+    return False
+
+
+def render_match_intro(
+    state,
+    *,
+    echo: bool = True,
+    show_huddle: bool = False,
+    huddle_pause: bool = False,
+    huddle_trigger: str = "auto",
+    skip_huddle: bool = False,
+    allow_identity_pack: bool = False,
+) -> List[str]:
+    """Render a pre-game scouting card style intro and return lines.
+
+    Huddle shows when show_huddle is True and trigger passes; skip_huddle force-disables.
+    """
 
     lines: List[str] = []
     home = getattr(state, "home_team", None)
@@ -97,6 +135,23 @@ def render_match_intro(state, *, echo: bool = True) -> List[str]:
     lines.append(_lineup_blurb(away, away_lineup, tournament))
 
     lines.extend(_scouting_logs(state))
+
+    if show_huddle and not skip_huddle and _should_trigger_huddle(state, huddle_trigger):
+        captain = getattr(state, "captain", None)
+        if not captain:
+            home_lineup = getattr(state, "home_lineup", [])
+            captain = home_lineup[0] if home_lineup else None
+        huddle_school = home
+        huddle_lines, _ = run_team_huddle(
+            captain,
+            huddle_school,
+            echo=False,
+            pause=huddle_pause,
+            use_identity_pack=allow_identity_pack,
+        )
+        if huddle_lines:
+            lines.append("Captain's Huddle:")
+            lines.extend(huddle_lines)
 
     if echo:
         clear_screen()

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from database.setup_db import CoachStrategyMod
+from game.personnel.coach_personalities import get_personality_profile
 
 
 def _serialize_payload(payload: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -70,6 +71,55 @@ def has_modifier(
     if target_player_id is not None:
         query = query.filter(CoachStrategyMod.target_player_id == target_player_id)
     return query.first() is not None
+
+
+def get_coach_strategy_modifiers(coach) -> Dict[str, float]:
+    """Return gameplay levers influenced by coach personality bias."""
+    if not coach:
+        return {}
+
+    profile = get_personality_profile(getattr(coach, "personality", "Stoic"))
+    bias = profile.get("bias")
+    mods = {
+        "bunt_tendency": 1.0,
+        "steal_tendency": 1.0,
+        "pitch_change_tolerance": 1.0,
+        "pinch_hit_aggression": 1.0,
+    }
+
+    if bias == "power":
+        mods["bunt_tendency"] = 0.4
+        mods["pinch_hit_aggression"] = 1.3
+    elif bias == "bunt":
+        mods["bunt_tendency"] = 1.8
+        mods["steal_tendency"] = 0.8
+    elif bias == "gambler":
+        mods["steal_tendency"] = 1.5
+        mods["pinch_hit_aggression"] = 1.5
+        mods["bunt_tendency"] = 0.2
+    elif bias == "defense":
+        mods["pitch_change_tolerance"] = 0.7
+
+    return mods
+
+
+def ensure_personality_strategy_mods(session: Session, coach, school_id: int) -> None:
+    """Set lightweight match directives that mirror personality bias."""
+    if not coach:
+        return
+
+    profile = get_personality_profile(getattr(coach, "personality", "Stoic"))
+    bias = profile.get("bias")
+
+    def _queue(effect: str) -> None:
+        if has_modifier(session, school_id, effect_type=effect):
+            return
+        set_strategy_modifier(session, school_id, effect, games=5)
+
+    if bias in {"bunt", "defense", "tactical", "standard"}:
+        _queue("small_ball")
+    elif bias in {"power", "aggro", "gambler", "speed"}:
+        _queue("power_focus")
 
 
 def get_resting_player_ids(session: Session, school_id: int) -> List[int]:

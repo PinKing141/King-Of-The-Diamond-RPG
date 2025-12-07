@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.setup_db import Coach
 from config import NAME_DB_PATH
 from game.personnel.personality import roll_coach_personality
+from game.personnel.coach_personalities import get_random_personality
 
 # Initialize converter
 kks = pykakasi.kakasi()
@@ -132,10 +133,12 @@ def generate_coach_for_school(school):
     traits = roll_coach_personality(school)
     coach_archetype = _infer_coach_archetype(school)
     scouting_rating = _roll_scouting_ability(school)
+    persona = get_random_personality()
 
     new_coach = Coach(
         school_id=school.id,
         name=coach_name_str,
+        personality=persona,
         tradition=round(tradition, 2),
         logic=round(logic, 2),
         temper=round(temper, 2),

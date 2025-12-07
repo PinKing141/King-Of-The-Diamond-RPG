@@ -525,6 +525,13 @@ def _append_coach_strategy_notes(lines, memory, state, batter) -> None:
             _queue_line(lines, memory, f"mod_power_focus_{team_id}", f"{team_name} was told to swing freely—no timid swings tonight.")
         elif effect == 'rest_player' and mod.get('target_player_id') == getattr(batter, 'id', None):
             _queue_line(lines, memory, f"mod_rest_{batter.id}", f"Coach nearly sat {_short_name(batter)}, but he's gutting it out despite the fatigue directive.")
+        elif effect == 'coach_persona':
+            persona = mod.get('personality', 'Stoic')
+            bias = mod.get('bias', 'balanced')
+            coach_name = mod.get('coach_name', 'Coach')
+            key = f"coach_persona_{team_id}"
+            line = f"{coach_name}'s {persona} vibe shapes the game plan (bias: {bias})."
+            _queue_line(lines, memory, key, line)
 
 
 def _append_rivalry_notes(lines, memory, state, pitcher, batter) -> None:

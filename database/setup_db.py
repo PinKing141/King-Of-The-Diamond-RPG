@@ -208,6 +208,8 @@ def ensure_coach_schema():
 
     columns = {col['name'] for col in inspector.get_columns('coaches')}
     statements = []
+    if 'personality' not in columns:
+        statements.append("ALTER TABLE coaches ADD COLUMN personality VARCHAR DEFAULT 'Stoic'")
     if 'drive' not in columns:
         statements.append("ALTER TABLE coaches ADD COLUMN drive INTEGER DEFAULT 50")
     if 'loyalty' not in columns:
@@ -221,6 +223,7 @@ def ensure_coach_schema():
 
     if not statements:
         with engine.begin() as conn:
+            conn.execute(text("UPDATE coaches SET personality = COALESCE(personality, 'Stoic')"))
             conn.execute(text("UPDATE coaches SET drive = COALESCE(drive, 50)"))
             conn.execute(text("UPDATE coaches SET loyalty = COALESCE(loyalty, 50)"))
             conn.execute(text("UPDATE coaches SET volatility = COALESCE(volatility, 50)"))
@@ -231,6 +234,7 @@ def ensure_coach_schema():
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+        conn.execute(text("UPDATE coaches SET personality = COALESCE(personality, 'Stoic')"))
         conn.execute(text("UPDATE coaches SET drive = COALESCE(drive, 50)"))
         conn.execute(text("UPDATE coaches SET loyalty = COALESCE(loyalty, 50)"))
         conn.execute(text("UPDATE coaches SET volatility = COALESCE(volatility, 50)"))
@@ -427,6 +431,8 @@ class Coach(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     school_id = Column(Integer, ForeignKey('schools.id'))
     name = Column(String)
+
+    personality = Column(String, default="Stoic")
 
     tradition = Column(Float, default=0.5)
     logic = Column(Float, default=0.5)

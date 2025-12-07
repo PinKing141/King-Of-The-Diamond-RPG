@@ -6,11 +6,12 @@ reuse a consistent look and feel.
 """
 from __future__ import annotations
 
+import random
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import func
 
-from database.setup_db import Player, PlayerGameStats, School
+from database.setup_db import Coach, Player, PlayerGameStats, School
 from game.mechanics.pitch_mastery import mastery_progress
 from ui.ui_display import Colour
 from core.event_bus import EventBus
@@ -50,10 +51,100 @@ GRADE_BUCKETS: Sequence[Tuple[int, str]] = (
 )
 
 
+# Minimum 'fame' required for a coach to earn a legendary nickname.
+# Uses scouting_ability (0-100). 80 ≈ top decile.
+TITLE_THRESHOLD = 80
+
+
 def _clamp(val: Optional[float], low: int = 0, high: int = 100) -> int:
     if val is None:
         return low
     return max(low, min(high, int(val)))
+
+
+def generate_coach_title(coach, school: Optional[School] = None) -> Optional[str]:
+    """Generate an anime-style legendary coach title using persona, archetype, and location.
+
+    Returns None for coaches below the fame threshold so only elite coaches get a nickname.
+    """
+    rating = getattr(coach, "scouting_ability", 50) or 50
+    if rating < TITLE_THRESHOLD:
+        return None
+
+    persona = getattr(coach, "personality", "Stoic") or "Stoic"
+    archetype = (getattr(coach, "archetype", "TRADITIONALIST") or "TRADITIONALIST").upper()
+
+    location = "the Diamond"
+    if school and getattr(school, "prefecture", None):
+        location = school.prefecture
+
+    descriptors = {
+        "Gruff": [("Iron", "adj"), ("Grizzled", "adj"), ("Unsmiling", "adj"), ("Old", "adj")],
+        "Strict": [("Devil", "adj"), ("Demon", "adj"), ("Steel", "noun_of"), ("Absolute", "adj")],
+        "Ruthless": [("Cold", "adj"), ("Ice", "noun_of"), ("Bloodless", "adj"), ("Silent", "adj")],
+        "Intense": [("Raging", "adj"), ("Fighting", "adj"), ("Shura", "noun_of"), ("Berserk", "adj")],
+        "Stoic": [("Silent", "adj"), ("Stone", "adj"), ("Immovable", "adj"), ("Quiet", "adj")],
+        "Logical": [("Data", "adj"), ("Precision", "noun_of"), ("Digital", "adj"), ("Calculated", "adj")],
+        "Tactical": [("Trickster", "adj"), ("Cunning", "adj"), ("Shadow", "adj"), ("Magic", "noun_of")],
+        "Observant": [("Eagle", "adj"), ("All-Seeing", "adj"), ("Clairvoyant", "adj"), ("Insight", "noun_of")],
+        "Serene": [("Smiling", "adj"), ("Sleeping", "adj"), ("Tranquil", "adj"), ("Buddha", "noun_of")],
+        "Passionate": [("Roaring", "adj"), ("Crimson", "adj"), ("Burning", "adj"), ("Flame", "noun_of")],
+        "Energetic": [("Lightning", "noun_of"), ("Flash", "noun_of"), ("Speed", "noun_of"), ("Rocket", "adj")],
+        "Maverick": [("Rogue", "adj"), ("Gambling", "adj"), ("Wild", "adj"), ("Lone", "adj")],
+        "Unorthodox": [("Strange", "adj"), ("Mystery", "noun_of"), ("Chaos", "noun_of"), ("Miracle", "noun_of")],
+        "Whimsical": [("Dreaming", "adj"), ("Laughing", "adj"), ("Phantom", "adj"), ("Joker", "adj")],
+        "Charismatic": [("Golden", "adj"), ("Star", "noun_of"), ("Radiant", "adj"), ("Crownless", "adj")],
+        "Mentorly": [("Great", "adj"), ("Big", "adj"), ("Trusted", "adj"), ("Father", "noun_of")],
+        "Old-School": [("Legendary", "adj"), ("Ancient", "adj"), ("Showa", "adj"), ("Immortal", "adj")],
+        "Philosophical": [("Wise", "adj"), ("Deep", "adj"), ("Sage", "adj"), ("Truth", "noun_of")],
+    }
+
+    nouns = {
+        "TRADITIONALIST": ["Shogun", "General", "Wall", "Fortress", "Guardian"],
+        "INNOVATOR": ["Architect", "Revolutionary", "Pioneer", "Creator"],
+        "SCIENTIST": ["Computer", "Professor", "Brain", "Machine"],
+        "TACTICIAN": ["Magician", "Fox", "Schemer", "Spider", "Chessmaster"],
+        "MOTIVATOR": ["Spirit", "Soul", "Commander", "Captain"],
+        "SLUGGER_GURU": ["Monster", "Ogre", "Titan", "Beast", "Cannon"],
+        "TALENT_ENGINEER": ["Alchemist", "Gardener", "Teacher", "Sculptor"],
+        "BALANCED": ["Ruler", "King", "Emperor", "Director"],
+        "MENTOR": ["Sensei", "Master", "Sage", "Hermit"],
+    }
+
+    headlines = {
+        ("Strict", "TRADITIONALIST"): "The Tyrant",
+        ("Ruthless", "BALANCED"): "The Demon King",
+        ("Intense", "SLUGGER_GURU"): "The Red Ogre",
+        ("Maverick", "TACTICIAN"): f"The Wolf of {location}",
+        ("Passionate", "MOTIVATOR"): "The Roaring Soul",
+        ("Stoic", "SCIENTIST"): "The Ice Machine",
+        ("Unorthodox", "INNOVATOR"): "The Alien",
+        ("Serene", "MENTOR"): "The Smiling Buddha",
+        ("Whimsical", "TACTICIAN"): "The Magician",
+        ("Old-School", "TRADITIONALIST"): "The Fossil",
+        ("Energetic", "SLUGGER_GURU"): "The Demon Child",
+        ("Strict", "TALENT_ENGINEER"): "The God-Father",
+    }
+
+    if (persona, archetype) in headlines:
+        return headlines[(persona, archetype)]
+
+    desc_list = descriptors.get(persona, [("Famous", "adj")])
+    noun_list = nouns.get(archetype, ["Manager"])
+    word, grammar_type = random.choice(desc_list)
+    role = random.choice(noun_list)
+
+    use_location = random.random() < 0.30
+
+    if grammar_type == "noun_of":
+        return f"The {role} of {word}"
+
+    if grammar_type == "adj":
+        if use_location:
+            return f"The {word} {role} of {location}"
+        return f"The {word} {role}"
+
+    return f"The {word} {role}"
 
 
 def color_for_value(value: Optional[int]) -> str:
@@ -572,6 +663,15 @@ def render_team_scouting_report(
     lines.append("═" * BOX_WIDTH)
     lines.append(f"TARGET: {school.name} | Prefecture: {school.prefecture}".center(BOX_WIDTH))
     lines.append("═" * BOX_WIDTH)
+    coach = getattr(school, "coach", None)
+    if coach:
+        title = generate_coach_title(coach, school)
+        persona = getattr(coach, "personality", "?")
+        archetype = getattr(coach, "archetype", "?")
+        name = getattr(coach, 'name', 'Coach')
+        suffix = f" — {title}" if title else ""
+        lines.append(f"Coach: {name}{suffix} ({persona} / {archetype})")
+        lines.append("")
     if level == 0:
         lines.append("[ FOG OF WAR ] No intel. Purchase scouting to unlock data.")
     elif level == 1:
@@ -621,4 +721,59 @@ def render_team_scouting_report(
             "lines": lines,
         },
     )
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Coach profile renderer
+# ---------------------------------------------------------------------------
+
+
+def _render_coach_slider(label: str, value: float) -> str:
+    pct = _clamp(value * 100 if value <= 1 else value)
+    bar = _stat_bar(pct)
+    return f"  {label:<12} {bar}  {pct:>3}"
+
+
+def render_coach_profile(session, coach_id: int, knowledge_level: int = 3) -> Optional[List[str]]:
+    coach = session.get(Coach, coach_id)
+    if not coach:
+        return None
+    school = session.get(School, coach.school_id) if coach.school_id else None
+
+    name = getattr(coach, "name", "Coach") or "Coach"
+    title = generate_coach_title(coach, school)
+    persona = getattr(coach, "personality", "?")
+    archetype = getattr(coach, "archetype", "?")
+
+    lines: List[str] = []
+    subtitle = title or ""
+    lines.extend(_header_block(name.upper(), subtitle))
+    if school:
+        lines.append(f"School: {school.name} ({school.prefecture})")
+    lines.append(f"Persona: {persona} | Archetype: {archetype}")
+    lines.append("─" * BOX_WIDTH)
+
+    # Emotional sliders
+    lines.append(f"{Colour.GOLD}[ Traits ]{Colour.RESET}")
+    lines.append(_render_coach_slider("Drive", getattr(coach, "drive", 50)))
+    lines.append(_render_coach_slider("Loyalty", getattr(coach, "loyalty", 50)))
+    lines.append(_render_coach_slider("Volatility", getattr(coach, "volatility", 50)))
+    lines.append("")
+
+    lines.append(f"{Colour.GOLD}[ Philosophy ]{Colour.RESET}")
+    lines.append(_render_coach_slider("Tradition", getattr(coach, "tradition", 0.5)))
+    lines.append(_render_coach_slider("Logic", getattr(coach, "logic", 0.5)))
+    lines.append(_render_coach_slider("Temper", getattr(coach, "temper", 0.5)))
+    lines.append(_render_coach_slider("Ambition", getattr(coach, "ambition", 0.5)))
+    lines.append("")
+
+    lines.append(f"{Colour.GOLD}[ Tools ]{Colour.RESET}")
+    lines.append(_render_coach_slider("Scouting", getattr(coach, "scouting_ability", 50)))
+    lines.append(_render_coach_slider("Seniority Wt", getattr(coach, "seniority_weight", 0.5)))
+    lines.append(_render_coach_slider("Trust Wt", getattr(coach, "trust_weight", 0.5)))
+    lines.append(_render_coach_slider("Stats Wt", getattr(coach, "stats_weight", 0.5)))
+    lines.append(_render_coach_slider("Fatigue Pen", getattr(coach, "fatigue_penalty_weight", 0.5)))
+    lines.append("")
+
     return lines

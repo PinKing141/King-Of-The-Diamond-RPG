@@ -1,0 +1,77 @@
+[
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Stoic",
+    "text": "Coach {name} stares at the wall. 'Ideally... we do not lose.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Passionate",
+    "text": "Coach {name} slams the desk! 'WE ATTACK! NO MERCY! SWING HARD!'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Logical",
+    "text": "Coach {name} checks the tablet. 'The data suggests a 12% shift in infield depth.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Old-School",
+    "text": "Coach {name} grunts. 'Back in my day, we bunted with our teeth. Bunt more.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Philosophical",
+    "text": "Coach {name} gazes out the window. 'The ball is round. The game is long. Be like water.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Gruff",
+    "text": "Coach {name} folds his arms. 'Less talk. More hard contact.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Energetic",
+    "text": "Coach {name} paces the room. 'LEGS. FIRE. STEAL EVERYTHING NOT NAILED DOWN!'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Serene",
+    "text": "Coach {name} whispers, 'Slow breath. Clean innings. Let the game come to us.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Maverick",
+    "text": "Coach {name} smirks. 'We gamble early. Bunt? Maybe. Squeeze? Definitely. Or not. Keep them guessing.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Unorthodox",
+    "text": "Coach {name} draws strange arrows. 'Third baseman bats leadoff. Catcher steals second. Trust me.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Disciplined",
+    "text": "Coach {name} aligns pens. 'No wasted pitches. No free bases. Execute the plan precisely.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Mentorly",
+    "text": "Coach {name} smiles. 'We'll tailor the plan to your swings. Play your game; we'll cover you.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Cunning",
+    "text": "Coach {name} lowers his voice. 'They bite on feints. Show bunt, pull back, steal third.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Relentless",
+    "text": "Coach {name} taps the lineup card. 'No let-up. Run counts to three, foul off everything, break them.'"
+  },
+  {
+    "id": "coach_meeting_strategy",
+    "personality": "Charismatic",
+    "text": "Coach {name} grins wide. 'Crowd's with us. Feed them fireworks—loud barrels and bold steals.'"
+  }
+]

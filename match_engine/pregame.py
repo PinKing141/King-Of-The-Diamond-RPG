@@ -20,6 +20,7 @@ from game.mechanics.mechanics import get_or_create_profile
 from game.mechanics.lineup_logic import optimize_lineup, select_starting_nine
 from world.rivals import get_ledger
 from world_sim.weather import WeatherProfile, generate_weather_profile
+from game.personnel.coach_personalities import get_personality_profile
 
 
 @dataclass
@@ -431,9 +432,32 @@ def _apply_rivalry_context(db_session: Session, home_lineup, away_lineup):
 
 
 def _attach_coach_modifiers(state: MatchState):
+    home_mods = export_mod_descriptors(state.db_session, state.home_team.id)
+    away_mods = export_mod_descriptors(state.db_session, state.away_team.id)
+
+    def _persona_mod(team):
+        coach = getattr(team, "coach", None)
+        persona = getattr(coach, "personality", None) or None
+        if not coach or not persona:
+            return None
+        profile = get_personality_profile(persona)
+        return {
+            "type": "coach_persona",
+            "personality": persona,
+            "bias": profile.get("bias"),
+            "coach_name": getattr(coach, "name", "Coach"),
+        }
+
+    home_persona = _persona_mod(state.home_team)
+    away_persona = _persona_mod(state.away_team)
+    if home_persona:
+        home_mods.append(home_persona)
+    if away_persona:
+        away_mods.append(away_persona)
+
     state.team_mods = {
-        state.home_team.id: export_mod_descriptors(state.db_session, state.home_team.id),
-        state.away_team.id: export_mod_descriptors(state.db_session, state.away_team.id),
+        state.home_team.id: home_mods,
+        state.away_team.id: away_mods,
     }
 
 

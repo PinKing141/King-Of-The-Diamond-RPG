@@ -16,7 +16,7 @@ from game.systems.scouting_system import (
 from core.game_context import GameContext
 from game.personnel.player_progression import fetch_player_milestone_tags
 from game.mechanics.skill_system import trait_synergy_summary
-from game.personnel.player_profile_renderer import render_team_scouting_report
+from game.personnel.player_profile_renderer import generate_coach_title, render_coach_profile, render_team_scouting_report
 from game.systems.scouting_report_renderer import render_team_report
 
 DEFAULT_SCOUT_THEME = "persona"
@@ -405,6 +405,7 @@ def view_scouting_menu(context: GameContext):
         print("3. Scout Rival School")
         print(f"4. Toggle Renderer (Now: {'Modern' if use_modern else 'Legacy'})")
         print(f"5. Change Theme (Now: {theme_name})")
+        print("6. View Coach Profile")
         print("0. Back")
         
         choice = input("Select: ")
@@ -423,6 +424,12 @@ def view_scouting_menu(context: GameContext):
                     render_team_report(session, target.id, knowledge_level=info.knowledge_level, theme_name=theme_name)
                 else:
                     render_team_scouting_report(session, target.id, info.knowledge_level, info.rivalry_score)
+                # Optional: show target coach title if elite
+                t_coach = getattr(target, 'coach', None)
+                if t_coach:
+                    t_title = generate_coach_title(t_coach, target)
+                    if t_title:
+                        print(f"\nCoach {getattr(t_coach, 'name', 'Coach')} — {t_title}")
                 session.expire_all()
                 refreshed = get_scouting_info(target.id, session=session)
                 _maybe_purchase_scouting(session, user_school, target, refreshed)
@@ -434,6 +441,17 @@ def view_scouting_menu(context: GameContext):
             new_theme = _choose_theme()
             if new_theme:
                 theme_name = new_theme
+        elif choice == '6':
+            coach = getattr(user_school, 'coach', None)
+            if not coach:
+                print("No coach assigned yet.")
+                input("\n[Press Enter]")
+                continue
+            lines = render_coach_profile(session, coach.id, knowledge_level=3)
+            clear_screen()
+            for line in lines or []:
+                print(line)
+            input("\n[Press Enter]")
         elif choice == '0':
             break
         else:

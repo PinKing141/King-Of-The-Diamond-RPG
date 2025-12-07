@@ -193,13 +193,19 @@ class CoachBrain:
     # --- strategy directives -------------------------------------------
     def ensure_strategy_mods(self, session, school_id: int) -> None:
         if not self.profile.match_directives:
-            return
-        from game.coach_strategy import has_modifier, set_strategy_modifier
+            pass
+        from game.coach_strategy import (
+            ensure_personality_strategy_mods,
+            has_modifier,
+            set_strategy_modifier,
+        )
 
         for effect in self.profile.match_directives:
             if has_modifier(session, school_id, effect):
                 continue
             set_strategy_modifier(session, school_id, effect, games=5)
+
+        ensure_personality_strategy_mods(session, self.coach, school_id)
 
     # --- helpers --------------------------------------------------------
     @staticmethod

@@ -8,6 +8,7 @@ from ui.ui_display import Colour, clear_screen
 from game.personnel.archetypes import archetype_persona_blurb
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "dialogues.json"
+PERSONA_DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "coach_personality_dialogues.json"
 
 
 def _load_dialogues() -> Dict[str, dict]:
@@ -26,6 +27,117 @@ def _load_dialogues() -> Dict[str, dict]:
 
 
 DIALOGUE_DB = _load_dialogues()
+
+
+def _load_persona_dialogues() -> Dict[str, Dict[str, str]]:
+    try:
+        with open(PERSONA_DATA_PATH, "r", encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except FileNotFoundError:
+        return {}
+
+    persona_map: Dict[str, Dict[str, str]] = {}
+    for entry in entries:
+        event_id = entry.get("id")
+        persona = entry.get("personality")
+        text = entry.get("text")
+        if not event_id or not persona or not text:
+            continue
+        persona_map.setdefault(event_id, {})[persona] = text
+    return persona_map
+
+
+PERSONA_DIALOGUE_DB = _load_persona_dialogues()
+
+
+def _persona_flavor_lines(coach) -> List[str]:
+    """Add subtle tonal shifts based on persona + sliders."""
+    if not coach:
+        return []
+    persona = getattr(coach, 'personality', '') or ''
+    drive = getattr(coach, 'drive', 50) or 50
+    loyalty = getattr(coach, 'loyalty', 50) or 50
+    volatility = getattr(coach, 'volatility', 50) or 50
+    logic = getattr(coach, 'logic', 0.5) or 0.5
+    tradition = getattr(coach, 'tradition', 0.5) or 0.5
+
+    lines: List[str] = []
+    if persona == "Gruff":
+        if loyalty >= 70:
+            lines.append("His tone softens when he talks about protecting his players.")
+        else:
+            lines.append("He growls that mistakes earn a seat on the bench.")
+    elif persona == "Strict":
+        if volatility >= 65:
+            lines.append("Rules feel like knives—break one and you'll know it.")
+        else:
+            lines.append("He recites expectations like a creed, calm but absolute.")
+    elif persona == "Passionate":
+        if drive >= 70:
+            lines.append("His fire is contagious; the room vibrates with energy.")
+        else:
+            lines.append("Even his jokes crackle—he refuses to let focus dip.")
+    elif persona == "Logical":
+        if logic >= 0.7:
+            lines.append("He references probabilities more than feelings.")
+        else:
+            lines.append("He still trusts the numbers, but leaves room for gut calls.")
+    elif persona == "Stoic":
+        if volatility <= 35:
+            lines.append("No wasted words; silence does the heavy lifting.")
+        else:
+            lines.append("He keeps still, but the tension in his jaw says plenty.")
+    elif persona == "Maverick":
+        if tradition <= 0.35:
+            lines.append("He hints at a trick no one sees coming.")
+        else:
+            lines.append("He'll break tradition—but only when the stakes demand it.")
+    elif persona == "Mentorly":
+        if loyalty >= 70:
+            lines.append("He frames every demand as an investment in you.")
+        else:
+            lines.append("He teaches, but expects you to earn every lesson.")
+    elif persona == "Philosophical":
+        if volatility <= 35:
+            lines.append("He speaks in calm riddles that somehow steady the room.")
+        else:
+            lines.append("His metaphors wander, but they always land on effort and grit.")
+
+    return lines
+
+
+def _persona_text_variant(coach) -> str | None:
+    """Return a brief suffix that nudges tone within the same persona using sliders."""
+    if not coach:
+        return None
+    persona = getattr(coach, 'personality', '') or ''
+    drive = getattr(coach, 'drive', 50) or 50
+    loyalty = getattr(coach, 'loyalty', 50) or 50
+    volatility = getattr(coach, 'volatility', 50) or 50
+
+    if persona == "Gruff" and loyalty >= 70:
+        return "He taps the desk once, like a quiet promise to back you up."
+    if persona == "Gruff" and loyalty < 50:
+        return "His stare says playing time is earned, not gifted."
+    if persona == "Passionate" and drive >= 70:
+        return "His knuckles whiten from clenching the lineup card."
+    if persona == "Passionate" and volatility >= 65:
+        return "You can almost feel the room heat up around him."
+    if persona == "Logical" and loyalty <= 45:
+        return "He quotes matchups like equations—no sentimental starts."
+    if persona == "Logical" and drive <= 55:
+        return "He nudges you toward the data, not the spotlight."
+    if persona == "Stoic" and volatility <= 35:
+        return "The silence is steadying; you match his calm."
+    if persona == "Stoic" and loyalty >= 65:
+        return "He gives a rare nod; trust earned quietly."
+    if persona == "Maverick" and volatility >= 65:
+        return "There's mischief in his pause—some trick is coming."
+    if persona == "Mentorly" and loyalty >= 70:
+        return "He frames it as a lesson tailored just for you."
+    if persona == "Philosophical" and drive >= 65:
+        return "His metaphor somehow lands on grit and sweat."
+    return None
 
 
 def _coach_tone_lines(coach) -> List[str]:
@@ -67,7 +179,20 @@ def run_dialogue_event(event_id, player, school):
         speaker_label = getattr(coach, 'name', data['speaker'])
 
     print(f"\n{Colour.CYAN}--- CONVERSATION: {speaker_label} ---{Colour.RESET}")
-    print(f"\n\"{data['text']}\"\n")
+
+    coach = getattr(school, 'coach', None)
+    persona_text = None
+    if coach:
+        persona = getattr(coach, 'personality', 'Stoic')
+        persona_text = PERSONA_DIALOGUE_DB.get(event_id, {}).get(persona)
+
+    active_text = persona_text or data['text']
+    if coach:
+        active_text = active_text.replace("{name}", getattr(coach, "name", "Coach"))
+        variant = _persona_text_variant(coach)
+        if variant:
+            active_text = f"{active_text} {variant}"
+    print(f"\n\"{active_text}\"\n")
 
     persona_line = archetype_persona_blurb(player)
     if persona_line:
@@ -75,6 +200,8 @@ def run_dialogue_event(event_id, player, school):
 
     if data['speaker'].lower() == 'coach' and coach:
         for line in _coach_tone_lines(coach):
+            print(f"{Colour.YELLOW}{line}{Colour.RESET}")
+        for line in _persona_flavor_lines(coach):
             print(f"{Colour.YELLOW}{line}{Colour.RESET}")
     
     # 2. Display Options

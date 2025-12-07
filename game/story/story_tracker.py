@@ -57,4 +57,3 @@ class StoryTracker:
                     beats[key] = "The slump story cools… for now. Focus shifts to the next series."
                     self.active_arcs.pop(key, None)
         return beats
-*** End Patch
