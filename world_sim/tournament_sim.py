@@ -83,14 +83,14 @@ def _play_dialogue(dialogue_id: str) -> None:
         print(f"\n{response}\n")
     input("Press Enter to continue...")
 
-def run_koshien_tournament(user_school_id, participants=None):
+def run_koshien_tournament(user_school_id, participants=None, context=None):
     """
     Summer Koshien: 49 Teams (Qualifiers Winners).
     """
     with session_scope() as session:
-        _run_generic_tournament("SUMMER KOSHIEN", user_school_id, participants, session)
+        _run_generic_tournament("SUMMER KOSHIEN", user_school_id, participants, session, context=context)
 
-def run_spring_koshien(user_school_id):
+def run_spring_koshien(user_school_id, context=None):
     """
     Spring Koshien (Senbatsu): 32 Teams (Invitational).
     Selection is based on Prestige and Fall Performance (Simulated by Prestige here).
@@ -121,9 +121,9 @@ def run_spring_koshien(user_school_id):
         input("Press Enter to continue...")
         
         # Run the bracket
-        _run_generic_tournament("SPRING SENBATSU", user_school_id, participants, session)
+        _run_generic_tournament("SPRING SENBATSU", user_school_id, participants, session, context=context)
 
-def _run_generic_tournament(title, user_school_id, participants, session):
+def _run_generic_tournament(title, user_school_id, participants, session, context=None):
     """
     Shared logic for running any bracket.
     """
@@ -162,6 +162,8 @@ def _run_generic_tournament(title, user_school_id, participants, session):
             print(f" > Match: {home.name} vs {away.name}")
 
             if is_user_match:
+                rival_ctx = context.get_temp_effect("rival_match_context") if context else None
+                rival_presentation = context.get_temp_effect("rival_presentation") if context else None
                 _run_pre_match_story(round_num, user_school)
                 opponent = away if home.id == user_school_id else home
                 _maybe_inject_rival_dialogue(session, user_school_id, opponent)
@@ -191,6 +193,8 @@ def _run_generic_tournament(title, user_school_id, participants, session):
                         mode="standard",
                         silent=False,
                         clutch_pitch=clutch_payload,
+                        rival_match_context=rival_ctx,
+                        rival_presentation=rival_presentation,
                     )
                 else:
                     winner, score = resolve_match(
@@ -198,6 +202,8 @@ def _run_generic_tournament(title, user_school_id, participants, session):
                         away,
                         f"{title} Round {round_num}",
                         mode="fast",
+                        rival_match_context=rival_ctx,
+                        rival_presentation=rival_presentation,
                     )
                     print(f"   Result: {winner.name} wins! ({score})")
             else:

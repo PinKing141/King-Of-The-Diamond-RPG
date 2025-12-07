@@ -245,6 +245,7 @@ def execute_schedule_core(
                             tournament_name="Practice Match",
                             mode=mode,
                             silent=False,
+                            rival_match_context=context.get_temp_effect("rival_match_context") if context else None,
                         )
                         if winner:
                             outcome = 'WON' if winner.id == my_team.id else 'LOST'

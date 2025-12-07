@@ -899,6 +899,8 @@ def run_match(
     manual_pitch_calls: bool = False,
     manual_swing_prompts: bool = False,
     manual_fielding_prompts: bool = False,
+    rival_match_context=None,
+    rival_presentation: Optional[Dict[str, Any]] = None,
 ):
     """
     Main entry point. Call this to play a full game.
@@ -915,9 +917,12 @@ def run_match(
             db_session,
             clutch_pitch=clutch_pitch,
             tournament_name=tournament_name,
+            rival_match_context=rival_match_context,
         )
         if not state:
             return None # Error handling
+        if rival_presentation:
+            state.rival_presentation = rival_presentation
         state.pitch_mastery_report = {}
         if fast:
             setattr(state, "fast_sim", True)

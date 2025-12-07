@@ -405,6 +405,23 @@ def trigger_random_event(context: Optional[GameContext] = None, current_week: Op
     if context is None or context.player_id is None:
         return
 
+    # Narrative arcs: ensure beats fire even if no random event triggers elsewhere this week.
+    tracker = getattr(context, "story_tracker", None)
+    if tracker and current_week is not None:
+        last_week = context.get_temp_effect("story_arc_last_week")
+        if last_week != current_week:
+            player_snapshot = context.session.get(Player, context.player_id)
+            stats = {
+                "recent_avg": getattr(player_snapshot, "recent_avg", getattr(player_snapshot, "batting_avg_recent", None)) if player_snapshot else None,
+            }
+            start_msg = tracker.check_triggers(player_snapshot, stats)
+            if start_msg:
+                print(f"{Colour.CYAN}[Story]{Colour.RESET} {start_msg}")
+            beats = tracker.advance_arcs(player_snapshot)
+            for _, beat in beats.items():
+                print(f"{Colour.CYAN}[Story]{Colour.RESET} {beat}")
+            context.set_temp_effect("story_arc_last_week", current_week)
+
     session = context.session
 
     player = session.get(Player, context.player_id)

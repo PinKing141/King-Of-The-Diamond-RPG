@@ -548,6 +548,8 @@ def prepare_match(
     clutch_pitch: Optional[Dict[str, Any]] = None,
     *,
     tournament_name: Optional[str] = None,
+    rival_match_context=None,
+    rival_presentation: Optional[Dict[str, Any]] = None,
 ):
     """
     Loads teams, builds lineups, selects pitchers.
@@ -590,7 +592,7 @@ def prepare_match(
     away_pitcher = next((p for p in away_players if p.position == 'Pitcher' and p.role == 'ACE'), None)
     if not away_pitcher: away_pitcher = next((p for p in away_players if p.position == 'Pitcher'), away_players[0])
     
-    rivalry_info = _apply_rivalry_context(db_session, home_lineup, away_lineup)
+    rivalry_info = _apply_rivalry_context(db_session, home_lineup, away_lineup) if rival_match_context is None else None
 
     event_bus = EventBus()
 
@@ -627,7 +629,22 @@ def prepare_match(
     if match_state.umpire:
         summary = match_state.umpire.description or "Neutral strike zone in effect."
         match_state.log(f"Behind the plate: {match_state.umpire.name} — {summary}")
-    if rivalry_info:
+    if rival_match_context:
+        match_state.rival_match_context = rival_match_context
+        try:
+            hero_id = getattr(rival_match_context.rival, "hero_id", None)
+            rival_id = getattr(rival_match_context.rival, "rival_id", None)
+            if hero_id:
+                hero_player = db_session.get(Player, hero_id)
+                match_state.hero_player_id = hero_id
+                match_state.hero_name = getattr(hero_player, "last_name", getattr(hero_player, "name", None))
+            if rival_id:
+                rival_player = db_session.get(Player, rival_id)
+                match_state.rival_player_id = rival_id
+                match_state.rival_name = getattr(rival_player, "last_name", getattr(rival_player, "name", None))
+        except Exception:
+            pass
+    elif rivalry_info:
         match_state.hero_player_id = rivalry_info["hero_id"]
         match_state.hero_school_id = rivalry_info["hero_school_id"]
         match_state.hero_name = rivalry_info.get("hero_name")
@@ -643,6 +660,8 @@ def prepare_match(
         )
     else:
         match_state.rival_match_context = None
+    if rival_presentation:
+        match_state.rival_presentation = rival_presentation
     match_state.psychology_engine = PsychologyEngine(match_state, bus=event_bus)
     match_state.dugout_listener = DugoutListener(
         match_state,

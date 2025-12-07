@@ -147,6 +147,7 @@ class AtBatPhase(Enum):
     """High-level phases for the at-bat state machine."""
 
     SETUP = auto()
+    RIVAL_CUTIN = auto()
     RUNNER_THREAT = auto()
     DECISION = auto()
     PITCH = auto()
@@ -1400,6 +1401,10 @@ class AtBatStateMachine:
         self.steal_checked = False
         self.squeeze_called = False
         self.last_pitch_res = None
+        self.rival_ctx = None
+        self.rival_intro_done = False
+        self.rival_batter_mods: dict = {}
+        self.rival_pitcher_mods: dict = {}
 
     def _emit_state(self, state_name: str, payload: Optional[dict[str, object]] = None) -> None:
         if self.bus:
@@ -1450,12 +1455,53 @@ class AtBatStateMachine:
             state.fast_sim = True
         self.steal_checked = False
         self.squeeze_called = False
+        self.rival_ctx = getattr(state, "rival_match_context", None) or getattr(state, "rival_context", None)
         self._emit_phase(AtBatPhase.SETUP, {
             "inning": state.inning,
             "half": state.top_bottom,
             "batter_id": self.batter_id,
             "pitcher_id": self.pitcher_id,
         })
+
+    def _phase_rival_cutin(self) -> None:
+        """Trigger the rivalry cut-in before the at-bat begins."""
+
+        state = self.state
+        if self.rival_intro_done or not self.rival_ctx:
+            return
+
+        is_rival_plate = self.rival_ctx.is_rival_plate(self.batter_id)
+        if not is_rival_plate:
+            return
+
+        self._emit_phase(AtBatPhase.RIVAL_CUTIN, {
+            "inning": state.inning,
+            "half": state.top_bottom,
+            "batter_id": self.batter_id,
+            "pitcher_id": self.pitcher_id,
+        })
+
+        if state.balls == 0 and state.strikes == 0:
+            rival_name = getattr(self.batter, "last_name", getattr(self.batter, "name", "Rival"))
+            hero_name = getattr(self.pitcher, "last_name", getattr(self.pitcher, "name", "Pitcher"))
+            _announce(self.bus, "MATCH_COMMENTARY", {
+                "text": f"   >> The air grows heavy. {hero_name} locks eyes with {rival_name}!",
+                "context": "rival_cutin",
+                "batter_id": self.batter_id,
+                "pitcher_id": self.pitcher_id,
+            })
+            heat = getattr(getattr(self.rival_ctx, "rival", None), "heat_level", 0)
+            if heat > 50:
+                self.rival_batter_mods["contact_mod"] = self.rival_batter_mods.get("contact_mod", 0) + 5
+                self.rival_pitcher_mods["velocity_mod"] = self.rival_pitcher_mods.get("velocity_mod", 0) + 3
+                _announce(self.bus, "MATCH_COMMENTARY", {
+                    "text": "      Rivalry heat surges! Both players rise to the moment.",
+                    "context": "rival_heat",
+                    "batter_id": self.batter_id,
+                    "pitcher_id": self.pitcher_id,
+                })
+
+        self.rival_intro_done = True
 
     def _phase_batter_decision(self) -> tuple[str, dict]:
         state = self.state
@@ -1492,6 +1538,9 @@ class AtBatStateMachine:
             guess_payload = _auto_batters_eye_guess(state, self.batter, self.pitcher, self.batter_tendencies)
             if guess_payload:
                 batter_mods['guess_payload'] = guess_payload
+        if self.rival_batter_mods:
+            for key, delta in self.rival_batter_mods.items():
+                batter_mods[key] = batter_mods.get(key, 0) + delta
         return batter_action, batter_mods
 
     def _phase_runner_threats(self, batter_action: str, batter_mods: dict) -> tuple[str, dict, dict]:
@@ -1568,6 +1617,9 @@ class AtBatStateMachine:
         pitcher_trait_mods = _collect_trait_mods(self.pitcher, trait_context)
         if slide_trait_mods:
             for key, delta in slide_trait_mods.items():
+                pitcher_trait_mods[key] = pitcher_trait_mods.get(key, 0) + delta
+        if self.rival_pitcher_mods:
+            for key, delta in self.rival_pitcher_mods.items():
                 pitcher_trait_mods[key] = pitcher_trait_mods.get(key, 0) + delta
         if self.sim_fast:
             _apply_defense_orders(self.defense_order, pitcher_trait_mods)
@@ -1891,6 +1943,7 @@ class AtBatStateMachine:
         """Simulates one complete At-Bat."""
         state = self.state
         self._phase_setup()
+        self._phase_rival_cutin()
 
         while True:
             self._emit_state(self.STATE_WINDUP, {

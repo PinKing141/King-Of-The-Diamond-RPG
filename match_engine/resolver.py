@@ -59,6 +59,8 @@ def _simulate_match(
     silent: bool,
     fast: bool,
     clutch_pitch: Optional[Dict[str, Any]] = None,
+    rival_match_context=None,
+    rival_presentation=None,
     persist_results: bool = True,
 ):
     auto_play_inputs = fast or silent
@@ -74,6 +76,8 @@ def _simulate_match(
             clutch_pitch=clutch_pitch,
             tournament_name=tournament_name,
             human_team_ids=human_team_ids,
+            rival_match_context=rival_match_context,
+            rival_presentation=rival_presentation,
         )
     elif silent:
         with _suppress_print():
@@ -85,6 +89,8 @@ def _simulate_match(
                 tournament_name=tournament_name,
                 persist_results=persist_results,
                 human_team_ids=human_team_ids,
+                rival_match_context=rival_match_context,
+                rival_presentation=rival_presentation,
             )
     else:
         winner = engine_run_match(
@@ -95,6 +101,8 @@ def _simulate_match(
             tournament_name=tournament_name,
             persist_results=persist_results,
             human_team_ids=human_team_ids,
+            rival_match_context=rival_match_context,
+            rival_presentation=rival_presentation,
         )
 
     score_str = _fetch_latest_score(home_team.id, away_team.id, tournament_name)
@@ -121,6 +129,8 @@ def resolve_match(
     mode: str = "standard",
     silent: Optional[bool] = None,
     clutch_pitch: Optional[Dict[str, Any]] = None,
+    rival_match_context=None,
+    rival_presentation=None,
     persist_results: bool = True,
 ):
     """Unified entry point for orchestrating a simulated match."""
@@ -137,6 +147,8 @@ def resolve_match(
         silent=effective_silent,
         fast=fast,
         clutch_pitch=clutch_pitch,
+        rival_match_context=rival_match_context,
+        rival_presentation=rival_presentation,
         persist_results=persist_results,
     )
     return winner

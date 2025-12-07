@@ -4,7 +4,7 @@ import time
 from typing import Optional, Tuple
 
 from core.event_bus import EventBus
-from database.setup_db import GameState, Player
+from database.setup_db import GameState, Player, School
 from debug.debug_tools import input_with_debug
 from core.analytics import initialise_analytics
 from core.config_loader import SeasonConfigLoader
@@ -62,6 +62,97 @@ class SeasonManager:
 
         return SeasonConfigLoader.is_tournament_week(week)
 
+    def _run_story_arcs(self, user_player: Player) -> None:
+        """Kick off or advance narrative arcs each week."""
+
+        tracker = getattr(self.context, "story_tracker", None)
+        if tracker is None:
+            return
+
+        last_week = self.context.get_temp_effect("story_arc_last_week")
+        if last_week == self.state.current_week:
+            return
+
+        stats = {
+            "recent_avg": getattr(user_player, "recent_avg", getattr(user_player, "batting_avg_recent", None)),
+        }
+        start_msg = tracker.check_triggers(user_player, stats)
+        if start_msg:
+            print(f"{Colour.CYAN}[Story]{Colour.RESET} {start_msg}")
+
+        beats = tracker.advance_arcs(user_player)
+        for _, beat in beats.items():
+            print(f"{Colour.CYAN}[Story]{Colour.RESET} {beat}")
+
+        self.context.set_temp_effect("story_arc_last_week", self.state.current_week)
+
+    def _check_upcoming_rivalry(self, user_player: Player) -> None:
+        """Scan the mandatory schedule for a rival matchup and warn the user."""
+
+        if not user_player:
+            return
+
+        try:
+            schedule = build_mandatory_schedule(user_player)
+        except Exception as exc:
+            print(f"{Colour.WARNING}Rivalry scan skipped: {exc}{Colour.RESET}")
+            return
+
+        match_event = None
+        if isinstance(schedule, dict):
+            # Some schedulers store match info as an entry value, not a named key.
+            for val in schedule.values():
+                if isinstance(val, dict) and val.get("match"):
+                    match_event = val.get("match")
+                    break
+                if isinstance(val, str) and "match" in val:
+                    match_event = val
+                    break
+        if not match_event:
+            return
+
+        opponent_school_id = None
+        opponent_name = None
+        if isinstance(match_event, dict):
+            opponent_school_id = match_event.get("opponent_school_id") or match_event.get("school_id")
+            opponent_name = match_event.get("opponent_name") or match_event.get("name")
+        elif isinstance(match_event, str):
+            label = match_event.lower()
+            if "vs" in label:
+                parts = match_event.split("vs", 1)
+                opponent_name = parts[1].strip() if len(parts) > 1 else None
+                if opponent_name:
+                    opponent = (
+                        self.session.query(School)
+                        .filter(School.name.ilike(f"%{opponent_name}%"))
+                        .first()
+                    )
+                    if opponent:
+                        opponent_school_id = opponent.id
+
+        rival_ctx = None
+        if opponent_school_id:
+            rival_ctx = self.context.get_rival_context(user_player.id, opponent_school_id)
+
+        if not rival_ctx and opponent_school_id is None:
+            print(f"{Colour.MAGENTA}Heads up:{Colour.RESET} Big game aura this week. No rival intel found, but the band is on standby.")
+            return
+        if not rival_ctx:
+            return
+
+        school = self.session.get(School, opponent_school_id) if opponent_school_id else None
+        school_name = opponent_name or (getattr(school, "name", "Unknown School") if school else "Unknown School")
+
+        print(f"\n{Colour.RED}!!! RIVAL MATCH DETECTED !!!{Colour.RESET}")
+        print(f"You will face {school_name}. Your nemesis awaits.")
+        print(f"{Colour.YELLOW}Cue: Rival theme | Pre-game taunt unlocked{Colour.RESET}")
+        self.context.set_temp_effect("rival_match_context", rival_ctx)
+        self.context.set_temp_effect("rival_presentation", {
+            "music": "rival_theme",
+            "dialogue_hook": "rival_pregame_taunt",
+            "opponent_school": school_name,
+        })
+
     def _print_week_header(self) -> None:
         month_label = MONTH_NAMES[(self.state.current_month - 1) % 12] if self.state.current_month else "--"
         print(f"{Colour.gold}>>> YEAR {self.state.current_year} | WEEK {self.state.current_week} / 50{Colour.RESET}")
@@ -93,6 +184,8 @@ class SeasonManager:
 
                 self._print_banner()
                 self._print_week_header()
+                self._run_story_arcs(user_player)
+                self._check_upcoming_rivalry(user_player)
 
                 if self.state.current_week > 50:
                     if self._handle_end_of_season(user_player):
@@ -158,14 +251,14 @@ class SeasonManager:
         if event_type == "summer_qualifiers":
             print(f"\n{Colour.RED}!!! THE SUMMER KOSHIEN QUALIFIERS !!!{Colour.RESET}")
             input("Press Enter to begin...")
-            reps = run_season_qualifiers(user_school_id)
+            reps = run_season_qualifiers(user_school_id, context=self.context)
             user_qualified = any(s.id == user_school_id for s in reps)
             if user_qualified:
                 print(f"{Colour.gold}YOU WON THE PREFECTURE!{Colour.RESET}")
-                run_koshien_tournament(user_school_id, reps)
+                run_koshien_tournament(user_school_id, reps, context=self.context)
             else:
                 print(f"{Colour.FAIL}Eliminated in qualifiers.{Colour.RESET}")
-                run_koshien_tournament(user_school_id, reps)
+                run_koshien_tournament(user_school_id, reps, context=self.context)
 
         elif event_type == "winter_camp":
             print(f"\n{Colour.WARNING}Winter Training Camp begins.{Colour.RESET}")
@@ -176,7 +269,7 @@ class SeasonManager:
 
         elif event_type == "spring_koshien":
             print(f"\n{Colour.CYAN}Spring Senbatsu Approaches.{Colour.RESET}")
-            run_spring_koshien(user_school_id)
+            run_spring_koshien(user_school_id, context=self.context)
 
     def _run_weekly_menu(self, user_player: Player) -> str:
         scouting_available = self._has_game_this_week(user_player, self.state.current_week)

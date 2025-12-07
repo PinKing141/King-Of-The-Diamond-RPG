@@ -32,7 +32,7 @@ def generate_balanced_bracket(schools):
     
     return first_round_schools, advanced_schools
 
-def run_district_tournament(session, district_name, user_school_id):
+def run_district_tournament(session, district_name, user_school_id, context=None):
     """
     Runs a full qualifier tournament for a specific district.
     Returns the Winning School.
@@ -82,12 +82,16 @@ def run_district_tournament(session, district_name, user_school_id):
             if is_user_match:
                 print(f"\n{Colour.GREEN}*** QUALIFIER MATCH: {home.name} vs {away.name} ***{Colour.RESET}")
                 input("   Press Enter to play...")
+                rival_ctx = context.get_temp_effect("rival_match_context") if context else None
+                rival_presentation = context.get_temp_effect("rival_presentation") if context else None
                 winner, score = resolve_match(
                     home,
                     away,
                     f"{district_name} Round {round_num}",
                     mode="standard",
                     silent=False,
+                    rival_match_context=rival_ctx,
+                    rival_presentation=rival_presentation,
                 )
                 
                 if winner.id != user_school_id:
@@ -107,7 +111,7 @@ def run_district_tournament(session, district_name, user_school_id):
     # print(f"   🏆 {district_name} Winner: {champion.name}")
     return champion
 
-def run_season_qualifiers(user_school_id):
+def run_season_qualifiers(user_school_id, context=None):
     """
     Runs qualifiers for EVERY district in Japan to determine Koshien participants.
     Returns a list of School objects (The 49 Representatives).
@@ -127,9 +131,9 @@ def run_season_qualifiers(user_school_id):
             is_user_pref = user_school and (user_school.prefecture == pref)
             
             if is_user_pref:
-                champ = run_district_tournament(session, pref, user_school_id)
+                champ = run_district_tournament(session, pref, user_school_id, context=context)
             else:
-                champ = run_district_tournament(session, pref, -1)
+                champ = run_district_tournament(session, pref, -1, context=context)
                 
             koshien_reps.append(champ)
             
