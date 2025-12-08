@@ -101,7 +101,6 @@ class MatchController:
         scoreboard: Scoreboard,
         *,
         human_team_ids: Optional[Sequence[int]] = None,
-        agency_adapter: Optional[Callable[[MatchupContext], str]] = None,
     ) -> None:
         self.state = state
         self.scoreboard = scoreboard
@@ -124,7 +123,6 @@ class MatchController:
             state,
             bus=self.bus,
             human_team_ids=human_team_ids,
-            agency_adapter=agency_adapter,
         )
         self.context = MatchContext(inning=state.inning, half=state.top_bottom)
         self._started = False
@@ -455,7 +453,6 @@ class MatchController:
         scoreboard: Scoreboard,
         *,
         human_team_ids: Optional[Sequence[int]] = None,
-        agency_adapter: Optional[Callable[[MatchupContext], str]] = None,
     ) -> None:
         self.state = state
         self.scoreboard = scoreboard
@@ -468,7 +465,6 @@ class MatchController:
             state,
             bus=self.bus,
             human_team_ids=human_team_ids,
-            agency_adapter=agency_adapter,
         )
         self.context = MatchContext(inning=state.inning, half=state.top_bottom)
         self._started = False
@@ -897,7 +893,6 @@ def run_match(
     human_team_ids: Optional[Sequence[int]] = None,
     hero_setting: str = "often",
     force_hero: bool = False,
-    agency_adapter: Optional[Callable[[MatchupContext], str]] = None,
     manual_pitch_calls: bool = False,
     manual_swing_prompts: bool = False,
     manual_fielding_prompts: bool = False,
@@ -955,7 +950,6 @@ def run_match(
             state,
             scoreboard,
             human_team_ids=human_team_ids,
-            agency_adapter=agency_adapter,
         )
         winner = controller.start_game()
         bus = getattr(state, "event_bus", None)

@@ -294,7 +294,6 @@ def open_debug_menu(*, context=None, session=None, state=None):
                     human_team_ids=[home_id],
                     hero_setting="often",
                     force_hero=True,
-                    agency_adapter=_prompt_player_choice,
                     manual_pitch_calls=True,
                     manual_swing_prompts=True,
                     manual_fielding_prompts=manual_fielding,

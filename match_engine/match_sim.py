@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Protocol, Sequence
 
 from core.event_bus import EventBus
 from match_engine.states import EventType, HitType, InningHalf, MatchState, PlayMode
@@ -88,13 +88,11 @@ class MatchSimulation:
         bus: Optional[EventBus] = None,
         human_team_ids: Optional[Sequence[int]] = None,
         input_strategy: Optional["InputStrategy"] = None,
-        agency_adapter: Optional[callable] = None,
     ) -> None:
         self.state = state
         self.bus: EventBus = bus if isinstance(bus, EventBus) else EventBus()
         self.human_team_ids = set(human_team_ids or [])
-        # input_strategy supersedes the legacy agency_adapter callable; we keep both for compatibility.
-        self.input_strategy = input_strategy or _AdapterWrapper(agency_adapter) if agency_adapter else None
+        self.input_strategy = input_strategy
         self.loop_state = MatchState.WAITING_FOR_PITCH
         self.awaiting_player_choice = False
         self._pending_choice_options: list[Dict[str, str]] = []
@@ -367,18 +365,6 @@ MatchSimulation._CHOICE_LIBRARY = {
         description="Default swing with no guesses.",
     )
 }
-
-
-class _AdapterWrapper:
-    """Wrapper to keep legacy callables behaving like an InputStrategy."""
-
-    def __init__(self, fn: Optional[callable]):
-        self.fn = fn
-
-    def select_batter_choice(self, matchup: MatchupContext, choices: Dict[str, BatterChoice]) -> Optional[str]:
-        if not self.fn:
-            return None
-        return self.fn(matchup)
 
 
 __all__ = ["MatchSimulation", "MatchupContext", "PlayOutcome", "InputStrategy"]
