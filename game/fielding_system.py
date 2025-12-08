@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
+from core.io_interface import IOInterface
+
 from database.setup_db import Player
 from core.rng import get_rng
 from ui.ui_display import Colour
@@ -50,25 +52,26 @@ def run_fielding_event(
     location: str,  # "INFIELD", "OUTFIELD"
     runners: Dict[int, bool],  # {1: bool, 2: bool, 3: bool}
     difficulty: str = "ROUTINE",
+    io: Optional[IOInterface] = None,
 ) -> Dict[str, str]:
     """Run a two-phase fielding resolution (approach -> throw).
 
     Returns a dict with keys: result_code, narrative
     """
     diff_mod = DIFFICULTY_MODIFIERS.get(difficulty.upper(), 1.0)
-    print(f"\n{Colour.CYAN}--- FIELDING EVENT: {getattr(fielder, 'position', '??')} ({getattr(fielder, 'name', 'Player')}) ---{Colour.RESET}")
+    _log(io, f"\n{Colour.CYAN}--- FIELDING EVENT: {getattr(fielder, 'position', '??')} ({getattr(fielder, 'name', 'Player')}) ---{Colour.RESET}")
 
-    approach = _get_approach_decision(fielder, is_user, ball_type, location)
+    approach = _get_approach_decision(fielder, is_user, ball_type, location, io=io)
     catch = _calculate_catch_outcome(fielder, approach, ball_type, location, diff_mod)
-    print(f">> {catch['description']}")
+    _log(io, f">> {catch['description']}")
 
     if catch["outcome"] != "SUCCESS":
         code = "ERROR" if "ERROR" in catch["outcome"] else "HIT"
         return {"result_code": code, "narrative": catch["description"]}
 
-    throw_target = _get_throw_decision(fielder, is_user, runners, location)
+    throw_target = _get_throw_decision(fielder, is_user, runners, location, io=io)
     throw = _calculate_throw_outcome(fielder, throw_target, location, diff_mod)
-    print(f">> {throw['description']}")
+    _log(io, f">> {throw['description']}")
 
     return {
         "result_code": throw["outcome"],
@@ -81,17 +84,30 @@ def run_fielding_event(
 # -----------------------------------------------------------------------------
 
 
-def _get_approach_decision(fielder: Player, is_user: bool, ball_type: str, location: str) -> str:
+def _log(io: Optional[IOInterface], message: str) -> None:
+    if io:
+        io.log(message)
+    else:
+        print(message)
+
+
+def _prompt(io: Optional[IOInterface], prompt: str) -> str:
+    if io:
+        return io.prompt(prompt)
+    return input(prompt)
+
+
+def _get_approach_decision(fielder: Player, is_user: bool, ball_type: str, location: str, *, io: Optional[IOInterface]) -> str:
     if is_user:
-        print(f"\n{Colour.WARNING}A {ball_type.lower()} is hit to your {location.lower()}!{Colour.RESET}")
-        print(f"Stats: Fld {_defense(fielder):.0f} | Spd {_speed(fielder):.0f}")
+        _log(io, f"\n{Colour.WARNING}A {ball_type.lower()} is hit to your {location.lower()}!{Colour.RESET}")
+        _log(io, f"Stats: Fld {_defense(fielder):.0f} | Spd {_speed(fielder):.0f}")
         if location.upper() == "INFIELD":
-            print("[1] Square Up (Safe) - Block the ball, prevent errors.")
-            print("[2] Charge/Dive (Aggressive) - Try to cut the runner.")
+            _log(io, "[1] Square Up (Safe) - Block the ball, prevent errors.")
+            _log(io, "[2] Charge/Dive (Aggressive) - Try to cut the runner.")
         else:
-            print("[1] Play Bounce/Safe - Keep ball in front.")
-            print("[2] Dive/Shoestring - Go for the highlight.")
-        choice = input("Select Approach: ").strip()
+            _log(io, "[1] Play Bounce/Safe - Keep ball in front.")
+            _log(io, "[2] Dive/Shoestring - Go for the highlight.")
+        choice = _prompt(io, "Select Approach: ").strip()
         return "AGGRESSIVE" if choice == "2" else "SAFE"
 
     # AI path
@@ -101,15 +117,22 @@ def _get_approach_decision(fielder: Player, is_user: bool, ball_type: str, locat
     return "AGGRESSIVE" if aggression_score > 72 else "SAFE"
 
 
-def _get_throw_decision(fielder: Player, is_user: bool, runners: Dict[int, bool], location: str) -> str:
+def _get_throw_decision(
+    fielder: Player,
+    is_user: bool,
+    runners: Dict[int, bool],
+    location: str,
+    *,
+    io: Optional[IOInterface],
+) -> str:
     lead_runner_base = 3 if runners.get(3) else (2 if runners.get(2) else 1 if runners.get(1) else 0)
     if is_user:
-        print(f"\n{Colour.WARNING}You have the ball!{Colour.RESET}")
-        print("[1] Sure Out (1st / cutoff)")
+        _log(io, f"\n{Colour.WARNING}You have the ball!{Colour.RESET}")
+        _log(io, "[1] Sure Out (1st / cutoff)")
         if lead_runner_base > 1:
             target = "Home" if lead_runner_base == 3 else "3rd" if lead_runner_base == 2 else "2nd"
-            print(f"[2] Get Lead Runner (Throw to {target}) - Higher risk.")
-        choice = input("Select Throw: ").strip()
+            _log(io, f"[2] Get Lead Runner (Throw to {target}) - Higher risk.")
+        choice = _prompt(io, "Select Throw: ").strip()
         if choice == "2" and lead_runner_base > 1:
             return "LEAD_RUNNER"
         return "SURE_OUT"

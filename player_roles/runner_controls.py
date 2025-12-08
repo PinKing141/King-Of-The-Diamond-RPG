@@ -1,7 +1,10 @@
 import sys
+from typing import Optional
+
+from core.io_interface import IOInterface
 from ui.ui_display import Colour
 
-def player_runner_turn(runner, pitcher, state):
+def player_runner_turn(runner, pitcher, state, *, io: Optional[IOInterface] = None):
     """
     Handles User Interaction when the player is on base.
     Returns: Action String
@@ -14,17 +17,20 @@ def player_runner_turn(runner, pitcher, state):
     
     if not base: return "Stay" # Should not happen if called correctly
 
-    print(f"\n{Colour.HEADER}--- RUNNER INTERFACE ({base}) ---{Colour.RESET}")
-    print(f"Pitcher: {pitcher.name} | Catcher Arm: ???") # Could show catcher stats if scouted
-    
-    print(f"{Colour.CYAN}Select Action:{Colour.RESET}")
-    print(" 1. STAY PUT (Safe)")
-    print(" 2. LEAD OFF (Small lead, faster jump)")
-    print(" 3. STEAL (Attempt to steal next base)")
+    logger = io.log if io else print
+    prompter = io.prompt if io else input
+
+    logger(f"\n{Colour.HEADER}--- RUNNER INTERFACE ({base}) ---{Colour.RESET}")
+    logger(f"Pitcher: {pitcher.name} | Catcher Arm: ???") # Could show catcher stats if scouted
+
+    logger(f"{Colour.CYAN}Select Action:{Colour.RESET}")
+    logger(" 1. STAY PUT (Safe)")
+    logger(" 2. LEAD OFF (Small lead, faster jump)")
+    logger(" 3. STEAL (Attempt to steal next base)")
     
     while True:
-        choice = input("Command: ")
+        choice = prompter("Command: ")
         if choice == '1': return "Stay"
         if choice == '2': return "Lead"
         if choice == '3': return "Steal"
-        print("Invalid command.")
+        logger("Invalid command.")

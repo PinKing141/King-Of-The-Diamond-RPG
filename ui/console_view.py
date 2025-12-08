@@ -1,14 +1,58 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Optional
+from typing import Any, List, Optional
 
+from core.io_interface import IOInterface
+from core.renderer import ConsoleRenderer
 from debug.debug_tools import input_with_debug
 from ui.ui_core import choose_theme, panel, DEFAULT_THEME, show_page
 from ui.ui_display import Colour, clear_screen, render_screen, render_weekly_dashboard
 from game.save_manager import show_save_menu
 from game.interfaces import SeasonView
-from ui.scouting_report import view_scouting_menu
+from world.ui.scouting_report import view_scouting_menu
+from game.story.event_manager import EventRequest
+
+
+class ConsoleIO(IOInterface):
+    """Console implementation of IOInterface used by logic modules."""
+
+    def __init__(self, renderer: Optional[ConsoleRenderer] = None) -> None:
+        self.renderer = renderer or ConsoleRenderer()
+
+    def log(self, message: str, *, level: str = "info") -> None:
+        if level == "story":
+            print(self.renderer.colorize(f"[Story] {message}", style="story"))
+            return
+        style = level if level in {"error", "fail", "warning", "warn"} else "info"
+        print(self.renderer.colorize(message, style=style))
+
+    def prompt(self, prompt: str, *, options: Optional[List[str]] = None) -> str:
+        while True:
+            response = input(prompt)
+            if options is None or not options:
+                return response
+            if response in options:
+                return response
+            print(f"Please enter one of: {', '.join(options)}")
+
+    def clear(self) -> None:
+        clear_screen()
+
+    def wait(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+
+def render_event_requests(requests: List[EventRequest], *, io: Optional[IOInterface] = None) -> None:
+    """Render EventRequests through IO; fall back to console prints."""
+    target_io = io or ConsoleIO()
+    for req in requests:
+        if req.kind == "log":
+            target_io.log(req.message, level=req.level)
+        elif req.kind == "prompt":
+            target_io.prompt(req.message, options=req.options)
+        else:
+            target_io.log(req.message)
 
 
 class ConsoleView(SeasonView):

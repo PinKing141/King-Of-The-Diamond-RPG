@@ -18,7 +18,7 @@ class DummyScoreboard:
     def record_inning(self, *args, **kwargs):
         self.records.append((args, kwargs))
 
-    def print_board(self, state):
+    def print_board(self, state, *, io=None):
         return None
 
 

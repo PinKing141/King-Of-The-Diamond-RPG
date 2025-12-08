@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from core.io_interface import IOInterface
+
 from .commentary import commentary_enabled
 from .confidence import get_confidence_trends
 
@@ -113,39 +115,40 @@ class Scoreboard:
             "home_runs": home_runs,
         }
 
-    def print_board(self, state):
-        """
-        Prints the ASCII scoreboard to the console.
-        """
+    def print_board(self, state, *, io: Optional[IOInterface] = None):
+        """Render the scoreboard via IO abstraction (console fallback)."""
         if not commentary_enabled():
             return
+        log = io.log if io else print
+        if io and hasattr(io, "clear"):
+            pass  # do not auto-clear scoreboard; respect caller pacing
+
         weather = getattr(state, 'weather', None)
         if weather and not self._weather_banner_done:
             summary = weather.describe()
             wind = f"Wind {weather.wind_speed_mph:.1f} mph {weather.wind_direction}" if weather.wind_speed_mph is not None else "Wind calm"
             precip = weather.precipitation.title() if weather.precipitation != "none" else "Dry"
-            print(f"\n{summary} | {precip} | {wind}")
+            log(f"\n{summary} | {precip} | {wind}")
             self._weather_banner_done = True
-        print("\nSCOREBOARD")
+        log("\nSCOREBOARD")
         # Header: INN | 1 2 3 ... | R | H | E
         header_inn = "  ".join(f"{i+1}" for i in range(len(self.innings)))
-        print(f"INN | {header_inn} | R  | H  | E")
-        print("----|-" + "--" * len(self.innings) + "-|----|----|---")
+        log(f"INN | {header_inn} | R  | H  | E")
+        log("----|-" + "--" * len(self.innings) + "-|----|----|---")
         
         # Calculate totals
         total_away = sum(inn[0] for inn in self.innings if inn[0] is not None)
         total_home = sum(inn[1] for inn in self.innings if inn[1] is not None)
         
         # Away Row
-        # If runs is None (e.g. bottom of 9th not played), show 'x' or ' '
         away_scores = "  ".join(f"{inn[0]}" if inn[0] is not None else " " for inn in self.innings)
         away_errors = len(self.error_log.get("away", []))
         home_errors = len(self.error_log.get("home", []))
-        print(f"{state.away_team.name[:3]} | {away_scores} | {total_away:<2} | -- | {away_errors:<2}")
+        log(f"{state.away_team.name[:3]} | {away_scores} | {total_away:<2} | -- | {away_errors:<2}")
         
         # Home Row
         home_scores = "  ".join(f"{inn[1]}" if inn[1] is not None else " " for inn in self.innings)
-        print(f"{state.home_team.name[:3]} | {home_scores} | {total_home:<2} | -- | {home_errors:<2}")
+        log(f"{state.home_team.name[:3]} | {home_scores} | {total_home:<2} | -- | {home_errors:<2}")
         trends = get_confidence_trends(state)
         if trends:
             rising = trends.get("rising")
@@ -156,19 +159,19 @@ class Scoreboard:
             if falling:
                 parts.append(f"DN {falling['name']} {falling['value']:+.0f}")
             if parts:
-                print(f"Confidence trends: {' | '.join(parts)}")
-        self._print_error_ledger()
-        print("")
+                log(f"Confidence trends: {' | '.join(parts)}")
+        self._print_error_ledger(log)
+        log("")
 
-    def _print_error_ledger(self) -> None:
+    def _print_error_ledger(self, log) -> None:
         if not any(self.error_log.values()):
             return
         if self.error_log.get("away"):
             tags = ", ".join(self._entry_label(entry) for entry in self.error_log["away"])
-            print(f"   Away Errors: {tags}")
+            log(f"   Away Errors: {tags}")
         if self.error_log.get("home"):
             tags = ", ".join(self._entry_label(entry) for entry in self.error_log["home"])
-            print(f"   Home Errors: {tags}")
+            log(f"   Home Errors: {tags}")
 
     def _entry_label(self, entry: dict) -> str:
         label = entry.get("tag", "E?")

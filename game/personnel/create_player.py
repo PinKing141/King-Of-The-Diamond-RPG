@@ -7,6 +7,8 @@ from typing import Optional, List, Tuple, Dict, Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from core.io_interface import IOInterface
+
 # Add root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -89,6 +91,30 @@ def _dedupe_preserve_order(items: Optional[List[str]]) -> List[str]:
 
 _PREFECTURE_CACHE: Optional[List[str]] = None
 _CITY_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def _io_log(io: Optional[IOInterface], message: str, *, level: str = "info") -> None:
+    if io:
+        io.log(message, level=level)
+    else:
+        print(message)
+
+
+def _io_prompt(io: Optional[IOInterface], prompt: str, *, options: Optional[List[str]] = None, default: str = "") -> str:
+    if io:
+        return io.prompt(prompt, options=options)
+    response = input(prompt)
+    if options and response not in options:
+        return default
+    return response if response else default
+
+
+def _validate_name(first: str, last: str) -> Tuple[bool, str]:
+    if not first:
+        return False, "First name is required."
+    if not last:
+        return False, "Last name is required."
+    return True, ""
 
 
 def _reset_hometown_cache() -> None:
@@ -437,7 +463,7 @@ def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Option
 # ------------------------------------------------------
 # CHARACTER CREATION MENU (unchanged logic)
 # ------------------------------------------------------
-def create_hero(session: Session) -> Optional[int]:
+def create_hero(session: Session, *, io: Optional[IOInterface] = None) -> Optional[int]:
     _reset_hometown_cache()
     step = 0
     data = {
@@ -459,28 +485,24 @@ def create_hero(session: Session) -> Optional[int]:
         # STEP 0: NAME ENTRY
         if step == 0:
             _print_option("Player Identity")
-            # --- FIX: Avoid double prompts by only showing current if set ---
             if data['first_name'] or data['last_name']:
-                print(f"Current: {data['last_name']} {data['first_name']}")
-            print("Enter new values or leave blank to keep current.")
-            
-            first = input("First Name: ").strip()
+                _io_log(io, f"Current: {data['last_name']} {data['first_name']}")
+            _io_log(io, "Enter new values or leave blank to keep current.")
+
+            first = _io_prompt(io, "First Name: ").strip()
             if first:
                 data['first_name'] = first
-            last = input("Last Name: ").strip()
+            last = _io_prompt(io, "Last Name: ").strip()
             if last:
                 data['last_name'] = last
-            
-            if not data['first_name']:
-                print("First name is required.")
+
+            valid, msg = _validate_name(data['first_name'], data['last_name'])
+            if not valid:
+                _io_log(io, msg, level="warning")
                 time.sleep(1)
                 continue
-            if not data['last_name']:
-                print("Last name is required.")
-                time.sleep(1)
-                continue
-            
-            confirm = input("Continue with this name? (y/n): ").strip().lower()
+
+            confirm = _io_prompt(io, "Continue with this name? (y/n): ", options=["y", "n"], default="n").strip().lower()
             if confirm == 'y':
                 step += 1
             continue
@@ -500,11 +522,11 @@ def create_hero(session: Session) -> Optional[int]:
                 "Right Field",
             ]
             for idx, label in enumerate(positions, start=1):
-                print(f" {idx}. {label}")
-            print(" 0. Back")
-            print(f"{Colour.GOLD}Coach's staff will decide starter vs reliever roles after creation.{Colour.RESET}")
+                _io_log(io, f" {idx}. {label}")
+            _io_log(io, " 0. Back")
+            _io_log(io, f"{Colour.GOLD}Coach's staff will decide starter vs reliever roles after creation.{Colour.RESET}")
 
-            choice = input("Choice: ").strip()
+            choice = _io_prompt(io, "Choice: ").strip()
             if choice == '0':
                 step -= 1
                 continue
@@ -533,7 +555,7 @@ def create_hero(session: Session) -> Optional[int]:
         # STEP 2: STARTER TRAIT GACHA
         elif step == 2:
             if not data.get('position'):
-                print("Select a position before rolling for traits.")
+                _io_log(io, "Select a position before rolling for traits.", level="warning")
                 time.sleep(1)
                 step -= 1
                 continue
@@ -545,11 +567,11 @@ def create_hero(session: Session) -> Optional[int]:
             _print_option("Starter Trait Gacha")
             status = data.get('starter_trait')
             if status is None:
-                print("One roll decides if the coaches tag you with the Starter trait.")
-                print("Odds: 35% chance. No rerolls.")
-                print("1. Roll Gacha")
-                print("0. Back")
-                sel = input("Choice: ").strip()
+                _io_log(io, "One roll decides if the coaches tag you with the Starter trait.")
+                _io_log(io, "Odds: 35% chance. No rerolls.")
+                _io_log(io, "1. Roll Gacha")
+                _io_log(io, "0. Back")
+                sel = _io_prompt(io, "Choice: ").strip()
                 if sel == '0':
                     step -= 1
                     continue
@@ -558,15 +580,15 @@ def create_hero(session: Session) -> Optional[int]:
                     data['starter_trait'] = won
                     message = "Starter trait unlocked!" if won else "No starter trait this time."
                     colour = Colour.GREEN if won else Colour.RED
-                    print(f"{colour}{message}{Colour.RESET}")
+                    _io_log(io, f"{colour}{message}{Colour.RESET}")
                     time.sleep(1.5)
                 continue
 
             result_txt = "Starter Trait secured. Coaches expect you to anchor games." if status else "No Starter Trait. Earn it through performance."
-            print(result_txt)
-            print("1. Continue")
-            print("0. Back")
-            sel = input("Choice: ").strip()
+            _io_log(io, result_txt)
+            _io_log(io, "1. Continue")
+            _io_log(io, "0. Back")
+            sel = _io_prompt(io, "Choice: ").strip()
             if sel == '0':
                 data['starter_trait'] = None
                 step -= 1
@@ -581,24 +603,24 @@ def create_hero(session: Session) -> Optional[int]:
                 data['stats'] = roll_stats(data['position'])
             
             s = data['stats']
-            print(f"Rerolls left: {data['rerolls_left']}")
-            print(f"HEIGHT: {s['height_cm']} cm")
-            print(f"WEIGHT: {s['weight_kg']} kg")
+            _io_log(io, f"Rerolls left: {data['rerolls_left']}")
+            _io_log(io, f"HEIGHT: {s['height_cm']} cm")
+            _io_log(io, f"WEIGHT: {s['weight_kg']} kg")
             if s.get('is_two_way') and s.get('secondary_position'):
                 primary = data.get('position') or 'Primary'
-                print(f"{Colour.gold}TWO-WAY POTENTIAL: {primary} / {s['secondary_position']}{Colour.RESET}")
+                _io_log(io, f"{Colour.gold}TWO-WAY POTENTIAL: {primary} / {s['secondary_position']}{Colour.RESET}")
 
             _render_stat_overview(data['position'], s)
 
-            print("\nOptions:")
-            print("1. Accept Stats")
+            _io_log(io, "\nOptions:")
+            _io_log(io, "1. Accept Stats")
             if data['rerolls_left'] > 0:
-                print("2. Reroll (Uses 1 attempt)")
+                _io_log(io, "2. Reroll (Uses 1 attempt)")
             else:
-                print("2. Reroll (LOCKED)")
-            print("0. Back")
+                _io_log(io, "2. Reroll (LOCKED)")
+            _io_log(io, "0. Back")
 
-            sel = input("Choice: ")
+            sel = _io_prompt(io, "Choice: ")
             if sel == '0': step -= 1; continue
             elif sel == '1': step += 1; continue
             elif sel == '2':
@@ -606,7 +628,7 @@ def create_hero(session: Session) -> Optional[int]:
                     data['rerolls_left'] -= 1
                     data['stats'] = roll_stats(data['position'])
                 else:
-                    print("No rerolls left!")
+                    _io_log(io, "No rerolls left!", level="warning")
                     time.sleep(1)
 
         # STEP 4: GROWTH STYLE (AFTER STATS)
@@ -620,10 +642,11 @@ def create_hero(session: Session) -> Optional[int]:
             else:
                 styles = ["Power Hitter", "Speedster", "Balanced"]
 
-            for i, s in enumerate(styles): print(f" {i+1}. {s}")
-            print(" 0. Back")
+            for i, s in enumerate(styles):
+                _io_log(io, f" {i+1}. {s}")
+            _io_log(io, " 0. Back")
 
-            sel = input("Choice: ")
+            sel = _io_prompt(io, "Choice: ")
             if sel == '0': step -= 1; continue
 
             try:
@@ -632,12 +655,12 @@ def create_hero(session: Session) -> Optional[int]:
                     s_name = styles[idx]
                     info = GROWTH_STYLE_INFO.get(s_name, GROWTH_STYLE_INFO['Balanced'])
 
-                    print(f"\n{Colour.gold}>> {s_name} <<{Colour.RESET}")
-                    print(f"{info['desc']}")
-                    print(f"{Colour.GREEN}PROS: {info['pros']}{Colour.RESET}")
-                    print(f"{Colour.RED}CONS: {info['cons']}{Colour.RESET}")
+                    _io_log(io, f"\n{Colour.gold}>> {s_name} <<{Colour.RESET}")
+                    _io_log(io, f"{info['desc']}")
+                    _io_log(io, f"{Colour.GREEN}PROS: {info['pros']}{Colour.RESET}")
+                    _io_log(io, f"{Colour.RED}CONS: {info['cons']}{Colour.RESET}")
 
-                    if input("Confirm? (y/n): ").lower() == 'y':
+                    if _io_prompt(io, "Confirm? (y/n): ", options=["y", "n"], default="n").lower() == 'y':
                         data['growth_style'] = s_name
                         step += 1
             except: pass
@@ -646,7 +669,7 @@ def create_hero(session: Session) -> Optional[int]:
         elif step == 5:
             prefectures = get_prefecture_catalog(session)
             if not prefectures:
-                print("No prefecture data found. Defaulting to Tokyo.")
+                _io_log(io, "No prefecture data found. Defaulting to Tokyo.", level="warning")
                 data['hometown'] = "Tokyo"
                 data['prefecture_choice'] = "Tokyo"
                 step += 1
@@ -656,7 +679,7 @@ def create_hero(session: Session) -> Optional[int]:
             back_to_prev = False
             while not selected_pref and not back_to_prev:
                 _print_option("Select Prefecture (type to filter, 0 to Back):")
-                filter_text = input("Filter: ").strip().lower()
+                filter_text = _io_prompt(io, "Filter: ").strip().lower()
                 if filter_text == '0':
                     step -= 1
                     back_to_prev = True
@@ -669,8 +692,8 @@ def create_hero(session: Session) -> Optional[int]:
                     preview = f"{city_count} cities"
                     if sample_names:
                         preview += f": {sample_names}"
-                    print(f" {idx:>2}. {pref} [{preview}]")
-                choice = input("Choice #: ").strip()
+                    _io_log(io, f" {idx:>2}. {pref} [{preview}]")
+                choice = _io_prompt(io, "Choice #: ").strip()
                 if not choice.isdigit():
                     continue
                 pick = int(choice)
@@ -685,7 +708,7 @@ def create_hero(session: Session) -> Optional[int]:
 
             city_rows = _load_cities_for_prefecture(session, selected_pref)
             if not city_rows:
-                print("No active cities registered in this prefecture yet. Using prefecture only.")
+                _io_log(io, "No active cities registered in this prefecture yet. Using prefecture only.", level="warning")
                 data['hometown'] = selected_pref
                 step += 1
                 selected_pref = None
@@ -696,10 +719,10 @@ def create_hero(session: Session) -> Optional[int]:
                 if show_directory:
                     _print_option(f"{selected_pref}: cities with baseball schools (Enter to refresh, 0=Back)")
                     _render_city_directory(selected_pref, city_rows)
-                    print("Type a city number, enter text to search, or 'P' to use the prefecture only.")
+                    _io_log(io, "Type a city number, enter text to search, or 'P' to use the prefecture only.")
                     show_directory = False
 
-                city_input = input("City #: ").strip()
+                city_input = _io_prompt(io, "City #: ").strip()
                 if city_input == '':
                     show_directory = True
                     continue
@@ -720,19 +743,19 @@ def create_hero(session: Session) -> Optional[int]:
                         step += 1
                         selected_pref = None
                         break
-                    print("Invalid city number. Press Enter to see the list again.")
+                    _io_log(io, "Invalid city number. Press Enter to see the list again.", level="warning")
                     continue
 
                 matches = get_city_matches(session, selected_pref, city_input)
                 if not matches:
-                    print("No cities match that keyword. Press Enter to show the directory again.")
+                    _io_log(io, "No cities match that keyword. Press Enter to show the directory again.", level="warning")
                     continue
 
-                print("\nMatching Cities:")
+                _io_log(io, "\nMatching Cities:")
                 for i, match in enumerate(matches, start=1):
                     label = f"{match['name']} ({match['school_count']}) [#{match['ordinal']}]"
-                    print(f" {i}. {label}")
-                choice = input("Choice (Enter to continue searching): ").strip()
+                    _io_log(io, f" {i}. {label}")
+                choice = _io_prompt(io, "Choice (Enter to continue searching): ").strip()
                 if not choice:
                     continue
                 if not choice.isdigit():
@@ -744,7 +767,7 @@ def create_hero(session: Session) -> Optional[int]:
                     step += 1
                     selected_pref = None
                     break
-                print("Invalid selection.")
+                _io_log(io, "Invalid selection.", level="warning")
 
             if not selected_pref:
                 continue
@@ -778,10 +801,10 @@ def create_hero(session: Session) -> Optional[int]:
             location_label = f"{pref} — {city}" if city else pref
             _print_option(f"Offers from {location_label}:")
             for i, t in enumerate(offers):
-                print(f" {i+1}. {t.name} (Rank: {t.prestige})")
-            print(" 0. Back")
-            
-            sel = input("Select Team: ")
+                _io_log(io, f" {i+1}. {t.name} (Rank: {t.prestige})")
+            _io_log(io, " 0. Back")
+
+            sel = _io_prompt(io, "Select Team: ")
             if sel == '0': step -= 1; continue
             
             try:
@@ -807,16 +830,16 @@ def create_hero(session: Session) -> Optional[int]:
             while True:
                 _render_creation_banner(step, data, STEP_TITLES.get(step, "Configure Pitch Arsenal"))
                 _print_option("Configure Pitch Arsenal")
-                print(f"Need {MIN_PITCHES}-{MAX_PITCHES} total pitches. Mix and match however you like.")
+                _io_log(io, f"Need {MIN_PITCHES}-{MAX_PITCHES} total pitches. Mix and match however you like.")
                 current_display = ", ".join(selected) if selected else "--"
-                print(f"Selected [{len(selected)}/{MAX_PITCHES}]: {current_display}")
-                print("Choices: toggle #, D=Done, R=Reset (empty), C=Clear, 0=Back")
+                _io_log(io, f"Selected [{len(selected)}/{MAX_PITCHES}]: {current_display}")
+                _io_log(io, "Choices: toggle #, D=Done, R=Reset (empty), C=Clear, 0=Back")
                 for idx, pitch in enumerate(PITCH_SELECTION_POOL, start=1):
                     marker = "*" if pitch in selected else " "
                     fb_tag = " (FB)" if pitch in FASTBALL_PITCHES else ""
-                    print(f" {idx:>2}. [{marker}] {pitch}{fb_tag}")
+                    _io_log(io, f" {idx:>2}. [{marker}] {pitch}{fb_tag}")
 
-                sel = input("Command: ").strip().lower()
+                sel = _io_prompt(io, "Command: ").strip().lower()
                 if sel in {'0', 'b'}:
                     data['pitch_arsenal'] = _dedupe_preserve_order(selected)
                     step -= 1
@@ -827,7 +850,7 @@ def create_hero(session: Session) -> Optional[int]:
                         data['pitch_arsenal'] = _dedupe_preserve_order(selected)
                         step += 1
                         break
-                    print(message)
+                    _io_log(io, message, level="warning")
                     time.sleep(1)
                     continue
                 if sel in {'c', 'clear'}:
@@ -844,44 +867,44 @@ def create_hero(session: Session) -> Optional[int]:
                             selected.remove(pitch_name)
                         else:
                             if len(selected) >= MAX_PITCHES:
-                                print(f"Remove a pitch before adding a new one (max {MAX_PITCHES}).")
+                                _io_log(io, f"Remove a pitch before adding a new one (max {MAX_PITCHES}).", level="warning")
                                 time.sleep(1)
                                 continue
                             selected.append(pitch_name)
                     continue
-                print("Unknown command.")
+                _io_log(io, "Unknown command.", level="warning")
                 time.sleep(1)
                 continue
             continue
 
         # STEP 8: FINAL CONFIRMATION
         elif step == 8:
-            print(f"Name:   {data['last_name']} {data['first_name']}")
-            print(f"Role:   {data['specific_pos']}")
-            print(f"Style:  {data['growth_style']}")
-            print(f"Hometown: {data['hometown']}")
+            _io_log(io, f"Name:   {data['last_name']} {data['first_name']}")
+            _io_log(io, f"Role:   {data['specific_pos']}")
+            _io_log(io, f"Style:  {data['growth_style']}")
+            _io_log(io, f"Hometown: {data['hometown']}")
             school_name = data['school'].name if data.get('school') else '--'
-            print(f"School: {Colour.gold}{school_name}{Colour.RESET}")
+            _io_log(io, f"School: {Colour.gold}{school_name}{Colour.RESET}")
             acad_skill = data['stats'].get('academic_skill', '??')
             last_score = data['stats'].get('test_score', '??')
-            print(f"Academics: Skill {acad_skill} / Latest Test {last_score}")
+            _io_log(io, f"Academics: Skill {acad_skill} / Latest Test {last_score}")
             if data['position'] == "Pitcher":
                 arm_slot = data['stats'].get('arm_slot') or "Three-Quarters"
-                print(f"Arm Slot: {arm_slot}")
+                _io_log(io, f"Arm Slot: {arm_slot}")
                 trait_txt = "Unlocked" if data.get('starter_trait') else "--"
-                print(f"Starter Trait: {trait_txt}")
+                _io_log(io, f"Starter Trait: {trait_txt}")
                 arsenal = _dedupe_preserve_order(data.get('pitch_arsenal'))
-                print(f"Pitches: {', '.join(arsenal) if arsenal else '--'}")
-            print("─" * FRAME_WIDTH)
-            
-            print("1. Start Game")
-            print("0. Back")
-            
-            sel = input("Choice: ")
+                _io_log(io, f"Pitches: {', '.join(arsenal) if arsenal else '--'}")
+            _io_log(io, "─" * FRAME_WIDTH)
+
+            _io_log(io, "1. Start Game")
+            _io_log(io, "0. Back")
+
+            sel = _io_prompt(io, "Choice: ")
             if sel == '0': step -= 1; continue
             elif sel == '1':
                 player_id = commit_player_to_db(session, data)
-                print(f"{Colour.GREEN}Character Saved! Good Luck!{Colour.RESET}")
+                _io_log(io, f"{Colour.GREEN}Character Saved! Good Luck!{Colour.RESET}")
                 time.sleep(2)
                 return player_id
 

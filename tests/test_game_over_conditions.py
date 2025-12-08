@@ -8,7 +8,7 @@ class DummyScoreboard:
     def record_inning(self, *args, **kwargs):  # pragma: no cover
         return None
 
-    def print_board(self, state):  # pragma: no cover
+    def print_board(self, state, *, io=None):  # pragma: no cover
         return None
 
 

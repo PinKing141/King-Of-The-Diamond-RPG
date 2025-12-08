@@ -8,7 +8,7 @@ from match_engine.scoreboard import Scoreboard
 
 
 class DummyScoreboard(Scoreboard):
-    def print_board(self, state):  # pragma: no cover - suppress console noise
+    def print_board(self, state, *, io=None):  # pragma: no cover - suppress console noise
         return None
 
 

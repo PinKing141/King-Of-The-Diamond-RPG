@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from core.event_bus import EventBus
+from core.io_interface import IOInterface
 
 from .pregame import prepare_match
 from .match_sim import MatchSimulation, MatchupContext, PlayOutcome
@@ -101,9 +102,13 @@ class MatchController:
         scoreboard: Scoreboard,
         *,
         human_team_ids: Optional[Sequence[int]] = None,
+        io: Optional[IOInterface] = None,
     ) -> None:
         self.state = state
         self.scoreboard = scoreboard
+        self.io = io
+        if io is not None:
+            setattr(self.state, "io", io)
         event_bus = getattr(state, "event_bus", None)
         self.bus: EventBus = event_bus if isinstance(event_bus, EventBus) else EventBus()
         state.event_bus = self.bus
@@ -205,8 +210,8 @@ class MatchController:
         _emit_lineup_event(self.state)
 
     def _prepare_inning(self) -> None:
-        manage_team_between_innings(self.state, "Home")
-        manage_team_between_innings(self.state, "Away")
+        manage_team_between_innings(self.state, "Home", io=self.io)
+        manage_team_between_innings(self.state, "Away", io=self.io)
         self._state_change(
             "INNING_READY",
             {"inning": self.state.inning, "half": HALF_TOP},
@@ -253,7 +258,7 @@ class MatchController:
         top_runs = self._current_inning_runs[HALF_TOP]
         bottom_runs = None if skip_bottom else self._current_inning_runs[HALF_BOT]
         self.scoreboard.record_inning(inning_number, top_runs, bottom_runs)
-        self.scoreboard.print_board(self.state)
+        self.scoreboard.print_board(self.state, io=self.io)
         flush_pitch_xp(self.state)
         self.state.inning += 1
         self.state.top_bottom = HALF_TOP
@@ -293,7 +298,7 @@ class MatchController:
             team_id = getattr(batter, "team_id", getattr(batter, "school_id", None))
             human_team_ids = getattr(state, "human_team_ids", set()) or set()
             user_controls = team_id in human_team_ids
-            input_source = HumanBatterInput() if user_controls else CpuBatterInput()
+            input_source = HumanBatterInput(io=self.io) if user_controls else CpuBatterInput()
             try:
                 AtBatStateMachine(state, input_source=input_source).run()
             except TypeError:
@@ -578,8 +583,8 @@ class MatchController:
         _emit_lineup_event(self.state)
 
     def _prepare_inning(self) -> None:
-        manage_team_between_innings(self.state, "Home")
-        manage_team_between_innings(self.state, "Away")
+        manage_team_between_innings(self.state, "Home", io=self.io)
+        manage_team_between_innings(self.state, "Away", io=self.io)
         self._state_change(
             "INNING_READY",
             {"inning": self.state.inning, "half": HALF_TOP},
@@ -704,7 +709,7 @@ class MatchController:
         top_runs = self._current_inning_runs[HALF_TOP]
         bottom_runs = None if skip_bottom else self._current_inning_runs[HALF_BOT]
         self.scoreboard.record_inning(inning_number, top_runs, bottom_runs)
-        self.scoreboard.print_board(self.state)
+        self.scoreboard.print_board(self.state, io=self.io)
         summary = self.scoreboard.get_inning_summary(inning_number)
         if summary:
             self.telemetry.record_inning(
@@ -752,7 +757,7 @@ class MatchController:
             team_id = getattr(batter, "team_id", getattr(batter, "school_id", None))
             human_team_ids = getattr(state, "human_team_ids", set()) or set()
             user_controls = team_id in human_team_ids
-            input_source = HumanBatterInput() if user_controls else CpuBatterInput()
+            input_source = HumanBatterInput(io=self.io) if user_controls else CpuBatterInput()
             try:
                 AtBatStateMachine(state, input_source=input_source).run()
             except TypeError:
@@ -898,6 +903,7 @@ def run_match(
     manual_fielding_prompts: bool = False,
     rival_match_context=None,
     rival_presentation: Optional[Dict[str, Any]] = None,
+    io: Optional[IOInterface] = None,
 ):
     """
     Main entry point. Call this to play a full game.
@@ -942,7 +948,7 @@ def run_match(
             bus = getattr(state, "event_bus", None)
             if bus:
                 bus.publish("MATCH_INTRO", {"home_team_id": home_id, "away_team_id": away_id})
-        CommentaryListener(getattr(state, "event_bus", None))
+        CommentaryListener(getattr(state, "event_bus", None), io=io)
         if not hasattr(state, "telemetry_store_in_db"):
             state.telemetry_store_in_db = True
         scoreboard = Scoreboard()
@@ -950,6 +956,7 @@ def run_match(
             state,
             scoreboard,
             human_team_ids=human_team_ids,
+            io=io,
         )
         winner = controller.start_game()
         bus = getattr(state, "event_bus", None)

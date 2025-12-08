@@ -1135,8 +1135,9 @@ def _auto_defensive_shift_choice(state):
 
 def _configure_defensive_shift(state):
     current = getattr(state, "defensive_shift", "normal")
+    io = getattr(state, "io", None)
     if _catcher_trusts_shift(state):
-        new_shift = prompt_defensive_shift(current)
+        new_shift = prompt_defensive_shift(current, io=io)
         source = "User catcher"
     else:
         new_shift = _auto_defensive_shift_choice(state)
@@ -1509,6 +1510,7 @@ class AtBatStateMachine:
         batter_mods: dict = {}
         human_team_ids = getattr(state, "human_team_ids", set()) or set()
         user_controls = (_player_team_id(self.batter) in human_team_ids) and not self.sim_fast
+        io = getattr(state, "io", None)
 
         if getattr(state, "manual_pitch_calls", False):
             _maybe_prompt_manual_pitch(state, self.pitcher, self.batter)
@@ -1532,7 +1534,7 @@ class AtBatStateMachine:
             })
         elif user_controls:
             from player_roles.batter_controls import player_bat_turn
-            batter_action, batter_mods = player_bat_turn(self.pitcher, self.batter, state)
+            batter_action, batter_mods = player_bat_turn(self.pitcher, self.batter, state, io=io)
         else:
             batter_action, batter_mods = _apply_offense_orders(self.offense_order, state, batter_action, batter_mods)
             guess_payload = _auto_batters_eye_guess(state, self.batter, self.pitcher, self.batter_tendencies)
@@ -1552,7 +1554,7 @@ class AtBatStateMachine:
         defense_runners = getattr(state, "runners", None) or []
         if _user_controls_defense(state) and any(defense_runners[:2]):
             from player_roles.pitcher_controls import prompt_runner_threat_controls
-            prompt_runner_threat_controls(self.pitcher, state)
+            prompt_runner_threat_controls(self.pitcher, state, io=io)
 
         self._emit_phase(AtBatPhase.RUNNER_THREAT, {
             "inning": state.inning,

@@ -1,8 +1,10 @@
 import random
 import time
-from typing import Optional
+from dataclasses import dataclass
+from typing import List, Optional
 
 from database.setup_db import Player, School
+from core.io_interface import IOInterface
 from ui.ui_display import Colour
 # Import the new Dialogue Manager
 from game.story.dialogue_manager import run_dialogue_event
@@ -18,6 +20,41 @@ from game.personnel.personality_effects import adjust_player_morale, adjust_team
 from game.personnel.archetypes import get_player_archetype, get_archetype_profile
 from sqlalchemy import func
 
+
+@dataclass
+class EventRequest:
+    kind: str  # "log" or "prompt"
+    message: str
+    level: str = "info"
+    options: Optional[List[str]] = None
+
+
+@dataclass
+class EventResult:
+    summary: Optional[str]
+    requests: List[EventRequest]
+
+
+def _log(requests: List[EventRequest], message: str, *, level: str = "info", io: Optional[IOInterface] = None) -> None:
+    requests.append(EventRequest("log", message, level=level))
+    if io:
+        io.log(message, level=level)
+
+
+def _prompt(
+    requests: List[EventRequest],
+    prompt: str,
+    *,
+    options: Optional[List[str]] = None,
+    io: Optional[IOInterface] = None,
+    default: str = "",
+) -> str:
+    request = EventRequest("prompt", prompt, options=options)
+    requests.append(request)
+    if io:
+        return io.prompt(prompt, options=options)
+    return default
+
 # --- INSTRUCTIONS FOR ADDING NEW EVENTS ---
 # 1. Define your event function (e.g., `event_pizza_party(player, school)`).
 #    - It should accept `player` and `school` (and `session` if needed) as arguments.
@@ -29,7 +66,13 @@ from sqlalchemy import func
 #    - You can wrap it in a condition check inside `trigger_random_event` if it's situational.
 # ------------------------------------------
 
-def event_pop_quiz(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_pop_quiz(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+):
     """Event: Academic pressure using Dialogue System."""
     # We map this event to a specific dialogue ID defined in dialogue_manager.py
     # Ideally, we'd have a specific ID like "teacher_pop_quiz" in the DB.
@@ -40,13 +83,25 @@ def event_pop_quiz(player, school, context: Optional[GameContext] = None, curren
     # Let's use that for demonstration, or add a quick one here if we could.
     
     # Re-using the coach meeting example for now to show functionality
-    return run_dialogue_event("coach_meeting_strategy", player, school)
+    return run_dialogue_event("coach_meeting_strategy", player, school, io=io)
 
-def event_extra_practice(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_extra_practice(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+):
     """Event: Teammate Interaction."""
-    return run_dialogue_event("teammate_practice_extra", player, school)
+    return run_dialogue_event("teammate_practice_extra", player, school, io=io)
 
-def event_alumni_donation(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_alumni_donation(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+):
     """Event: School Budget Boost (Simple Text)."""
     donation = random.randint(1000, 5000)
     school.budget += donation
@@ -57,10 +112,18 @@ def _archetype_label(player) -> str:
     return profile.label
 
 
-def event_scout_sighting(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_scout_sighting(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+) -> EventResult:
     """Event: Motivation Boost."""
-    print(f"\n{Colour.YELLOW}[EVENT] SCOUT SPOTTED{Colour.RESET}")
-    print("Rumour has it a pro scout is watching practice today.")
+    requests: List[EventRequest] = []
+    _log(requests, "[EVENT] SCOUT SPOTTED", level="info", io=io)
+    _log(requests, "Rumour has it a pro scout is watching practice today.", io=io)
+
     morale_gain = 10
     archetype = get_player_archetype(player)
     if archetype in {"showman", "firebrand"}:
@@ -69,9 +132,17 @@ def event_scout_sighting(player, school, context: Optional[GameContext] = None, 
         morale_gain += 2
     player.morale += morale_gain
     label = _archetype_label(player)
-    return f"The team practiced with extra intensity! ({label} aura, Morale +{morale_gain})"
+    summary = f"The team practiced with extra intensity! ({label} aura, Morale +{morale_gain})"
+    _log(requests, summary, level="info", io=io)
+    return EventResult(summary=summary, requests=requests)
 
-def event_equipment_failure(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_equipment_failure(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+):
     """Event: Minor annoyance."""
     if school.budget >= 500:
         school.budget -= 500
@@ -80,12 +151,19 @@ def event_equipment_failure(player, school, context: Optional[GameContext] = Non
         player.morale -= 5
         return "The pitching machine broke, and we can't afford repairs. Training was inefficient. (Morale -5)"
 
-def event_love_letter(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_love_letter(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+) -> EventResult:
     """Event: Classic trope."""
-    print(f"\n{Colour.HEADER}[EVENT] SHOE LOCKER SURPRISE{Colour.RESET}")
-    print("You found a letter in your shoe locker...")
-    
-    choice = input("Read it? (y/n): ").lower()
+    requests: List[EventRequest] = []
+    _log(requests, "[EVENT] SHOE LOCKER SURPRISE", level="info", io=io)
+    _log(requests, "You found a letter in your shoe locker...", io=io)
+
+    choice = _prompt(requests, "Read it? (y/n): ", options=["y", "n"], io=io, default="n").lower()
     archetype = get_player_archetype(player)
     if choice == 'y':
         morale = 15
@@ -96,46 +174,76 @@ def event_love_letter(player, school, context: Optional[GameContext] = None, cur
             fatigue += 2
         player.morale += morale
         player.fatigue += fatigue
-        return f"It was a confession! {_archetype_label(player)} vibes rise. (Morale +{morale}, Fatigue +{fatigue})"
+        summary = f"It was a confession! {_archetype_label(player)} vibes rise. (Morale +{morale}, Fatigue +{fatigue})"
     else:
         player.stamina += 1
         if archetype in {"guardian", "steady"}:
             player.morale += 2
-        return "You threw it away. BASEBALL IS YOUR ONLY LOVE, staying true to your archetype." 
+        summary = "You threw it away. BASEBALL IS YOUR ONLY LOVE, staying true to your archetype."
 
-def event_rival_taunt(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+    _log(requests, summary, level="info", io=io)
+    return EventResult(summary=summary, requests=requests)
+
+def event_rival_taunt(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+):
     """Event: Narrative building."""
     return f"Students from a rival school were talking trash at the station. The team is fired up. (Motivation UP)"
 
 
-def event_coach_strategy_prompt(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_coach_strategy_prompt(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+) -> Optional[EventResult]:
     if context is None or school is None or not school.coach:
         return None
 
-    print(f"\n{Colour.HEADER}[MEETING] Coach wants your take on offense.{Colour.RESET}")
-    print("Coach: 'Next opponent survives on defense. What's our approach?'")
-    print(" 1) Manufacture runs with bunts and pressure")
-    print(" 2) Let the lineup swing freely")
-    print(" 3) Stick with whatever the staff chooses")
+    requests: List[EventRequest] = []
+    _log(requests, "[MEETING] Coach wants your take on offense.", level="info", io=io)
+    _log(requests, "Coach: 'Next opponent survives on defense. What's our approach?'", io=io)
+    _log(requests, "1) Manufacture runs with bunts and pressure", io=io)
+    _log(requests, "2) Let the lineup swing freely", io=io)
+    _log(requests, "3) Stick with whatever the staff chooses", io=io)
 
-    choice = input("Choice: ").strip()
+    choice = _prompt(requests, "Choice: ", options=['1', '2', '3'], io=io, default='3').strip()
     if choice not in {'1', '2', '3'}:
-        return "You shrug, offering no concrete advice."
+        summary = "You shrug, offering no concrete advice."
+        _log(requests, summary, io=io)
+        return EventResult(summary=summary, requests=requests)
 
     if choice == '3':
-        return "You trust the existing plan. Coach nods and ends the chat."
+        summary = "You trust the existing plan. Coach nods and ends the chat."
+        _log(requests, summary, io=io)
+        return EventResult(summary=summary, requests=requests)
 
     effect = 'small_ball' if choice == '1' else 'power_focus'
     if has_modifier(context.session, school.id, effect_type=effect):
-        return "Coach already has that strategy queued."
+        summary = "Coach already has that strategy queued."
+        _log(requests, summary, io=io)
+        return EventResult(summary=summary, requests=requests)
 
     games = random.randint(1, 2)
     set_strategy_modifier(context.session, school.id, effect, games)
     style = "small-ball pressure" if effect == 'small_ball' else "aggressive swings"
-    return f"Coach embraces your call. Expect {style} for the next {games} game(s)."
+    summary = f"Coach embraces your call. Expect {style} for the next {games} game(s)."
+    _log(requests, summary, io=io)
+    return EventResult(summary=summary, requests=requests)
 
 
-def event_substitution_request(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_substitution_request(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+) -> Optional[EventResult]:
     if context is None or school is None or not school.coach:
         return None
     if (player.fatigue or 0) < 60:
@@ -143,10 +251,13 @@ def event_substitution_request(player, school, context: Optional[GameContext] = 
     if has_modifier(context.session, school.id, 'rest_player', target_player_id=player.id):
         return None
 
-    print(f"\n{Colour.WARNING}[DECISION] You're gassed after practice.{Colour.RESET}")
-    ask = input("Ask coach for a rest day? (y/n): ").strip().lower()
+    requests: List[EventRequest] = []
+    _log(requests, "[DECISION] You're gassed after practice.", level="warning", io=io)
+    ask = _prompt(requests, "Ask coach for a rest day? (y/n): ", options=['y', 'n'], io=io, default='n').strip().lower()
     if ask != 'y':
-        return "You grit your teeth and keep quiet."
+        summary = "You grit your teeth and keep quiet."
+        _log(requests, summary, io=io)
+        return EventResult(summary=summary, requests=requests)
 
     coach = school.coach
     base = 0.45
@@ -167,15 +278,25 @@ def event_substitution_request(player, school, context: Optional[GameContext] = 
         player.fatigue = max(0, (player.fatigue or 0) - 10)
         context.session.add(player)
         context.session.commit()
-        return "Coach agrees: you'll sit the next game to recharge."
+        summary = "Coach agrees: you'll sit the next game to recharge."
+        _log(requests, summary, io=io)
+        return EventResult(summary=summary, requests=requests)
 
     player.discipline = max(20, (player.discipline or 50) - 2)
     context.session.add(player)
     context.session.commit()
-    return "Coach refuses, demanding toughness. You steel yourself to push through."
+    summary = "Coach refuses, demanding toughness. You steel yourself to push through."
+    _log(requests, summary, io=io)
+    return EventResult(summary=summary, requests=requests)
 
 
-def event_captain_mentorship(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_captain_mentorship(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+):
     if context is None:
         return None
 
@@ -187,7 +308,7 @@ def event_captain_mentorship(player, school, context: Optional[GameContext] = No
 
     is_bond_strong = (rel.captain_rel or 0) >= 70
     dialogue_id = "captain_advice_high" if is_bond_strong else "captain_advice_low"
-    response = run_dialogue_event(dialogue_id, player, school)
+    response = run_dialogue_event(dialogue_id, player, school, io=io)
 
     rel.last_captain_event_week = current_week or rel.last_captain_event_week
     context.session.add(rel)
@@ -205,7 +326,13 @@ def event_captain_mentorship(player, school, context: Optional[GameContext] = No
     return response
 
 
-def event_rival_showdown(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_rival_showdown(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+):
     if context is None:
         return None
 
@@ -235,12 +362,18 @@ def event_rival_showdown(player, school, context: Optional[GameContext] = None, 
     context.session.commit()
 
     dialogue_id = "rival_head_to_head" if (rel.rivalry_score or 45) >= 55 else "rival_mind_games"
-    summary = run_dialogue_event(dialogue_id, player, school)
+    summary = run_dialogue_event(dialogue_id, player, school, io=io)
     delta_text = f"Clutch {'+' if clutch_delta >= 0 else ''}{int(round(clutch_delta))}" if clutch_delta else "Focused"
     return f"{summary} ({delta_text} heading into the next matchup.)"
 
 
-def event_training_conflict(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_training_conflict(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+):
     if context is None or school is None:
         return None
     volatility = getattr(player, 'volatility', 50) or 50
@@ -275,7 +408,13 @@ def event_training_conflict(player, school, context: Optional[GameContext] = Non
     )
 
 
-def event_volatility_fight(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_volatility_fight(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+):
     if context is None or school is None:
         return None
 
@@ -327,7 +466,13 @@ def event_volatility_fight(player, school, context: Optional[GameContext] = None
     return summary
 
 
-def event_shrine_visit(player, school, context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def event_shrine_visit(
+    player,
+    school,
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    io: Optional[IOInterface] = None,
+) -> Optional[EventResult]:
     """Traditional team visit to a local shrine for blessings before a big stretch."""
 
     if context is None or school is None:
@@ -335,7 +480,8 @@ def event_shrine_visit(player, school, context: Optional[GameContext] = None, cu
     if random.random() > 0.55:
         return None
 
-    print(f"\n{Colour.HEADER}[RITUAL] Shrine bells echo in the morning mist.{Colour.RESET}")
+    requests: List[EventRequest] = []
+    _log(requests, "[RITUAL] Shrine bells echo in the morning mist.", level="info", io=io)
     loyalty = getattr(player, 'loyalty', 50) or 50
     offering = random.randint(300, 800)
     paid = False
@@ -371,7 +517,9 @@ def event_shrine_visit(player, school, context: Optional[GameContext] = None, cu
     context.session.commit()
 
     budget_line = f" The club offers ¥{offering} in ema wishes." if paid else " Funds are tight, but the team scrapes together coins for the prayer box."
-    return f"{summary}{budget_line} {blessing}"
+    final_summary = f"{summary}{budget_line} {blessing}"
+    _log(requests, final_summary, io=io)
+    return EventResult(summary=final_summary, requests=requests)
 
 # --- MAIN EVENT CONTROLLER ---
 
@@ -392,18 +540,25 @@ EVENT_POOL = [
     event_shrine_visit,
 ]
 
-def trigger_random_event(context: Optional[GameContext] = None, current_week: Optional[int] = None):
+def trigger_random_event(
+    context: Optional[GameContext] = None,
+    current_week: Optional[int] = None,
+    *,
+    io: Optional[IOInterface] = None,
+) -> Optional[EventResult]:
     """
-    Called weekly. Decides if an event happens, picks one, runs it, and saves changes.
+    Called weekly. Decides if an event happens, picks one, runs it, and returns EventResult for UI rendering.
     """
-    if current_week is not None and current_week <= 1:
-        return
+    requests: List[EventRequest] = []
 
-    if random.random() > 0.40: # 40% chance
-        return 
+    if current_week is not None and current_week <= 1:
+        return None
+
+    if random.random() > 0.40:  # 40% chance
+        return None
 
     if context is None or context.player_id is None:
-        return
+        return None
 
     # Narrative arcs: ensure beats fire even if no random event triggers elsewhere this week.
     tracker = getattr(context, "story_tracker", None)
@@ -416,33 +571,35 @@ def trigger_random_event(context: Optional[GameContext] = None, current_week: Op
             }
             start_msg = tracker.check_triggers(player_snapshot, stats)
             if start_msg:
-                print(f"{Colour.CYAN}[Story]{Colour.RESET} {start_msg}")
+                _log(requests, start_msg, level="story", io=io)
             beats = tracker.advance_arcs(player_snapshot)
             for _, beat in beats.items():
-                print(f"{Colour.CYAN}[Story]{Colour.RESET} {beat}")
+                _log(requests, beat, level="story", io=io)
             context.set_temp_effect("story_arc_last_week", current_week)
 
     session = context.session
 
     player = session.get(Player, context.player_id)
     school = session.get(School, player.school_id) if player else None
-    
-    if not player or not school:
-        return
 
-    # Pick Random Event
+    if not player or not school:
+        return None
+
     event_func = random.choice(EVENT_POOL)
-    
-    # Execute Logic
-    result_text = event_func(player, school, context, current_week)
-    
-    # Commit changes
+    raw_result = event_func(player, school, context, current_week, io=io)
+
     session.commit()
-    
-    # Display Result
-    if result_text and not result_text.startswith("Dialogue"):
-        print(f"\n{Colour.BOLD}>> WEEKLY HIGHLIGHT: {result_text}{Colour.RESET}")
-        time.sleep(1.5)
-    
+
+    if raw_result is None:
+        return None
+
+    if isinstance(raw_result, EventResult):
+        result = raw_result
+    else:
+        summary_text = str(raw_result)
+        result = EventResult(summary=summary_text, requests=[EventRequest("log", summary_text)])
+
+    requests.extend(result.requests)
+
     # Session lifecycle managed by caller/context
-    return result_text
+    return EventResult(summary=result.summary, requests=requests)

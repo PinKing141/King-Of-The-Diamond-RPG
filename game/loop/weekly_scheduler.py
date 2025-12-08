@@ -5,6 +5,8 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+from core.io_interface import IOInterface
+
 from database.setup_db import Player, GameState
 from debug.debug_tools import input_with_debug
 from sqlalchemy.orm import object_session
@@ -24,8 +26,9 @@ from core.constants import (
 from world.roster_manager import run_roster_logic
 # Import the bridge function from the new match engine location
 from ui.ui_display import Colour, clear_screen, render_weekly_dashboard
+from ui.console_view import ConsoleIO
 # Import the new Event Manager
-from game.story.event_manager import trigger_random_event
+from game.story.event_manager import EventResult, trigger_random_event
 from core.game_context import GameContext
 from game.personnel.relationship_manager import seed_relationships
 from game.systems.academic_system import (
@@ -397,7 +400,15 @@ def _format_action_label(action: Optional[str]) -> str:
     return action.replace('_', ' ').title()
 
 
-def _print_weekly_brief(player: Player, current_week: int, coach_order: Optional[CoachOrder] = None) -> None:
+def _print_weekly_brief(
+    player: Player,
+    current_week: int,
+    coach_order: Optional[CoachOrder] = None,
+    *,
+    io: Optional[IOInterface] = None,
+) -> None:
+    log = io.log if io else print
+    clear_fn = io.clear if io else clear_screen
     school = getattr(player, 'school', None)
     coach = getattr(school, 'coach', None) if school else None
     squad = _infer_squad_status(player)
@@ -407,26 +418,26 @@ def _print_weekly_brief(player: Player, current_week: int, coach_order: Optional
     academic_score = player.test_score if player.test_score is not None else (player.academic_skill or 0)
     target_score = required_score_for_school(school)
 
-    clear_screen()
-    print(f"{Colour.HEADER}=== WEEK {current_week}: TRAINING PREP ==={Colour.RESET}")
+    clear_fn()
+    log(f"{Colour.HEADER}=== WEEK {current_week}: TRAINING PREP ==={Colour.RESET}")
     if school:
-        print(f"School: {school.name} ({school.prefecture})")
+        log(f"School: {school.name} ({school.prefecture})")
         era_label, era_momentum = _era_profile(school)
-        print(f"Era Status: {era_label.title()} (Momentum {era_momentum:+d})")
+        log(f"Era Status: {era_label.title()} (Momentum {era_momentum:+d})")
     if coach:
-        print(f"Coach: {coach.name} | Expectations: {'First-String' if squad == SQUAD_FIRST_STRING else 'Second-String'}")
-    print(f"Player: {player.name or 'You'} | Position: {player.position} | Year {player.year}")
-    print(f"Fatigue: {fatigue}/100 | Morale: {morale}")
+        log(f"Coach: {coach.name} | Expectations: {'First-String' if squad == SQUAD_FIRST_STRING else 'Second-String'}")
+    log(f"Player: {player.name or 'You'} | Position: {player.position} | Year {player.year}")
+    log(f"Fatigue: {fatigue}/100 | Morale: {morale}")
     ability_points = getattr(player, 'ability_points', 0) or 0
-    print(f"Coach Trust Baseline: {trust} | Ability Points: {ability_points}")
-    print(f"Academic Standing: {academic_score} (Need {target_score}+ to stay eligible)")
+    log(f"Coach Trust Baseline: {trust} | Ability Points: {ability_points}")
+    log(f"Academic Standing: {academic_score} (Need {target_score}+ to stay eligible)")
     if coach_order:
         req_text = _describe_order_requirement(coach_order)
         effective_trust, effective_ability = _effective_order_rewards(coach_order, school)
-        print(
+        log(
             f"Coach's Orders: {coach_order.description}"
         )
-        print(
+        log(
             f"  Needs: {req_text} | Reward: +{effective_trust} Trust, +{effective_ability} Ability"
         )
 
@@ -470,6 +481,7 @@ def _initialize_week(
     current_week: int,
     *,
     enable_events: bool = True,
+    io: Optional[IOInterface] = None,
 ):
     player = _get_active_player(context)
     if not player:
@@ -490,13 +502,13 @@ def _initialize_week(
         session.add(player)
         session.commit()
 
-    event_text = None
+    event_result: Optional[EventResult] = None
     if enable_events:
-        event_text = trigger_random_event(context, current_week)
+        event_result = trigger_random_event(context, current_week, io=io)
 
     player = _get_active_player(context)
     coach_order = _select_coach_order(player, current_week) if player else None
-    return player, coach_order, exam_summary, event_text
+    return player, coach_order, exam_summary, event_result
 
 
 def _finalize_week_outcomes(
@@ -681,7 +693,7 @@ def generate_auto_schedule(player: Optional[Player], coach_order: Optional[Coach
 
 
 def run_week_automatic(context: GameContext, current_week: int):
-    player, coach_order, exam_summary, _ = _initialize_week(context, current_week, enable_events=False)
+    player, coach_order, exam_summary, _ = _initialize_week(context, current_week, enable_events=False, io=None)
     if not player:
         summary = WeekSummary(week_number=current_week)
         summary.flag_interrupt("Active player missing; cannot simulate week.")
@@ -699,6 +711,8 @@ def run_week_automatic(context: GameContext, current_week: int):
         return None, summary
 
     summary.add_schedule_note("Auto-schedule executed by staff.")
+    event_text = event_result.summary if event_result else None
+
     summary = _finalize_week_outcomes(
         context,
         current_week=current_week,
@@ -737,8 +751,13 @@ def render_planning_ui(
     order_progress: Optional[Dict[str, int]] = None,
     team_load_snapshot: Optional[Tuple[float, float]] = None,
     school=None,
+    *,
+    io: Optional[IOInterface] = None,
 ):
     """Draws the weekly calendar grid with action metadata + cursor focus."""
+
+    log = io.log if io else print
+    clear_fn = io.clear if io else clear_screen
 
     def _slot_token(action: Optional[str], is_cursor: bool, is_mandatory: bool) -> str:
         key = _action_meta_key(action)
@@ -752,8 +771,8 @@ def render_planning_ui(
             token = f"{Colour.BOLD}{token}{Colour.RESET}"
         return token
 
-    clear_screen()
-    print(f"{Colour.HEADER}=== WEEKLY PLANNING ==={Colour.RESET}")
+    clear_fn()
+    log(f"{Colour.HEADER}=== WEEKLY PLANNING ==={Colour.RESET}")
 
     if team_load_snapshot:
         avg_fatigue, avg_stamina = team_load_snapshot
@@ -768,18 +787,18 @@ def render_planning_ui(
         else:
             badge = f"{Colour.GREEN}[READY]{Colour.RESET}"
             status = "Team cleared for optional reps"
-        print(
+        log(
             f" Team Load {badge}  Fatigue {avg_fatigue:5.1f}% | Stamina {avg_stamina:5.1f}  — {status}"
         )
         if not rest_lock:
-            print(
+            log(
                 f"  Cushion: {max(0.0, 65.0 - avg_fatigue):4.1f} fatigue pts / {max(0.0, avg_stamina - 55.0):4.1f} stamina pts"
             )
         else:
-            print("  Coaches will cancel optional workouts until the roster recovers.")
+            log("  Coaches will cancel optional workouts until the roster recovers.")
 
     header = "      " + " ".join([f"{d[:3]:^6}" for d in DAYS_OF_WEEK])
-    print(header)
+    log(header)
 
     for s_idx, slot_name in enumerate(SLOTS):
         row_str = f"{slot_name[0].upper()} | "
@@ -788,9 +807,9 @@ def render_planning_ui(
             is_cursor = (d_idx, s_idx) == (current_day_idx, current_slot_idx)
             is_mandatory = (d_idx, s_idx) in mandatory_schedule
             row_str += _slot_token(action, is_cursor, is_mandatory) + " "
-        print(row_str)
+        log(row_str)
 
-    print("-" * 72)
+    log("-" * 72)
 
     f_col = Colour.GREEN
     if current_fatigue > 50:
@@ -798,14 +817,14 @@ def render_planning_ui(
     if current_fatigue > 90:
         f_col = Colour.RED
 
-    print(f"Projected Fatigue: {f_col}{current_fatigue}/100{Colour.RESET}")
+    log(f"Projected Fatigue: {f_col}{current_fatigue}/100{Colour.RESET}")
     if current_fatigue > 100:
-        print(f"{Colour.FAIL}!!! DANGER: INJURY RISK EXTREME !!!{Colour.RESET}")
+        log(f"{Colour.FAIL}!!! DANGER: INJURY RISK EXTREME !!!{Colour.RESET}", level="error")
     elif current_fatigue > 85:
-        print(f"{Colour.WARNING}Warning: High injury risk.{Colour.RESET}")
+        log(f"{Colour.WARNING}Warning: High injury risk.{Colour.RESET}", level="warning")
 
     focus_label = "Review" if current_day_idx >= 7 else f"{DAYS_OF_WEEK[current_day_idx]} {SLOTS[current_slot_idx]}"
-    print(f"Planning Focus: {Colour.BOLD}{focus_label}{Colour.RESET}")
+    log(f"Planning Focus: {Colour.BOLD}{focus_label}{Colour.RESET}")
 
     if current_day_idx < 7:
         planned_action = schedule_state[current_day_idx][current_slot_idx]
@@ -814,18 +833,18 @@ def render_planning_ui(
         if focus_action:
             meta = ACTION_METADATA.get(_action_meta_key(focus_action), ACTION_METADATA_DEFAULT)
             desc = meta.get("desc") or "No description"
-            print(f"Selected Slot Effect: {Colour.BOLD}{desc}{Colour.RESET}")
+            log(f"Selected Slot Effect: {Colour.BOLD}{desc}{Colour.RESET}")
             if fallback_action and planned_action != fallback_action:
-                print(
+                log(
                     f"{Colour.WARNING}Coach expects {fallback_action.replace('_', ' ').title()} here.{Colour.RESET}"
                 )
     if coach_order:
         req_text = _describe_order_requirement(coach_order)
-        print(
+        log(
             f"Coach's Orders: {Colour.BOLD}{coach_order.description}{Colour.RESET} ({req_text})"
         )
         effective_trust, effective_ability = _effective_order_rewards(coach_order, school)
-        print(
+        log(
             f" Reward: +{effective_trust} Trust / +{effective_ability} Ability Points"
         )
         if order_progress:
@@ -834,21 +853,24 @@ def render_planning_ui(
             remaining = order_progress.get("remaining", max(0, target - progress))
             status_colour = Colour.GREEN if progress >= target and target else Colour.CYAN
             status_label = "Completed" if progress >= target and target else f"{remaining} to go"
-            print(
+            log(
                 f" Progress: {status_colour}{progress}/{target}{Colour.RESET} ({status_label})"
             )
 
-def get_slot_choice(current_action: Optional[str], *, context=None, session=None, state=None) -> Optional[str]:
+def get_slot_choice(current_action: Optional[str], *, context=None, session=None, state=None, io: Optional[IOInterface] = None) -> Optional[str]:
     """Prompts the user for an action selection, defaulting to the current value."""
-    print("\nSelect Action (Enter = keep current plan):")
-    if current_action:
-        print(f" Current: {current_action.replace('_', ' ').title()}")
-    print(f" 1. {Colour.CYAN}TRAIN{Colour.RESET} (Drills)")
-    print(f" 2. {Colour.GREEN}REST{Colour.RESET}  (Recover)")
-    print(f" 3. {Colour.BLUE}LIFE{Colour.RESET}  (Study/Social)")
-    print(" 0. BACK | X. EXIT PLANNING")
+    log = io.log if io else print
+    prompt_fn = io.prompt if io else (lambda msg, **kwargs: input_with_debug(msg, context=context, session=session, state=state))
 
-    choice_raw = input_with_debug(">> ", context=context, session=session, state=state)
+    log("\nSelect Action (Enter = keep current plan):")
+    if current_action:
+        log(f" Current: {current_action.replace('_', ' ').title()}")
+    log(f" 1. {Colour.CYAN}TRAIN{Colour.RESET} (Drills)")
+    log(f" 2. {Colour.GREEN}REST{Colour.RESET}  (Recover)")
+    log(f" 3. {Colour.BLUE}LIFE{Colour.RESET}  (Study/Social)")
+    log(" 0. BACK | X. EXIT PLANNING")
+
+    choice_raw = prompt_fn(">> ")
     if choice_raw is None:
         return None
     choice = choice_raw.strip().lower()
@@ -859,8 +881,8 @@ def get_slot_choice(current_action: Optional[str], *, context=None, session=None
         return "EXIT"
 
     if choice == '1':
-        print("   [P]ower  [S]peed  [St]amina  [C]ontrol  [Co]ntact  [Bu]llpen  [B]ack")
-        sub = input("   Drill: ").lower().strip()
+        log("   [P]ower  [S]peed  [St]amina  [C]ontrol  [Co]ntact  [Bu]llpen  [B]ack")
+        sub = prompt_fn("   Drill: ").lower().strip()
         mapping = {
             'p': 'train_power',
             's': 'train_speed',
@@ -875,8 +897,8 @@ def get_slot_choice(current_action: Optional[str], *, context=None, session=None
         return 'rest'
 
     if choice == '3':
-        print("   [S]tudy  [F]riends  [M]ind  [B]ack")
-        sub = input("   Activity: ").lower().strip()
+        log("   [S]tudy  [F]riends  [M]ind  [B]ack")
+        sub = prompt_fn("   Activity: ").lower().strip()
         mapping = {'s': 'study', 'f': 'social', 'm': 'mind'}
         return mapping.get(sub)
 
@@ -893,8 +915,13 @@ def plan_week_ui(
     context: Optional[GameContext] = None,
     session=None,
     state=None,
+    io: Optional[IOInterface] = None,
 ):
     """Interactive weekly planner that accounts for squad status + trust."""
+
+    log = io.log if io else print
+    prompt_fn = io.prompt if io else input
+    wait_fn = io.wait if io else time.sleep
 
     start_fatigue = start_fatigue or 0
     mandatory_schedule = build_mandatory_schedule(player)
@@ -923,19 +950,20 @@ def plan_week_ui(
             progress_snapshot,
             team_snapshot,
             getattr(player, 'school', None),
+            io=io,
         )
 
         mandatory_action = mandatory_schedule.get((day_idx, slot_idx))
         current_action = schedule_grid[day_idx][slot_idx]
-        action = get_slot_choice(current_action, context=context, session=session, state=state)
+        action = get_slot_choice(current_action, context=context, session=session, state=state, io=io)
 
         if action == 'EXIT':
             return None, None
 
         if action == 'BACK':
             if not history:
-                print("Cannot go back further.")
-                time.sleep(1)
+                log("Cannot go back further.", level="warning")
+                wait_fn(1)
                 continue
             day_idx, slot_idx, saved_grid, current_fatigue, skipped_mandatory = history.pop()
             schedule_grid = [row[:] for row in saved_grid]
@@ -946,16 +974,16 @@ def plan_week_ui(
 
         # Coach controls B-team scrimmages; players cannot replace them.
         if mandatory_action == 'b_team_match' and action != mandatory_action:
-            print(f"\n{Colour.WARNING}Coach assigned a B-Team scrimmage. You can't change this slot.{Colour.RESET}")
-            time.sleep(1)
+            log(f"\n{Colour.WARNING}Coach assigned a B-Team scrimmage. You can't change this slot.{Colour.RESET}", level="warning")
+            wait_fn(1)
             continue
 
         if mandatory_action and action != mandatory_action:
-            print(f"\n{Colour.FAIL}WARNING: Coach Kataoka is watching.{Colour.RESET}")
-            print(
+            log(f"\n{Colour.FAIL}WARNING: Coach Kataoka is watching.{Colour.RESET}", level="warning")
+            log(
                 f"Skipping {mandatory_action.replace('_', ' ').title()} will significantly lower Coach Trust."
             )
-            confirm = input("Are you sure you want to skip? (y/n): ").strip().lower()
+            confirm = prompt_fn("Are you sure you want to skip? (y/n): ").strip().lower()
             if confirm != 'y':
                 continue
             skipped_mandatory.append(
@@ -970,8 +998,8 @@ def plan_week_ui(
         cost = get_action_cost(action)
         new_fatigue = max(0, current_fatigue + cost)
         if new_fatigue > 90:
-            print(f"{Colour.FAIL}WARNING: Fatigue will reach {new_fatigue}. High injury risk!{Colour.RESET}")
-            confirm = input("Confirm? (y/n): ").strip().lower()
+            log(f"{Colour.FAIL}WARNING: Fatigue will reach {new_fatigue}. High injury risk!{Colour.RESET}", level="warning")
+            confirm = prompt_fn("Confirm? (y/n): ").strip().lower()
             if confirm != 'y':
                 continue
 
@@ -996,13 +1024,16 @@ def plan_week_ui(
         final_progress,
         team_snapshot,
         getattr(player, 'school', None),
+        io=io,
     )
-    confirm_exec_raw = input_with_debug(
+    confirm_exec_raw = (io.prompt(
+        f"\n{Colour.GREEN}Schedule Complete.{Colour.RESET} Press Enter to execute or [B] to discard and return: "
+    ) if io else input_with_debug(
         f"\n{Colour.GREEN}Schedule Complete.{Colour.RESET} Press Enter to execute or [B] to discard and return: ",
         context=context,
         session=session,
         state=state,
-    )
+    ))
     if confirm_exec_raw is None:
         return None, None
     confirm_exec = confirm_exec_raw.strip().lower()
@@ -1024,35 +1055,41 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
 
     Returns True when the week was executed, False if the user backed out.
     """
-    player, coach_order, exam_summary, event_text = _initialize_week(context, current_week)
+    io = ConsoleIO() if 'ConsoleIO' in globals() else None
+    log = io.log if io else print
+    prompt = io.prompt if io else input
+    wait = io.wait if io else time.sleep
+    player, coach_order, exam_summary, event_result = _initialize_week(context, current_week, io=io)
     if not player:
-        print("No active player is set. Load a save before planning the week.")
+        log("No active player is set. Load a save before planning the week.", level="error")
         return
-    _print_weekly_brief(player, current_week, coach_order)
+    _print_weekly_brief(player, current_week, coach_order, io=io)
 
     if exam_summary:
         letter = score_to_letter_grade(int(exam_summary['score'])) if exam_summary.get('score') is not None else exam_summary.get('grade')
-        print(
-            f"\n{Colour.CYAN}Exam: {exam_summary['exam_name']} -> {exam_summary['score']} ({letter}){Colour.RESET}"
+        log(
+            f"\n{Colour.CYAN}Exam: {exam_summary['exam_name']} -> {exam_summary['score']} ({letter}){Colour.RESET}",
+            level="info",
         )
-        print(f" {exam_summary['comment']}")
+        log(f" {exam_summary['comment']}")
 
-    if event_text:
-        print(f"\n{Colour.BOLD}Weekly Highlight:{Colour.RESET} {event_text}")
+    if event_result and event_result.summary:
+        log(f"\n{Colour.BOLD}Weekly Highlight:{Colour.RESET} {event_result.summary}")
 
     if not is_academically_eligible(player, player.school):
         needed = required_score_for_school(player.school)
-        print(
-            f"\n{Colour.WARNING}Academic Warning:{Colour.RESET} Coach expects at least {needed} to keep you eligible."
+        log(
+            f"\n{Colour.WARNING}Academic Warning:{Colour.RESET} Coach expects at least {needed} to keep you eligible.",
+            level="warning",
         )
     while True:
-        nav = input("\n[Enter] Planning | [L] Pitch Lab | [Q] Quit: ").strip().lower()
+        nav = prompt("\n[Enter] Planning | [L] Pitch Lab | [Q] Quit: ").strip().lower()
         if nav in {"", "enter"}:
             break
         if nav == "q":
             return False
         if nav == "l":
-            open_pitch_lab(context.session, player)
+            open_pitch_lab(context.session, player, io=io)
         else:
             continue
 
@@ -1064,16 +1101,17 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
         context=context,
         session=context.session if context else None,
         state=state,
+        io=io,
     )
     if schedule_grid is None:
-        print(f"{Colour.WARNING}Planning cancelled. Returning to Week Prep...{Colour.RESET}")
-        time.sleep(1)
+        log(f"{Colour.WARNING}Planning cancelled. Returning to Week Prep...{Colour.RESET}", level="warning")
+        wait(1)
         return False
 
     try:
         execution, summary = execute_schedule_silent(context, schedule_grid, current_week)
     except ValueError as err:
-        print(f"Execution aborted: {err}")
+        log(f"Execution aborted: {err}", level="error")
         return False
 
     summary.add_schedule_note("Player-planned week.")
@@ -1089,5 +1127,5 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
     )
 
     render_weekly_dashboard(summary)
-    input()
+    prompt("Press Enter to continue...")
     return True

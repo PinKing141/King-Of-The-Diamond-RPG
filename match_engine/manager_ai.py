@@ -6,6 +6,17 @@ from sqlalchemy.orm import Session
 from database.setup_db import Player
 from .commentary import commentary_enabled
 from .fatigue_injury import check_pitcher_injury_risk
+from core.io_interface import IOInterface
+
+
+def _log(message: str, *, io: Optional[IOInterface] = None) -> None:
+    """Emit manager commentary through IO or print when commentary is enabled."""
+    if not commentary_enabled():
+        return
+    if io:
+        io.log(message)
+    else:
+        print(message)
 
 
 def _player_has_milestone(state, player_id, milestone_key: str) -> bool:
@@ -79,7 +90,7 @@ def _score_margin(state, team_side):
     return diff if team_side == 'Home' else -diff
 
 
-def _maybe_script_shutdown_specialist(state, team_side, team, current_pitcher):
+def _maybe_script_shutdown_specialist(state, team_side, team, current_pitcher, *, io: Optional[IOInterface] = None):
     inning = getattr(state, 'inning', 1)
     if inning < 7 or state.outs != 0:
         return False
@@ -91,34 +102,31 @@ def _maybe_script_shutdown_specialist(state, team_side, team, current_pitcher):
     specialist = _pop_shutdown_specialist(state, team.id)
     if not specialist:
         return False
-    perform_pitching_change(state, team_side, specialist, reason="shutdown-script")
-    if commentary_enabled():
-        name = getattr(specialist, 'last_name', getattr(specialist, 'name', 'Pitcher'))
-        print(f"   🧊 Shutdown Specialist enters to protect the lead ({name}).")
+    perform_pitching_change(state, team_side, specialist, reason="shutdown-script", io=io)
+    name = getattr(specialist, 'last_name', getattr(specialist, 'name', 'Pitcher'))
+    _log(f"   🧊 Shutdown Specialist enters to protect the lead ({name}).", io=io)
     return True
 
 
-def manage_team_between_innings(state, team_side):
+def manage_team_between_innings(state, team_side, *, io: Optional[IOInterface] = None):
     """Checks if the manager should change pitchers between innings."""
     team = state.home_team if team_side == 'Home' else state.away_team
     pitcher = state.home_pitcher if team_side == 'Home' else state.away_pitcher
     if not pitcher:
         return
 
-    if _maybe_script_shutdown_specialist(state, team_side, team, pitcher):
+    if _maybe_script_shutdown_specialist(state, team_side, team, pitcher, io=io):
         return
 
     p_count = state.pitch_counts.get(pitcher.id, 0)
     is_injured, severity = check_pitcher_injury_risk(pitcher, state, state.db_session)
     if is_injured:
-        if commentary_enabled():
-            print(f"   🚑 MANAGER ALERT: {pitcher.last_name} is injured ({severity}) and must be pulled.")
+        _log(f"   🚑 MANAGER ALERT: {pitcher.last_name} is injured ({severity}) and must be pulled.", io=io)
         new_pitcher = find_relief_pitcher(state, team.id, pitcher.id)
         if new_pitcher:
-            perform_pitching_change(state, team_side, new_pitcher, reason="injury")
+            perform_pitching_change(state, team_side, new_pitcher, reason="injury", io=io)
         else:
-            if commentary_enabled():
-                print(f"   ⚠️ No relief pitchers available! {pitcher.last_name} must soldier on.")
+            _log(f"   ⚠️ No relief pitchers available! {pitcher.last_name} must soldier on.", io=io)
         return
 
     stamina = getattr(pitcher, 'stamina', 50)
@@ -126,23 +134,20 @@ def manage_team_between_innings(state, team_side):
     mod_types = _team_mod_types(state, team.id)
     if 'small_ball' in mod_types:
         limit -= 10
-        if commentary_enabled():
-            print("   📋 Coach directive: Quick hook for pitchers (Small Ball focus).")
+        _log("   📋 Coach directive: Quick hook for pitchers (Small Ball focus).", io=io)
     if 'power_focus' in mod_types:
         limit += 10
-        if commentary_enabled():
-            print("   🔥 Coach directive: Let pitchers battle longer (Swing Free).")
+        _log("   🔥 Coach directive: Let pitchers battle longer (Swing Free).", io=io)
     if _player_has_milestone(state, getattr(pitcher, 'id', None), "shutdown_specialist"):
         limit += 12
     elif _player_has_milestone(state, getattr(pitcher, 'id', None), "ironman_workhorse"):
         limit += 8
 
     if p_count > limit:
-        if commentary_enabled():
-            print(f"   👀 MANAGER: {pitcher.last_name} looks tired (Count: {p_count}). Warming up bullpen...")
+        _log(f"   👀 MANAGER: {pitcher.last_name} looks tired (Count: {p_count}). Warming up bullpen...", io=io)
         new_pitcher = find_relief_pitcher(state, team.id, pitcher.id)
         if new_pitcher:
-            perform_pitching_change(state, team_side, new_pitcher, reason="fatigue")
+            perform_pitching_change(state, team_side, new_pitcher, reason="fatigue", io=io)
 
 
 def _register_pitcher_usage(state, team_side, new_pitcher, old_pitcher):
@@ -163,18 +168,22 @@ def _register_pitcher_usage(state, team_side, new_pitcher, old_pitcher):
     })
 
 
-def perform_pitching_change(state, team_side, new_pitcher, reason="strategy"):
+def perform_pitching_change(state, team_side, new_pitcher, reason="strategy", *, io: Optional[IOInterface] = None):
     old_pitcher = state.home_pitcher if team_side == 'Home' else state.away_pitcher
     if old_pitcher and getattr(old_pitcher, 'id', None) == getattr(new_pitcher, 'id', None):
         return
     state.last_change_reason = reason
     if team_side == 'Home':
-        if commentary_enabled():
-            print(f"   🔄 PITCHING CHANGE (Home): {getattr(old_pitcher, 'last_name', '??')} -> {new_pitcher.last_name}")
+        _log(
+            f"   🔄 PITCHING CHANGE (Home): {getattr(old_pitcher, 'last_name', '??')} -> {new_pitcher.last_name}",
+            io=io,
+        )
         state.home_pitcher = new_pitcher
     else:
-        if commentary_enabled():
-            print(f"   🔄 PITCHING CHANGE (Away): {getattr(old_pitcher, 'last_name', '??')} -> {new_pitcher.last_name}")
+        _log(
+            f"   🔄 PITCHING CHANGE (Away): {getattr(old_pitcher, 'last_name', '??')} -> {new_pitcher.last_name}",
+            io=io,
+        )
         state.away_pitcher = new_pitcher
     state.pitch_counts.setdefault(getattr(new_pitcher, 'id', None), 0)
     _register_pitcher_usage(state, team_side, new_pitcher, old_pitcher)

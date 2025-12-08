@@ -2,8 +2,9 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+from core.io_interface import IOInterface
 from ui.ui_display import Colour, clear_screen
 from game.personnel.archetypes import archetype_persona_blurb
 
@@ -161,7 +162,17 @@ def _coach_tone_lines(coach) -> List[str]:
         tone.append("Even under pressure his tone stays even, inviting honest answers.")
     return tone
 
-def run_dialogue_event(event_id, player, school):
+def _log(message: str, *, io: Optional[IOInterface] = None, level: str = "info") -> None:
+    if io:
+        io.log(message, level=level)
+    else:
+        if level == "warning":
+            print(f"{message}")
+        else:
+            print(message)
+
+
+def run_dialogue_event(event_id, player, school, *, io: Optional[IOInterface] = None):
     """
     Runs a dialogue interaction in the console.
     Returns a summary string of the outcome.
@@ -172,13 +183,20 @@ def run_dialogue_event(event_id, player, school):
     data = DIALOGUE_DB[event_id]
     
     # 1. Display Interface (Godot would render a textbox here)
-    clear_screen()
+    if io:
+        io.clear()
+    else:
+        clear_screen()
     speaker_label = data['speaker']
     coach = getattr(school, 'coach', None)
     if data['speaker'].lower() == 'coach' and coach:
         speaker_label = getattr(coach, 'name', data['speaker'])
 
-    print(f"\n{Colour.CYAN}--- CONVERSATION: {speaker_label} ---{Colour.RESET}")
+    header = f"--- CONVERSATION: {speaker_label} ---"
+    if io and getattr(io, "log", None):
+        io.log(header, level="story")
+    else:
+        print(f"\n{Colour.CYAN}{header}{Colour.RESET}")
 
     coach = getattr(school, 'coach', None)
     persona_text = None
@@ -192,31 +210,35 @@ def run_dialogue_event(event_id, player, school):
         variant = _persona_text_variant(coach)
         if variant:
             active_text = f"{active_text} {variant}"
-    print(f"\n\"{active_text}\"\n")
+    _log(f"\n\"{active_text}\"\n", io=io, level="story")
 
     persona_line = archetype_persona_blurb(player)
     if persona_line:
-        print(f"{Colour.MAGENTA}{persona_line}{Colour.RESET}")
+        _log(persona_line, io=io, level="story")
 
     if data['speaker'].lower() == 'coach' and coach:
         for line in _coach_tone_lines(coach):
-            print(f"{Colour.YELLOW}{line}{Colour.RESET}")
+            _log(line, io=io, level="story")
         for line in _persona_flavor_lines(coach):
-            print(f"{Colour.YELLOW}{line}{Colour.RESET}")
+            _log(line, io=io, level="story")
     
     # 2. Display Options
     for i, opt in enumerate(data['options']):
-        print(f" {i+1}. {opt['text']}")
+        _log(f" {i+1}. {opt['text']}", io=io)
         
     # 3. Get Input
     while True:
         try:
-            choice = int(input("\nSelect: ")) - 1
+            if io:
+                raw = io.prompt("\nSelect: ", options=[str(i + 1) for i in range(len(data['options']))])
+            else:
+                raw = input("\nSelect: ")
+            choice = int(raw) - 1
             if 0 <= choice < len(data['options']):
                 break
         except ValueError:
             pass
-        print("Invalid choice.")
+        _log("Invalid choice.", io=io, level="warning")
         
     selected_opt = data['options'][choice]
     
@@ -239,10 +261,13 @@ def run_dialogue_event(event_id, player, school):
             effects_summary.append(f"Teammate Bond {sign}{val}")
 
     # 5. Show Response
-    print(f"\n{data['speaker']}: \"{selected_opt['response']}\"")
-    print(f"{Colour.YELLOW}Result: {', '.join(effects_summary)}{Colour.RESET}")
-    
-    input("[Press Enter]")
+    _log(f"\n{data['speaker']}: \"{selected_opt['response']}\"", io=io, level="story")
+    _log(f"Result: {', '.join(effects_summary)}", io=io, level="info")
+
+    if io:
+        io.prompt("[Press Enter]")
+    else:
+        input("[Press Enter]")
     return f"Dialogue Complete: {data['speaker']}"
 
 # --- API FOR GODOT (Future Proofing) ---

@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Dict, Optional, Tuple
 
 from database.setup_db import PitchRepertoire
+from core.io_interface import IOInterface
 from ui.ui_core import BAR_WIDTH as UI_BAR_WIDTH, colored_bar as ui_colored_bar, simple_bar as ui_simple_bar
 
 # XP required to reach each level (levels now start at 0 for unlearned pitches).
@@ -36,6 +37,22 @@ def mastery_progress(xp: int) -> Tuple[int, Optional[int]]:
     level = mastery_level_for_xp(xp)
     next_threshold = MASTERY_THRESHOLDS[level] if level < len(MASTERY_THRESHOLDS) else None
     return level, next_threshold
+
+
+def _log(message: str, *, io: Optional[IOInterface] = None, level: str = "info") -> None:
+    if io:
+        io.log(message, level=level)
+    else:
+        print(message)
+
+
+def _prompt(prompt: str, *, io: Optional[IOInterface] = None, options: Optional[list[str]] = None) -> str:
+    if io:
+        return io.prompt(prompt, options=options)
+    while True:
+        response = input(prompt)
+        if options is None or response in options:
+            return response
 
 
 # --- Phase 2 helpers: in-game accrual ---
@@ -253,9 +270,9 @@ def _level_window(level: int) -> Tuple[int, Optional[int]]:
     return prev, nxt
 
 
-def open_pitch_lab(session, player) -> None:
+def open_pitch_lab(session, player, *, io: Optional[IOInterface] = None) -> None:
     if session is None or player is None:
-        print("No player loaded.")
+        _log("No player loaded.", io=io)
         return
     try:
         session.refresh(player)
@@ -263,12 +280,12 @@ def open_pitch_lab(session, player) -> None:
         pass
     repertoire = session.query(PitchRepertoire).filter_by(player_id=player.id).all()
     if not repertoire:
-        print("No recorded pitches yet.")
-        input("Press Enter to exit.")
+        _log("No recorded pitches yet.", io=io)
+        _prompt("Press Enter to exit.", io=io)
         return
     while True:
-        print("\n=== Pitch Lab ===")
-        print(f"Ability Points: {getattr(player, 'ability_points', 0) or 0}")
+        _log("\n=== Pitch Lab ===", io=io)
+        _log(f"Ability Points: {getattr(player, 'ability_points', 0) or 0}", io=io)
         for idx, pitch in enumerate(repertoire, start=1):
             xp = int(getattr(pitch, "mastery_xp", 0) or 0)
             level = mastery_level_for_xp(xp)
@@ -284,28 +301,28 @@ def open_pitch_lab(session, player) -> None:
             label = f"{idx}. {pitch.pitch_name} Lv{level} {bar} {progress_txt}"
             if sig:
                 label += f" | Sig: {sig}{' (Unlocked)' if unlocked else ' (Ready)' if ready else ''}"
-            print(label)
-        print("[U] Unlock first ready signature (1 AP)  |  [Q] Back")
-        choice = input("> ").strip().lower()
+            _log(label, io=io)
+        _log("[U] Unlock first ready signature (1 AP)  |  [Q] Back", io=io)
+        choice = _prompt("> ", io=io).strip().lower()
         if choice == "q":
             break
         if choice == "u":
             ready_pitch = next((p for p in repertoire if getattr(p, "signature_ready", False) and not getattr(p, "signature_unlocked", False)), None)
             if not ready_pitch:
-                print("No signature-ready pitches.")
+                _log("No signature-ready pitches.", io=io)
                 continue
             if (player.ability_points or 0) <= 0:
-                print("Need 1 Ability Point to unlock.")
+                _log("Need 1 Ability Point to unlock.", io=io)
                 continue
             if mastery_level_for_xp(getattr(ready_pitch, "mastery_xp", 0)) < 1:
-                print("Need at least Lv1 mastery before spending Ability Points here.")
+                _log("Need at least Lv1 mastery before spending Ability Points here.", io=io)
                 continue
             player.ability_points -= 1
             ready_pitch.signature_unlocked = True
             session.add(player)
             session.add(ready_pitch)
             session.commit()
-            print(f"Unlocked {ready_pitch.pitch_name} signature: {ready_pitch.signature_tag}.")
+            _log(f"Unlocked {ready_pitch.pitch_name} signature: {ready_pitch.signature_tag}.", io=io)
             continue
         try:
             idx = int(choice)
@@ -322,12 +339,13 @@ def open_pitch_lab(session, player) -> None:
         bar_value = progress if span is not None else UI_BAR_WIDTH
         bar = ui_simple_bar(min(bar_value, span or UI_BAR_WIDTH), max_value=span or UI_BAR_WIDTH, width=UI_BAR_WIDTH)
         progress_txt = "Mastered" if nxt is None else f"Progress: {progress}/{span}"
-        print(
+        _log(
             f"{pitch.pitch_name}: XP {xp} | Lv {level}\n"
             f"{progress_txt} {bar}\n"
-            f"Signature: {getattr(pitch, 'signature_tag', 'None')} ({'Unlocked' if getattr(pitch, 'signature_unlocked', False) else 'Locked'})"
+            f"Signature: {getattr(pitch, 'signature_tag', 'None')} ({'Unlocked' if getattr(pitch, 'signature_unlocked', False) else 'Locked'})",
+            io=io,
         )
-        input("Press Enter...")
+        _prompt("Press Enter...", io=io)
 
 
 def summarize_mastery_report(state) -> Optional[str]:

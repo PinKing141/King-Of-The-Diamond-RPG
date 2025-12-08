@@ -1,4 +1,4 @@
 # player_roles/__init__.py
-from .pitcher_controls import player_pitch_turn
+from .pitcher_controls import player_pitch_turn, prompt_runner_threat_controls
 from .batter_controls import player_bat_turn
-from .fielder_controls import prompt_defensive_shift
+from .fielder_controls import prompt_defensive_shift, prompt_hero_dive

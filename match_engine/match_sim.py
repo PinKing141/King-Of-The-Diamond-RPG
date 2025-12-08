@@ -229,7 +229,7 @@ class MatchSimulation:
 
         # Human-controlled batter gets human input strategy if available
         if matchup.is_human:
-            return HumanBatterInput()
+            return HumanBatterInput(io=getattr(self.state, "io", None))
 
         # CPU fallback
         return CpuBatterInput()

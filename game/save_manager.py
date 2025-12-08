@@ -15,6 +15,7 @@ from database.setup_db import (
     GameState,
 )
 from core.exceptions import SaveCorruptError, SaveError, SaveNotFoundError
+from core.io_interface import IOInterface
 
 
 def _backup_database(source_path, target_path):
@@ -265,14 +266,19 @@ def delete_autosave():
 
     return deleted
 
-def show_save_menu(mode="SAVE"):
+def show_save_menu(mode="SAVE", *, io: Optional[IOInterface] = None):
     """
     Interactive menu for Saving/Loading.
     mode: "SAVE" or "LOAD"
     """
+    log = io.log if io else print
+    prompt_fn = io.prompt if io else input
+    clear_fn = io.clear if io else clear_screen
+    wait_fn = io.wait if io else (lambda s: __import__("time").sleep(s))
+
     while True:
-        clear_screen()
-        print(f"{Colour.HEADER}=== {mode} GAME ==={Colour.RESET}")
+        clear_fn()
+        log(f"{Colour.HEADER}=== {mode} GAME ==={Colour.RESET}")
         
         slots = get_save_slots()
         existing_slots = {s['slot']: s for s in slots}
@@ -281,60 +287,61 @@ def show_save_menu(mode="SAVE"):
         for i in range(1, 6):
             if i in existing_slots:
                 info = existing_slots[i]
-                print(f" {i}. Slot {i}  [{info['date']}]")
+                log(f" {i}. Slot {i}  [{info['date']}]")
                 preview = info.get("preview") or _format_slot_preview(info.get("metadata"))
                 if preview:
-                    print(f"    {preview}")
+                    log(f"    {preview}")
             else:
-                print(f" {i}. Slot {i}  [Empty]")
+                log(f" {i}. Slot {i}  [Empty]")
                 
-        print(" 0. Back")
-        print(" 9. Clear Autosave")
+        log(" 0. Back")
+        log(" 9. Clear Autosave")
         
-        choice = input("\nSelect Slot: ")
-        if choice == '0': return False
+        choice = prompt_fn("\nSelect Slot: ")
+        if choice == '0':
+            return False
 
         if choice == '9':
             if delete_autosave():
-                print(f"{Colour.GREEN}Autosave cleared.{Colour.RESET}")
+                log(f"{Colour.GREEN}Autosave cleared.{Colour.RESET}")
             else:
-                print("No autosave found.")
-            import time; time.sleep(1)
+                log("No autosave found.")
+            wait_fn(1)
             continue
         
         try:
             slot = int(choice)
             if 1 <= slot <= 5:
                 if mode == "SAVE":
-                    confirm = input(f"Overwrite Slot {slot}? (y/n): ") if slot in existing_slots else 'y'
+                    confirm = prompt_fn(f"Overwrite Slot {slot}? (y/n): ") if slot in existing_slots else 'y'
                     if confirm.lower() == 'y':
                         try:
                             success, msg = save_game(slot)
-                            print(f"{Colour.GREEN}{msg}{Colour.RESET}")
+                            log(f"{Colour.GREEN}{msg}{Colour.RESET}")
                         except SaveError as exc:
-                            print(f"{Colour.FAIL}Save Failed: {exc}{Colour.RESET}")
-                        import time; time.sleep(1)
+                            log(f"{Colour.FAIL}Save Failed: {exc}{Colour.RESET}", level="error")
+                        wait_fn(1)
                         return True
                 
                 elif mode == "LOAD":
                     if slot not in existing_slots:
-                        print("Slot is empty.")
-                        import time; time.sleep(1)
+                        log("Slot is empty.")
+                        wait_fn(1)
                     else:
-                        confirm = input(f"Load Slot {slot}? Unsaved progress will be lost. (y/n): ")
+                        confirm = prompt_fn(f"Load Slot {slot}? Unsaved progress will be lost. (y/n): ")
                         if confirm.lower() == 'y':
                             try:
                                 success, msg = load_game(slot)
-                                print(f"{Colour.GREEN}{msg}{Colour.RESET}")
+                                log(f"{Colour.GREEN}{msg}{Colour.RESET}")
                             except SaveCorruptError as exc:
-                                print(f"{Colour.FAIL}CORRUPT SAVE: {exc}{Colour.RESET}")
+                                log(f"{Colour.FAIL}CORRUPT SAVE: {exc}{Colour.RESET}", level="error")
                             except SaveNotFoundError as exc:
-                                print(f"{Colour.WARNING}{exc}{Colour.RESET}")
+                                log(f"{Colour.WARNING}{exc}{Colour.RESET}", level="warning")
                             except SaveError as exc:
-                                print(f"{Colour.FAIL}Load Error: {exc}{Colour.RESET}")
-                            import time; time.sleep(1)
+                                log(f"{Colour.FAIL}Load Error: {exc}{Colour.RESET}", level="error")
+                            wait_fn(1)
                             return True
             else:
-                print("Invalid slot.")
+                log("Invalid slot.", level="warning")
         except ValueError:
             pass

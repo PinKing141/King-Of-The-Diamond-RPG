@@ -3,6 +3,8 @@ from __future__ import annotations
 import random
 from typing import Dict, List, Optional, Tuple
 
+from core.io_interface import IOInterface
+
 DEFAULT_STYLE = "ARCHITECT"
 
 # Map school philosophies to captain speech styles
@@ -474,6 +476,7 @@ def run_team_huddle(
     identity_title: Optional[str] = None,
     team_nickname: Optional[str] = None,
     region_title: Optional[str] = None,
+    io: Optional[IOInterface] = None,
 ) -> Tuple[List[str], Dict[str, int]]:
     """Generate and optionally print a captain's pre-game huddle.
 
@@ -504,11 +507,19 @@ def run_team_huddle(
         lines = _build_lines(style, captain_name, school_name)
 
     if echo:
-        print("=== CAPTAIN HUDDLE ===")
-        for line in lines:
-            print(f" {line}")
-            if pause:
-                input("  (press Enter)")
+        target_io = io
+        if target_io:
+            target_io.log("=== CAPTAIN HUDDLE ===", level="story")
+            for line in lines:
+                target_io.log(line, level="story")
+                if pause:
+                    target_io.prompt("  (press Enter)")
+        else:
+            print("=== CAPTAIN HUDDLE ===")
+            for line in lines:
+                print(f" {line}")
+                if pause:
+                    input("  (press Enter)")
     return lines, buff
 
 

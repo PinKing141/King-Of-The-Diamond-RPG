@@ -1,4 +1,7 @@
 # match_engine/inning_flow.py
+from typing import Optional
+
+from core.io_interface import IOInterface
 from .batter_logic import start_at_bat
 from .commentary import commentary_enabled
 from .scoreboard import Scoreboard
@@ -7,7 +10,16 @@ def rotate_lineup(lineup):
     """Moves the first batter to the end of the list."""
     return lineup[1:] + lineup[:1]
 
-def play_inning(state, scoreboard):
+def _log(message: str, *, io: Optional[IOInterface] = None) -> None:
+    if not commentary_enabled():
+        return
+    if io:
+        io.log(message)
+    else:
+        print(message)
+
+
+def play_inning(state, scoreboard, *, io: Optional[IOInterface] = None):
     """
     Plays both Top and Bottom of an inning.
     """
@@ -18,8 +30,7 @@ def play_inning(state, scoreboard):
     state.clear_bases()
     start_runs_away = state.away_score
     
-    if commentary_enabled():
-        print(f"\n--- TOP OF INNING {state.inning} ---")
+    _log(f"\n--- TOP OF INNING {state.inning} ---", io=io)
     while state.outs < 3:
         start_at_bat(state)
         # Rotate Away Lineup
@@ -40,8 +51,7 @@ def play_inning(state, scoreboard):
     state.clear_bases()
     start_runs_home = state.home_score
     
-    if commentary_enabled():
-        print(f"\n--- BOTTOM OF INNING {state.inning} ---")
+    _log(f"\n--- BOTTOM OF INNING {state.inning} ---", io=io)
     while state.outs < 3:
         start_at_bat(state)
         # Rotate Home Lineup
@@ -49,12 +59,11 @@ def play_inning(state, scoreboard):
         
         # Walk-off check
         if state.inning >= 9 and state.home_score > state.away_score:
-            if commentary_enabled():
-                print(f"\n   >>> WALK-OFF WIN FOR {state.home_team.school_name}! <<<")
+            _log(f"\n   >>> WALK-OFF WIN FOR {state.home_team.school_name}! <<<", io=io)
             state.outs = 3 # Break loop
             break
 
     runs_scored_bot = state.home_score - start_runs_home
     scoreboard.record_inning(state.inning, runs_scored_top, runs_scored_bot)
     
-    scoreboard.print_board(state)
+    scoreboard.print_board(state, io=io)

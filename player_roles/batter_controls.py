@@ -1,4 +1,7 @@
 import sys
+from typing import Optional
+
+from core.io_interface import IOInterface
 from ui.ui_display import Colour
 from match_engine.states import EventType
 
@@ -12,26 +15,28 @@ _BATTERS_EYE_CHOICES = {
 }
 
 
-def _prompt_batters_eye() -> dict | None:
+def _prompt_batters_eye(*, io: Optional[IOInterface] = None) -> dict | None:
     """Optional pre-pitch guess that fuels the Batter's Eye mechanic."""
-    print(f"\n{Colour.GOLD}Batter's Eye — Sit on something?{Colour.RESET}")
-    print(" Enter to skip if you want to stay reactive.")
-    print(" 1. Fastball family")
-    print(" 2. Breaking ball")
-    print(" 3. Offspeed / Splitter")
-    print(" 4. Zone attack (strike)")
-    print(" 5. Waste pitch (outside zone)")
+    logger = io.log if io else print
+    prompt = io.prompt if io else input
+    logger(f"\n{Colour.GOLD}Batter's Eye — Sit on something?{Colour.RESET}")
+    logger(" Enter to skip if you want to stay reactive.")
+    logger(" 1. Fastball family")
+    logger(" 2. Breaking ball")
+    logger(" 3. Offspeed / Splitter")
+    logger(" 4. Zone attack (strike)")
+    logger(" 5. Waste pitch (outside zone)")
     while True:
-        choice = input("Sit on: ").strip().lower()
+        choice = prompt("Sit on: ").strip().lower()
         if choice in {"", "0", "skip"}:
             return None
         payload = _BATTERS_EYE_CHOICES.get(choice)
         if payload:
-            print(f" Locking in on {payload['label']}.")
+            logger(f" Locking in on {payload['label']}.")
             data = payload.copy()
             data['source'] = 'user'
             return data
-        print(" Invalid guess. Enter 1-5 or press Enter to skip.")
+        logger(" Invalid guess. Enter 1-5 or press Enter to skip.")
 
 
 def _ensure_standing_orders(state):
@@ -60,22 +65,24 @@ def _emit_setting_event(state, hero_setting: str) -> None:
     bus.publish(EventType.HERO_MODE_SETTING.value, {"hero_setting": hero_setting})
 
 
-def _standing_orders_menu(state) -> None:
+def _standing_orders_menu(state, *, io: Optional[IOInterface] = None) -> None:
     _ensure_standing_orders(state)
     orders = state.standing_orders
     hero_setting = getattr(state, "hero_setting", "key").lower()
+    logger = io.log if io else print
+    prompter = io.prompt if io else input
     while True:
-        print(f"\n{Colour.CYAN}--- Standing Orders / HERO Menu ---{Colour.RESET}")
-        print(_orders_summary(state))
-        print(" 1. Offense: Work the Count")
-        print(" 2. Offense: Swing Early / Attack")
-        print(" 3. Offense: Protect with Two Strikes")
-        print(" 4. Defense: Attack Zone")
-        print(" 5. Defense: Pitch Around / Nibble")
-        print(" 6. Defense: Nibble Edges (soft nibble)")
-        print(" 7. HERO Frequency: cycle (never / key / often)")
-        print(" Q. Close menu")
-        choice = input(" Orders cmd: ").strip().lower()
+        logger(f"\n{Colour.CYAN}--- Standing Orders / HERO Menu ---{Colour.RESET}")
+        logger(_orders_summary(state))
+        logger(" 1. Offense: Work the Count")
+        logger(" 2. Offense: Swing Early / Attack")
+        logger(" 3. Offense: Protect with Two Strikes")
+        logger(" 4. Defense: Attack Zone")
+        logger(" 5. Defense: Pitch Around / Nibble")
+        logger(" 6. Defense: Nibble Edges (soft nibble)")
+        logger(" 7. HERO Frequency: cycle (never / key / often)")
+        logger(" Q. Close menu")
+        choice = prompter(" Orders cmd: ").strip().lower()
         if choice in {"q", "", "exit"}:
             return
         if choice == "1":
@@ -98,47 +105,50 @@ def _standing_orders_menu(state) -> None:
             }.get(hero_setting, "key")
             state.hero_setting = hero_setting
             _emit_setting_event(state, hero_setting)
-            print(f" HERO frequency set to {hero_setting}.")
+            logger(f" HERO frequency set to {hero_setting}.")
         else:
-            print(" Invalid choice.")
+            logger(" Invalid choice.")
             continue
         state.standing_orders = orders
         logs = getattr(state, "logs", None)
         if isinstance(logs, list):
             logs.append(f"[Orders] Offense: {orders.get('offense')} | Defense: {orders.get('defense')} | HERO: {hero_setting}")
-        print(f" Updated: {_orders_summary(state)}")
+        logger(f" Updated: {_orders_summary(state)}")
 
-def player_bat_turn(pitcher, batter, state):
+def player_bat_turn(pitcher, batter, state, *, io: Optional[IOInterface] = None):
     """
     Handles the User Interaction for a batting turn.
     Returns: (Action String, Modifier Dictionary)
     """
-    print(f"\n{Colour.HEADER}--- BATTER INTERFACE ---{Colour.RESET}")
-    print(f"Pitcher: {pitcher.name} | Stamina: {getattr(pitcher, 'fatigue', 0)}% Tired")
-    print(f"Count: {state.balls}-{state.strikes} | Outs: {state.outs}")
-    print(f"Orders: {_orders_summary(state)}")
+    logger = io.log if io else print
+    prompter = io.prompt if io else input
+
+    logger(f"\n{Colour.HEADER}--- BATTER INTERFACE ---{Colour.RESET}")
+    logger(f"Pitcher: {pitcher.name} | Stamina: {getattr(pitcher, 'fatigue', 0)}% Tired")
+    logger(f"Count: {state.balls}-{state.strikes} | Outs: {state.outs}")
+    logger(f"Orders: {_orders_summary(state)}")
     
     # Display Options
-    print(f"{Colour.CYAN}Select Approach:{Colour.RESET}")
-    print(" 1. NORMAL SWING (Balanced)")
-    print(" 2. POWER SWING  (High Risk, High Power)")
-    print(" 3. CONTACT SWING (Bonus to hit, less Power)")
-    print(" 4. TAKE PITCH   (Do not swing)")
-    print(" 5. BUNT (Sacrifice for runner)")
-    print(" 6. SACRIFICE FLY (Aim for outfield depth)")
-    print(" 7. WAIT FOR WALK (Intentionally passive)")
-    print(" 8. Standing Orders / HERO menu")
+    logger(f"{Colour.CYAN}Select Approach:{Colour.RESET}")
+    logger(" 1. NORMAL SWING (Balanced)")
+    logger(" 2. POWER SWING  (High Risk, High Power)")
+    logger(" 3. CONTACT SWING (Bonus to hit, less Power)")
+    logger(" 4. TAKE PITCH   (Do not swing)")
+    logger(" 5. BUNT (Sacrifice for runner)")
+    logger(" 6. SACRIFICE FLY (Aim for outfield depth)")
+    logger(" 7. WAIT FOR WALK (Intentionally passive)")
+    logger(" 8. Standing Orders / HERO menu")
     
     action = "Normal"
     mods = {}
     
     valid = False
     while not valid:
-        choice = input("Command: ").strip().lower()
+        choice = prompter("Command: ").strip().lower()
         
         if choice in {'8', 'o'}:
-            _standing_orders_menu(state)
-            print(f"\n{Colour.CYAN}Back to at-bat. Current orders: {_orders_summary(state)}{Colour.RESET}")
+            _standing_orders_menu(state, io=io)
+            logger(f"\n{Colour.CYAN}Back to at-bat. Current orders: {_orders_summary(state)}{Colour.RESET}")
             continue
 
         if choice == '1':
@@ -180,9 +190,9 @@ def player_bat_turn(pitcher, batter, state):
             valid = True
             
         else:
-            print("Invalid command.")
+            logger("Invalid command.")
             
-    guess_payload = _prompt_batters_eye()
+    guess_payload = _prompt_batters_eye(io=io)
     if guess_payload:
         mods['guess_payload'] = guess_payload
     return action, mods

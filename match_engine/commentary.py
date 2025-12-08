@@ -9,6 +9,7 @@ from ui.ui_display import (
     render_clutch_banner,
     render_minigame_ui,
 )
+from core.io_interface import IOInterface
 from core.rng import get_rng
 from game.story.commentary_gen import generate_pitch_commentary
 from .states import EventType, HitType
@@ -138,8 +139,9 @@ def commentary_enabled() -> bool:
 class CommentaryListener:
     """EventBus subscriber that renders high-level match narration."""
 
-    def __init__(self, event_bus):
+    def __init__(self, event_bus, io: Optional[IOInterface] = None):
         self.bus = event_bus
+        self.io = io
         self._last_pitch: Optional[Dict[str, Any]] = None
         self._last_swing: Optional[Dict[str, Any]] = None
         self._player_names: Dict[int, str] = {}
@@ -164,6 +166,12 @@ class CommentaryListener:
         event_bus.subscribe(EventType.BASERUN_PICKOFF.value, self._on_pickoff_event)
         event_bus.subscribe(EventType.OFFENSE_CALLS_SQUEEZE.value, self._on_squeeze_call)
 
+    def _log(self, message: str, *, level: str = "info") -> None:
+        if self.io:
+            self.io.log(message, level=level)
+        else:
+            print(message)
+
     def _on_lineup_ready(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
             return
@@ -182,22 +190,22 @@ class CommentaryListener:
                 player_id = entry.get("player_id")
                 if player_id is not None:
                     self._player_names[player_id] = entry.get("name") or self._player_names.get(player_id, "Player")
-        print("\n=== LINEUP CARD ===")
+        self._log("\n=== LINEUP CARD ===")
         self._print_lineup_side(away, label="Away")
         self._print_lineup_side(home, label="Home")
-        print("Play ball! Let the duel begin.\n")
+        self._log("Play ball! Let the duel begin.\n")
 
     def _print_lineup_side(self, team: Dict[str, Any], label: str) -> None:
         name = (team.get("team_name") or label).upper()
-        print(f"{name} ({label})")
+        self._log(f"{name} ({label})")
         for entry in team.get("lineup", []):
             slot = entry.get("slot")
             player_name = entry.get("name", "Player")
             position = entry.get("position", "??")
             milestones = entry.get("milestones", [])
             tag = f" [{' / '.join(milestones)}]" if milestones else ""
-            print(f"  {slot}. {player_name} ({position}){tag}")
-        print("")
+            self._log(f"  {slot}. {player_name} ({position}){tag}")
+        self._log("")
 
     def _on_match_state_change(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -206,13 +214,13 @@ class CommentaryListener:
         if phase == "INNING_HALF":
             inning = payload.get("inning", 1)
             half = payload.get("half", "Top")
-            print(f"\n--- {half.upper()} OF INNING {inning} ---")
+            self._log(f"\n--- {half.upper()} OF INNING {inning} ---")
         elif phase == "EXTRA_INNINGS":
             inning = payload.get("inning")
             score = f"{payload.get('away_score')}-{payload.get('home_score')}"
-            print(f"   Score knotted at {score}. Heading to extra innings ({inning + 1}).")
+            self._log(f"   Score knotted at {score}. Heading to extra innings ({inning + 1}).")
         elif phase == "DRAW":
-            print("   Match declared a draw. Arms are spent, spirits remain high.")
+            self._log("   Match declared a draw. Arms are spent, spirits remain high.")
 
     def _on_game_over(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -223,14 +231,14 @@ class CommentaryListener:
         away_score = payload.get("away_score", 0)
         winner = payload.get("winner_name")
         error_summary = payload.get("error_summary") or {}
-        print("\n" + "#" * 60)
-        print(f"Final Score: {away} {away_score} - {home_score} {home}")
+        self._log("\n" + "#" * 60)
+        self._log(f"Final Score: {away} {away_score} - {home_score} {home}")
         if winner:
-            print(f"Winner: {Colour.gold}{winner}{Colour.RESET}")
+            self._log(f"Winner: {Colour.gold}{winner}{Colour.RESET}")
         else:
-            print("Result: Draw")
+            self._log("Result: Draw")
         self._print_error_summary(error_summary, home_label=home, away_label=away)
-        print("#" * 60 + "\n")
+        self._log("#" * 60 + "\n")
 
     def _player_label(self, player_id: Optional[int], default: str) -> str:
         if player_id is None:
@@ -268,7 +276,7 @@ class CommentaryListener:
         home_line = _format_error_entries(normalized.get("home"))
         if away_line == "None" and home_line == "None":
             return
-        print(f"Errors: {away_label[:3]} {away_line} | {home_label[:3]} {home_line}")
+        self._log(f"Errors: {away_label[:3]} {away_line} | {home_label[:3]} {home_line}")
 
     def _on_pitch_thrown(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -282,11 +290,11 @@ class CommentaryListener:
         batter = self._player_label(payload.get("batter_id"), "Batter")
         line = rng.choice(PITCH_SETUP_LINES)
         inning_label = _inning_label(half, inning)
-        print(
+        self._log(
             f"{Colour.BLUE}[Pitch]{Colour.RESET} {inning_label} | {score} | Count {count} — {pitcher} vs {batter}, {line}."
         )
         if payload.get("rival_plate"):
-            print(f"{Colour.RED}~~~ Rival aura shakes the zone! Safe windows feel smaller. ~~~{Colour.RESET}")
+            self._log(f"{Colour.RED}~~~ Rival aura shakes the zone! Safe windows feel smaller. ~~~{Colour.RESET}")
 
     def _on_batter_swung(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -297,7 +305,7 @@ class CommentaryListener:
         reactions = SWING_REACTIONS.get(result_type, SWING_REACTIONS["neutral"])
         batter = self._player_label(payload.get("batter_id"), "Batter")
         line = rng.choice(reactions)
-        print(f"   >> {batter} {line}.{drama_tag}")
+        self._log(f"   >> {batter} {line}.{drama_tag}")
 
     def _on_strikeout(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -307,10 +315,10 @@ class CommentaryListener:
         pitch_data = self._compose_pitch_data(payload)
         comment = generate_pitch_commentary(pitcher, batter, pitch_data or {}) if pitch_data else None
         if comment:
-            print(f"      {Colour.CYAN}{comment}{Colour.RESET}")
+            self._log(f"      {Colour.CYAN}{comment}{Colour.RESET}")
         else:
             flavor = rng.choice(STRIKEOUT_PHRASES)
-            print(f"      {Colour.CYAN}{pitcher} fans {batter}!{Colour.RESET} {flavor}")
+            self._log(f"      {Colour.CYAN}{pitcher} fans {batter}!{Colour.RESET} {flavor}")
 
     def _on_play_result(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -325,12 +333,12 @@ class CommentaryListener:
             label = "Throwing Error" if error_type == "E_THROW" else "Fielding Error"
             color = Colour.RED if error_type == "E_THROW" else Colour.YELLOW
             defender = payload.get("error_position") or "Defense"
-            print(f"   >> {color}[{label}]{Colour.RESET} {defender}: {description}{drama_tag}")
+            self._log(f"   >> {color}[{label}]{Colour.RESET} {defender}: {description}{drama_tag}")
         else:
-            print(f"   >> {description}{drama_tag}")
+            self._log(f"   >> {description}{drama_tag}")
         if runs:
             batting_team = self._team_names.get("away" if (payload.get("half") == "Top") else "home", "Offense")
-            print(f"   !! {Colour.gold}{runs} run(s) answer for {batting_team}!{Colour.RESET}")
+            self._log(f"   !! {Colour.gold}{runs} run(s) answer for {batting_team}!{Colour.RESET}")
 
         comment = None
         if payload.get("result_type") != "strikeout":
@@ -344,7 +352,7 @@ class CommentaryListener:
                         pitch_data["result"] = "inplay"
                     comment = generate_pitch_commentary(pitcher, batter, pitch_data)
         if comment:
-            print(f"      {Colour.CYAN}{comment}{Colour.RESET}")
+            self._log(f"      {Colour.CYAN}{comment}{Colour.RESET}")
         self._print_momentum(payload)
 
     def _on_momentum_shift(self, payload: Dict[str, Any]) -> None:
@@ -354,7 +362,7 @@ class CommentaryListener:
         zone = payload.get("team_side")
         bar = self._render_momentum_bar(meter, zone)
         label = "Home" if zone == "home" else "Away" if zone == "away" else "Neutral"
-        print(f"   >> Momentum swings toward {label}: {bar}")
+        self._log(f"   >> Momentum swings toward {label}: {bar}")
 
     def _on_batters_eye_prompt(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -363,12 +371,12 @@ class CommentaryListener:
         batter = self._player_label(payload.get("batter_id"), "Batter")
         if not options:
             return
-        print(f"   >> Batter's Eye moment for {batter}! Choose your plan:")
+        self._log(f"   >> Batter's Eye moment for {batter}! Choose your plan:")
         hint = payload.get("hint")
         if hint:
-            print(f"        Hint: {hint}")
+            self._log(f"        Hint: {hint}")
         for choice in options:
-            print(f"        [{choice.get('key')}] {choice.get('label')} — {choice.get('description')}")
+            self._log(f"        [{choice.get('key')}] {choice.get('label')} — {choice.get('description')}")
 
     def _render_momentum_bar(self, meter: Optional[float], zone: Optional[str]) -> str:
         if meter is None:
@@ -397,14 +405,14 @@ class CommentaryListener:
         bar = self._render_momentum_bar(meter, zone)
         drama = payload.get("drama_level", 0)
         tag = "" if drama <= 1 else _drama_tag(drama)
-        print(f"      Momentum: {bar}{tag}")
+        self._log(f"      Momentum: {bar}{tag}")
 
     def _on_minigame_trigger(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
             return
         context = payload.get("context", {}) or {}
         label = payload.get("team_name") or self._team_names.get(payload.get("team_side", "away"), "Team")
-        print(f"\n{Colour.CYAN}⚡ Showtime alert for {label}! ⚡{Colour.RESET}")
+        self._log(f"\n{Colour.CYAN}⚡ Showtime alert for {label}! ⚡{Colour.RESET}")
         render_clutch_banner(
             inning=context.get("inning", 9),
             half=context.get("half", "Top"),
@@ -421,7 +429,7 @@ class CommentaryListener:
         window = float(payload.get("target_window", 0.18) or 0.18)
         render_minigame_ui(None, window, show_target=True, quality=quality)
         feedback = payload.get("feedback", "Result recorded.")
-        print(f"   >> Showtime pitch quality {quality:.2f} — {feedback}")
+        self._log(f"   >> Showtime pitch quality {quality:.2f} — {feedback}")
 
     def _on_battery_sign(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -451,11 +459,11 @@ class CommentaryListener:
         base_idx = payload.get("base", 0)
         base_name = {0: "first", 1: "second", 2: "third"}.get(base_idx, "the base")
         if payload.get("picked"):
-            print(f"   >> Sneaky move! {runner} is erased at {base_name} on the pickoff.")
+            self._log(f"   >> Sneaky move! {runner} is erased at {base_name} on the pickoff.")
         else:
             lead = payload.get("lead")
             leash = f" Lead trimmed to {lead:.1f} ft." if isinstance(lead, (int, float)) else ""
-            print(f"   >> Quick throw keeps {runner} glued to {base_name}.{leash}")
+            self._log(f"   >> Quick throw keeps {runner} glued to {base_name}.{leash}")
 
     def _on_squeeze_call(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():
@@ -464,7 +472,7 @@ class CommentaryListener:
         half = payload.get("half", "Top")
         runner = self._player_label(payload.get("runner_id"), "Runner")
         team_name = self._team_label_from_id(payload.get("team_id"))
-        print(
+        self._log(
             f"   >> {team_name} rolls the dice in {_inning_label(half, inning)} — squeeze is on with {runner} charging home!"
         )
 

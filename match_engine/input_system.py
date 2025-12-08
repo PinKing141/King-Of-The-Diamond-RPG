@@ -1,5 +1,8 @@
 from typing import Any, Dict, Protocol, Tuple
 
+from typing import Optional
+
+from core.io_interface import IOInterface
 from player_roles import batter_controls as batter_ui
 
 
@@ -12,11 +15,14 @@ class BatterInputSource(Protocol):
 class HumanBatterInput:
     """Human-controlled batter input using existing UI prompts."""
 
+    def __init__(self, io: Optional[IOInterface] = None) -> None:
+        self.io = io
+
     def get_batting_decision(self, context: Any) -> Tuple[str, Dict[str, Any]]:
         pitcher = context.get("pitcher")
         batter = context.get("batter")
         state = context.get("state")
-        return batter_ui.player_bat_turn(pitcher, batter, state)
+        return batter_ui.player_bat_turn(pitcher, batter, state, io=self.io)
 
 
 class FixedBatterInput:
