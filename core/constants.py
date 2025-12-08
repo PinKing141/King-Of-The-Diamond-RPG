@@ -1,30 +1,17 @@
 """Shared gameplay configuration for UI + simulation layers."""
 from __future__ import annotations
 
-import json
-import os
 from typing import Dict, Tuple
 
-
-def _load_balancing_data():
-    """Load balancing data from data/balancing.json with a small fallback."""
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(base_dir, "data", "balancing.json")
-    try:
-        with open(path, "r") as handle:
-            return json.load(handle)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {
-            "fatigue_costs": {"rest": -15, "team_practice": 20},
-            "action_metadata": {"rest": {"short": "REST", "colour": "GREEN"}},
-        }
+from core.config_loader import ConfigLoader
 
 
-_BALANCE = _load_balancing_data()
+_BALANCE = ConfigLoader.get_section("fatigue_costs", {}) or {}
+_METADATA = ConfigLoader.get_section("action_metadata", {}) or {}
 
 # --- EXPORTS (Used by Scheduler & UI) --------------------------------------
-ACTION_COSTS: Dict[str, int] = _BALANCE.get("fatigue_costs", {})
-ACTION_METADATA: Dict[str, Dict[str, str]] = _BALANCE.get("action_metadata", {})
+ACTION_COSTS: Dict[str, int] = dict(_BALANCE)
+ACTION_METADATA: Dict[str, Dict[str, str]] = dict(_METADATA)
 
 ACTION_METADATA_DEFAULT = {"short": "????", "desc": "Unassigned slot.", "colour": "RESET"}
 

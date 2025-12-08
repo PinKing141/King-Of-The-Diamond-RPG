@@ -5,12 +5,16 @@ import importlib
 import pkgutil
 import sys
 import traceback
-from pathlib import Path
 from typing import Iterable, List, Tuple
+
+from core.paths import get_app_paths
 
 TARGET_PACKAGES = ("game", "world_sim")
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = get_app_paths().root
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+ROOT = get_app_paths().root
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

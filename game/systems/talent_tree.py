@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
+from core.paths import data_path
 from game import pitch_types
 
 
@@ -46,7 +46,7 @@ _TREE_CACHE: Dict[str, TalentNode] = {}
 def _load_talent_tree() -> Dict[str, TalentNode]:
     if _TREE_CACHE:
         return _TREE_CACHE
-    path = Path(__file__).resolve().parents[2] / "data" / "talent_tree.json"
+    path = data_path("talent_tree.json")
     try:
         with path.open("r", encoding="utf-8") as handle:
             raw_tree = json.load(handle)

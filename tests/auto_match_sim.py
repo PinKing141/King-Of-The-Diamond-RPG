@@ -1,17 +1,17 @@
 import unittest
 from unittest.mock import patch
 
-from database.setup_db import School, get_session
+from database.setup_db import School, session_scope
 from game.mechanics.pitch_minigame import trigger_pitch_minigame
 from battery_system import battery_negotiation
 from match_engine.resolver import resolve_match
 
 class TestMatchSimulationStress(unittest.TestCase):
     def test_match_simulation_stress(self):
-        session = get_session()
-        schools = session.query(School).order_by(School.id).limit(2).all()
-        self.assertGreaterEqual(len(schools), 2, "Need at least two schools for match simulation.")
-        home, away = schools[0], schools[1]
+        with session_scope() as session:
+            schools = session.query(School).order_by(School.id).limit(2).all()
+            self.assertGreaterEqual(len(schools), 2, "Need at least two schools for match simulation.")
+            home, away = schools[0], schools[1]
         # Patch pitch minigame to always return a high quality result
         def fake_minigame(**kwargs):
             result = trigger_pitch_minigame(

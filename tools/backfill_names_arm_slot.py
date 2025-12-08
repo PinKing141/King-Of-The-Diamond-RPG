@@ -15,8 +15,9 @@ from sqlalchemy import update
 from database.setup_db import get_session, Player
 
 
-def main():
-    session = get_session()
+def main(session=None):
+    owns_session = session is None
+    session = session or get_session()
     updated = 0
     try:
         players = session.query(Player).all()
@@ -40,7 +41,8 @@ def main():
         session.commit()
         print(f"Backfill complete. Updated {updated} player records.")
     finally:
-        session.close()
+        if owns_session:
+            session.close()
 
 
 if __name__ == "__main__":

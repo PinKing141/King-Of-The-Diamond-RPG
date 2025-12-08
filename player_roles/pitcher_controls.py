@@ -66,6 +66,8 @@ def player_pitch_turn(pitcher, batter, state, *, io: Optional[IOInterface] = Non
     while not selected_pitch and not special_action:
         try:
             choice = prompter(f"Command (1-{len(arsenal) + (3 if has_runners else 0)}): ")
+            if choice is None:
+                return selected_pitch, location
             idx = int(choice) - 1
             
             if 0 <= idx < len(arsenal):
@@ -96,6 +98,8 @@ def player_pitch_turn(pitcher, batter, state, *, io: Optional[IOInterface] = Non
     valid_loc = False
     while not valid_loc:
         choice = prompter("Target (1-2): ")
+        if choice is None:
+            return selected_pitch, location
         if choice == '1':
             location = "Zone"
             valid_loc = True
@@ -127,7 +131,10 @@ def prompt_runner_threat_controls(pitcher, state, *, io: Optional[IOInterface] =
         logger(f"   - Runner on second: {getattr(runner_second, 'name', getattr(runner_second, 'last_name', 'Runner'))}")
 
     while True:
-        prompt = prompter("   Actions? [Enter=continue / P=Throw over / S=Toggle slide step]: ").strip().lower()
+        prompt = prompter("   Actions? [Enter=continue / P=Throw over / S=Toggle slide step]: ")
+        if prompt is None:
+            return
+        prompt = prompt.strip().lower()
         if not prompt:
             return
         if prompt in {"p", "1"}:

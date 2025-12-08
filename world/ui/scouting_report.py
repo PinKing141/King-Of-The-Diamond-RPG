@@ -19,6 +19,14 @@ from game.mechanics.skill_system import trait_synergy_summary
 from game.personnel.player_profile_renderer import generate_coach_title, render_coach_profile, render_team_scouting_report
 from game.systems.scouting_report_renderer import render_team_report
 
+
+def _safe_input(prompt: str, *, default: str = "") -> str:
+    try:
+        value = input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        return default
+    return value if value is not None else default
+
 DEFAULT_SCOUT_THEME = "persona"
 
 DEBUG_MODE = False 
@@ -52,7 +60,10 @@ def _select_school(session, exclude_id=None):
     print(" R. Random opponent")
     print(" 0. Cancel")
 
-    choice = input("Choice: ").strip().lower()
+    choice = _safe_input("Choice: ", default="0")
+    if not choice:
+        choice = "0"
+    choice = choice.strip().lower()
     if choice == '0':
         return None
     if choice == 'r':
@@ -71,7 +82,7 @@ def _select_school(session, exclude_id=None):
 
 def _choose_theme() -> str:
     print("\nSelect theme: persona / clean / anime / legacy (Enter to keep current)")
-    choice = input("Theme: ").strip().lower()
+    choice = _safe_input("Theme: ").strip().lower()
     if choice in {"persona", "clean", "anime", "legacy"}:
         return choice
     return ""
@@ -182,7 +193,7 @@ def _format_synergy_blurb(player, knowledge: int, width: int) -> str:
 def _maybe_purchase_scouting(session, user_school, target_school, current_info):
     if current_info.knowledge_level >= MAX_KNOWLEDGE_LEVEL:
         print("\nAlready at maximum intel for this school.")
-        input("[Press Enter]")
+        _safe_input("[Press Enter]")
         return
 
     package_keys = list(SCOUTING_PACKAGES.keys())
@@ -212,7 +223,7 @@ def _maybe_purchase_scouting(session, user_school, target_school, current_info):
         print(f"  {idx}. {key.title():<10}{cost:<12} ({gain_text}{bonus_text})")
     print("  0. Cancel")
 
-    choice = input("Select scouting tier: ").strip()
+    choice = _safe_input("Select scouting tier: ", default="0").strip()
     if not choice.isdigit() or choice == '0':
         return
     idx = int(choice) - 1
@@ -222,7 +233,7 @@ def _maybe_purchase_scouting(session, user_school, target_school, current_info):
     tier_key = package_keys[idx]
     result = perform_scout_action(session, user_school.id, target_school.id, tier=tier_key)
     print(format_scouting_result_message(result))
-    input("[Press Enter]")
+    _safe_input("[Press Enter]")
     if result.success:
         session.expire_all()
 
@@ -364,7 +375,7 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
             )
         print("  0. Cancel")
 
-        choice = input("Select scouting tier: ").strip()
+        choice = _safe_input("Select scouting tier: ", default="0").strip()
         if choice.isdigit():
             pick = int(choice)
             if 1 <= pick <= len(package_keys):
@@ -379,7 +390,7 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
 def view_scouting_menu(context: GameContext):
     if context.player_id is None:
         print("No active player found.")
-        input("\n[Press Enter]")
+        _safe_input("\n[Press Enter]")
         return
 
     context.refresh_session()
@@ -395,7 +406,7 @@ def view_scouting_menu(context: GameContext):
         user_p = session.get(Player, context.player_id)
         if not user_p:
             print("No active player found.")
-            input("\n[Press Enter]")
+            _safe_input("\n[Press Enter]")
             return
         user_school = session.get(School, user_p.school_id)
         print(f"School Budget: ¥{user_school.budget:,}")
@@ -408,14 +419,14 @@ def view_scouting_menu(context: GameContext):
         print("6. View Coach Profile")
         print("0. Back")
         
-        choice = input("Select: ")
+        choice = _safe_input("Select: ", default="0")
         
         if choice == '1':
             print_team_roster(session, user_school, context.player_id, "MY TEAM", "ACTIVE")
-            input("\n[Press Enter]")
+            _safe_input("\n[Press Enter]")
         elif choice == '2':
             print_team_roster(session, user_school, context.player_id, "MY TEAM", "RESERVE")
-            input("\n[Press Enter]")
+            _safe_input("\n[Press Enter]")
         elif choice == '3':
             target = _select_school(session, exclude_id=user_school.id)
             if target:
@@ -434,7 +445,7 @@ def view_scouting_menu(context: GameContext):
                 refreshed = get_scouting_info(target.id, session=session)
                 _maybe_purchase_scouting(session, user_school, target, refreshed)
             else:
-                input("\n[Press Enter]")
+                _safe_input("\n[Press Enter]")
         elif choice == '4':
             use_modern = not use_modern
         elif choice == '5':
@@ -445,13 +456,13 @@ def view_scouting_menu(context: GameContext):
             coach = getattr(user_school, 'coach', None)
             if not coach:
                 print("No coach assigned yet.")
-                input("\n[Press Enter]")
+                _safe_input("\n[Press Enter]")
                 continue
             lines = render_coach_profile(session, coach.id, knowledge_level=3)
             clear_screen()
             for line in lines or []:
                 print(line)
-            input("\n[Press Enter]")
+            _safe_input("\n[Press Enter]")
         elif choice == '0':
             break
         else:

@@ -77,6 +77,13 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertEqual(archetype, "TRADITIONALIST")
         self.assertEqual(scouting_ability, 50)
 
+    def test_new_tables_present(self):
+        setup_db.Base.metadata.create_all(bind=self.engine)
+        inspector = sa.inspect(self.engine)
+        table_names = set(inspector.get_table_names())
+        self.assertIn("player_xp", table_names)
+        self.assertIn("scouting_network", table_names)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,10 +6,10 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from core.rng import get_rng
+from core.rng import get_rng, new_rng
 from ui.ui_display import Colour, render_clutch_banner, render_minigame_ui
 
-_rng = get_rng()
+_rng = new_rng()
 
 
 @dataclass
@@ -71,6 +71,7 @@ def run_minigame(
     *,
     context: Optional[PitchMinigameContext] = None,
     auto_resolve: bool = False,
+    rng: Optional[object] = None,
 ) -> PitchMinigameResult:
     """Run the slider minigame and return a quality score between 0 and 1."""
 
@@ -82,6 +83,8 @@ def run_minigame(
     target_window = _clamp(0.18 + (control - 50) / 650 - difficulty * 0.08, 0.05, 0.28)
     fatigue_penalty = fatigue / 160.0
     cursor_speed = 1.2 + (difficulty * 0.6) + (fatigue / 200.0)
+
+    random_source = rng or _rng
 
     if not auto_resolve:
         print(f"\n{Colour.CYAN}⚡ Showtime Pitch Incoming ⚡{Colour.RESET}")
@@ -101,7 +104,7 @@ def run_minigame(
         input("  SNAP IT! (Press Enter) ")
         elapsed = time.perf_counter() - start
     else:
-        elapsed = _rng.random() * 1.2
+        elapsed = random_source.random() * 1.2
 
     position = _cursor_position(elapsed, cursor_speed)
     deviation = abs(0.5 - position)

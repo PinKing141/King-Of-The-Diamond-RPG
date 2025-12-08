@@ -44,6 +44,15 @@ def _decode_scouting_network(payload):
         return {}
 
 
+def _scouting_network_map(school) -> dict:
+    if not school:
+        return {}
+    entries = getattr(school, "scouting_network_entries", None) or []
+    if entries:
+        return {row.scope: row.rating for row in entries if getattr(row, "scope", None)}
+    return _decode_scouting_network(getattr(school, "scouting_network", None))
+
+
 def _infer_coach_archetype(school):
     style = (getattr(school, 'training_style', '') or '').lower()
     if style in ARCHETYPE_BY_STYLE:
@@ -58,7 +67,7 @@ def _infer_coach_archetype(school):
 
 
 def _roll_scouting_ability(school):
-    network = _decode_scouting_network(getattr(school, 'scouting_network', None))
+    network = _scouting_network_map(school)
     local = network.get('Local', 50)
     regional = network.get('Regional', 40)
     national = network.get('National', 30)

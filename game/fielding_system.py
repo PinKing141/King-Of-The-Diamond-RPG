@@ -94,7 +94,10 @@ def _log(io: Optional[IOInterface], message: str) -> None:
 def _prompt(io: Optional[IOInterface], prompt: str) -> str:
     if io:
         return io.prompt(prompt)
-    return input(prompt)
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        return ""
 
 
 def _get_approach_decision(fielder: Player, is_user: bool, ball_type: str, location: str, *, io: Optional[IOInterface]) -> str:

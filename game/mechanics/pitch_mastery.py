@@ -50,7 +50,10 @@ def _prompt(prompt: str, *, io: Optional[IOInterface] = None, options: Optional[
     if io:
         return io.prompt(prompt, options=options)
     while True:
-        response = input(prompt)
+        try:
+            response = input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            return ""
         if options is None or response in options:
             return response
 

@@ -1,27 +1,30 @@
 import json
 import os
 import random
-from pathlib import Path
 from typing import Dict, List, Optional
+
+from core.paths import data_path, load_json_resource
 
 from core.io_interface import IOInterface
 from ui.ui_display import Colour, clear_screen
 from game.personnel.archetypes import archetype_persona_blurb
 
-DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "dialogues.json"
-PERSONA_DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "coach_personality_dialogues.json"
+DATA_PATH = data_path("dialogues.json")
+PERSONA_DATA_PATH = data_path("coach_personality_dialogues.json")
 
 
 def _load_dialogues() -> Dict[str, dict]:
-    try:
-        with open(DATA_PATH, "r", encoding="utf-8") as fh:
-            entries = json.load(fh)
-    except FileNotFoundError:
-        return {}
+    entries = load_json_resource("data", "dialogues.json")
+    if entries is None:
+        try:
+            with open(DATA_PATH, "r", encoding="utf-8") as fh:
+                entries = json.load(fh)
+        except FileNotFoundError:
+            entries = []
 
     dialogue_map: Dict[str, dict] = {}
     for entry in entries:
-        entry_id = entry.get("id")
+        entry_id = entry.get("id") if isinstance(entry, dict) else None
         if entry_id:
             dialogue_map[entry_id] = entry
     return dialogue_map
@@ -31,17 +34,19 @@ DIALOGUE_DB = _load_dialogues()
 
 
 def _load_persona_dialogues() -> Dict[str, Dict[str, str]]:
-    try:
-        with open(PERSONA_DATA_PATH, "r", encoding="utf-8") as fh:
-            entries = json.load(fh)
-    except FileNotFoundError:
-        return {}
+    entries = load_json_resource("data", "coach_personality_dialogues.json")
+    if entries is None:
+        try:
+            with open(PERSONA_DATA_PATH, "r", encoding="utf-8") as fh:
+                entries = json.load(fh)
+        except FileNotFoundError:
+            entries = []
 
     persona_map: Dict[str, Dict[str, str]] = {}
     for entry in entries:
-        event_id = entry.get("id")
-        persona = entry.get("personality")
-        text = entry.get("text")
+        event_id = entry.get("id") if isinstance(entry, dict) else None
+        persona = entry.get("personality") if isinstance(entry, dict) else None
+        text = entry.get("text") if isinstance(entry, dict) else None
         if not event_id or not persona or not text:
             continue
         persona_map.setdefault(event_id, {})[persona] = text
@@ -233,10 +238,16 @@ def run_dialogue_event(event_id, player, school, *, io: Optional[IOInterface] = 
                 raw = io.prompt("\nSelect: ", options=[str(i + 1) for i in range(len(data['options']))])
             else:
                 raw = input("\nSelect: ")
+            if raw is None or str(raw).strip() == "":
+                choice = 0
+                break
             choice = int(raw) - 1
             if 0 <= choice < len(data['options']):
                 break
-        except ValueError:
+        except (EOFError, KeyboardInterrupt):
+            choice = 0
+            break
+        except (ValueError, TypeError):
             pass
         _log("Invalid choice.", io=io, level="warning")
         

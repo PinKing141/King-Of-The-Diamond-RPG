@@ -101,13 +101,13 @@ def _simulate_background_matches(
 def simulate_background_matches(
     user_school_id,
     *,
-    async_mode: bool = False,
+    background: bool = False,
     feature_games: int = FEATURE_FOCUS_GAMES,
     verbose: bool = False,
 ) -> Optional[threading.Thread]:
     """Simulate NPC practice games; optionally run asynchronously to avoid UI stalls."""
 
-    if async_mode:
+    if background:
         worker = threading.Thread(
             target=_simulate_background_matches,
             args=(user_school_id,),

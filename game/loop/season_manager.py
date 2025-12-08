@@ -3,12 +3,16 @@ import random
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy.exc import SQLAlchemyError
+
+from core.decisions import DecisionRequest, DecisionResult
 from core.event_bus import EventBus
 from database.setup_db import GameState, Player, School
 from core.analytics import initialise_analytics
 from core.config_loader import SeasonConfigLoader
 from core.exceptions import KoshienException, ScheduleError
 from core.game_context import GameContext
+from core.services import SessionProvider
 from game.loop.season_engine import SeasonEndResult, run_end_of_season_logic
 from game.loop.offseason_engine import graduate_third_years
 from game.training_logic import run_training_camp_event
@@ -28,9 +32,17 @@ MONTH_NAMES = [
 class SeasonManager:
     """Orchestrates the weekly game loop, event triggers, and time advancement."""
 
-    def __init__(self, context: GameContext, session, *, view: SeasonView):
+    def __init__(
+        self,
+        context: GameContext,
+        session,
+        *,
+        view: SeasonView,
+        session_provider: SessionProvider | None = None,
+    ):
         self.context = context
         self.session = session
+        self.session_provider = session_provider
         self.state: GameState = self._load_state()
         self.view = view
         self.bus = initialise_analytics(EventBus())
@@ -49,7 +61,7 @@ class SeasonManager:
             return False
 
         try:
-            mandatory = build_mandatory_schedule(player)
+            if any("match" in (action or "") for action in mandatory.values()):
             if any("match" in (action or "") for action in mandatory.values()):
                 return True
         except (AttributeError, ValueError) as exc:
@@ -58,6 +70,33 @@ class SeasonManager:
         except Exception as exc:
             raise ScheduleError(f"Unexpected scheduler failure: {exc}") from exc
 
+
+    def _deliver_decision_requests(self, decision: DecisionResult, *, scouting_available: bool = False) -> Optional[str]:
+        """Pass DecisionRequests to the view if supported, otherwise fall back to legacy prompts."""
+
+        handler = getattr(self.view, "handle_decision_requests", None)
+        if callable(handler):
+            response = handler(decision.requests)
+            if response is not None:
+                return response
+
+        for req in decision.requests:
+            if req.kind != "prompt":
+                continue
+            if req.message == "weekly_menu":
+                return self.view.prompt_weekly_menu(
+                    scouting_available=scouting_available,
+                    context=self.context,
+                    session=self.session,
+                    state=self.state,
+                )
+            if req.message == "command_menu":
+                return self.view.prompt_command_menu(
+                    context=self.context,
+                    session=self.session,
+                    state=self.state,
+                )
+        return None
         return SeasonConfigLoader.is_tournament_week(week)
 
     def _run_story_arcs(self, user_player: Player) -> None:
@@ -92,7 +131,7 @@ class SeasonManager:
 
         try:
             schedule = build_mandatory_schedule(user_player)
-        except Exception as exc:
+        except ScheduleError as exc:
             self.view.display_warning(f"Rivalry scan skipped: {exc}")
             return
 
@@ -249,7 +288,11 @@ class SeasonManager:
         if user_player.year == 3:
             self.view.display_info("CONGRATULATIONS ON YOUR GRADUATION!")
             self.view.display_info("Thank you for playing Koshien RPG.")
-            result: SeasonEndResult = run_end_of_season_logic(user_player_id=self.context.player_id, event_bus=self.bus)
+            result: SeasonEndResult = run_end_of_season_logic(
+                self.session,
+                user_player_id=self.context.player_id,
+                event_bus=self.bus,
+            )
             self._render_events(result.events)
             self.view.prompt_continue("Press Enter to exit...")
             return bool(result)
@@ -257,7 +300,7 @@ class SeasonManager:
         self.view.display_info("The third-years are retiring. Preparing for next season...")
         self.view.prompt_continue("[Press Enter to Advance Year]")
 
-        result: SeasonEndResult = run_end_of_season_logic(event_bus=self.bus)
+        result: SeasonEndResult = run_end_of_season_logic(self.session, event_bus=self.bus)
         self._render_events(result.events)
         self.session.expire_all()
         return bool(result)
@@ -284,8 +327,9 @@ class SeasonManager:
             removed = graduate_third_years(self.session)
             try:
                 self.session.commit()
-            except Exception:
+            except SQLAlchemyError as exc:
                 self.session.rollback()
+                self.view.display_error(f"Failed to persist retirements: {exc}")
                 removed = 0
             self.view.display_info(f"Removed {removed} graduating players. Set a new captain and lineup before autumn.")
             self.view.prompt_continue("Press Enter to continue...")
@@ -301,12 +345,14 @@ class SeasonManager:
             self.context.set_temp_effect("spring_qualifier_ids", qualifiers)
             try:
                 self.state.spring_qualifier_ids = json.dumps(qualifiers)
-            except Exception:
+            except (TypeError, ValueError) as exc:
                 self.state.spring_qualifier_ids = None
+                self.view.display_warning(f"Could not persist qualifier ids: {exc}")
             try:
                 self.session.commit()
-            except Exception:
+            except SQLAlchemyError as exc:
                 self.session.rollback()
+                self.view.display_error(f"Failed to save autumn qualifiers: {exc}")
 
             if user_school_id in qualifiers:
                 self.view.display_info("Ticket punched! You qualified for Spring Koshien.")
@@ -334,12 +380,8 @@ class SeasonManager:
         scouting_available = self._has_game_this_week(user_player, self.state.current_week)
 
         while True:
-            intent = self.view.prompt_weekly_menu(
-                scouting_available=scouting_available,
-                context=self.context,
-                session=self.session,
-                state=self.state,
-            )
+            decision = self._build_weekly_menu_decision(scouting_available=scouting_available)
+            intent = self._deliver_decision_requests(decision, scouting_available=scouting_available)
 
             if intent == "PLAN_WEEK":
                 executed = show_page(start_week, self.context, self.state.current_week, self.state)
@@ -360,11 +402,8 @@ class SeasonManager:
 
     def _run_command_menu(self) -> str:
         while True:
-            intent = self.view.prompt_command_menu(
-                context=self.context,
-                session=self.session,
-                state=self.state,
-            )
+            decision = self._build_command_menu_decision()
+            intent = self._deliver_decision_requests(decision)
 
             if intent == "SCOUT":
                 self.view.show_scouting_menu(self.context)
@@ -380,6 +419,37 @@ class SeasonManager:
                 return "QUIT"
             if intent == "NEXT_WEEK":
                 return "NEXT_WEEK"
+
+    def _build_weekly_menu_decision(self, *, scouting_available: bool) -> DecisionResult:
+        options = ["PLAN_WEEK", "SCOUT", "CHARACTER_SHEET", "SAVE", "QUIT"]
+        req = DecisionRequest(
+            kind="prompt",
+            message="weekly_menu",
+            options=options,
+            payload={
+                "scouting_available": scouting_available,
+                "week": self.state.current_week,
+                "context": self.context,
+                "session": self.session,
+                "state": self.state,
+            },
+        )
+        return DecisionResult(summary=None, requests=[req], done=False)
+
+    def _build_command_menu_decision(self) -> DecisionResult:
+        options = ["SCOUT", "SAVE", "SMART_SIM", "QUIT", "NEXT_WEEK"]
+        req = DecisionRequest(
+            kind="prompt",
+            message="command_menu",
+            options=options,
+            payload={
+                "week": self.state.current_week,
+                "context": self.context,
+                "session": self.session,
+                "state": self.state,
+            },
+        )
+        return DecisionResult(summary=None, requests=[req], done=False)
 
     # --------- smart sim ---------
     def _prompt_smart_sim(self) -> None:
@@ -427,7 +497,7 @@ class SeasonManager:
 
             user_school_id = player.school_id
             self.view.show_progress(f"\r >> Processing Week {self.state.current_week}...", end="")
-            simulate_background_matches(user_school_id, async_mode=True, verbose=True)
+            simulate_background_matches(user_school_id, background=True, verbose=True)
 
             self.context.refresh_session()
             self.context.set_player(player.id, user_school_id)

@@ -2,6 +2,13 @@ import math
 
 from database.setup_db import School, session_scope
 from match_engine.resolver import resolve_match
+
+
+def _safe_input(prompt: str, default: str = "") -> str:
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        return default
 from ui.ui_display import Colour
 from core.rng import get_rng
 from .sim_utils import quick_resolve_match
@@ -81,7 +88,7 @@ def run_district_tournament(session, district_name, user_school_id, context=None
             
             if is_user_match:
                 print(f"\n{Colour.GREEN}*** QUALIFIER MATCH: {home.name} vs {away.name} ***{Colour.RESET}")
-                input("   Press Enter to play...")
+                _safe_input("   Press Enter to play...")
                 rival_ctx = context.get_temp_effect("rival_match_context") if context else None
                 rival_presentation = context.get_temp_effect("rival_presentation") if context else None
                 winner, score = resolve_match(

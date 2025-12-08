@@ -27,7 +27,10 @@ def _prompt_batters_eye(*, io: Optional[IOInterface] = None) -> dict | None:
     logger(" 4. Zone attack (strike)")
     logger(" 5. Waste pitch (outside zone)")
     while True:
-        choice = prompt("Sit on: ").strip().lower()
+        raw = prompter("Sit on: ")
+        if raw is None:
+            return None
+        choice = raw.strip().lower()
         if choice in {"", "0", "skip"}:
             return None
         payload = _BATTERS_EYE_CHOICES.get(choice)
@@ -82,7 +85,10 @@ def _standing_orders_menu(state, *, io: Optional[IOInterface] = None) -> None:
         logger(" 6. Defense: Nibble Edges (soft nibble)")
         logger(" 7. HERO Frequency: cycle (never / key / often)")
         logger(" Q. Close menu")
-        choice = prompter(" Orders cmd: ").strip().lower()
+        raw = prompter(" Orders cmd: ")
+        if raw is None:
+            return
+        choice = raw.strip().lower()
         if choice in {"q", "", "exit"}:
             return
         if choice == "1":
@@ -144,7 +150,11 @@ def player_bat_turn(pitcher, batter, state, *, io: Optional[IOInterface] = None)
     
     valid = False
     while not valid:
-        choice = prompter("Command: ").strip().lower()
+        raw = prompter("Command: ")
+        if raw is None:
+            choice = ""
+        else:
+            choice = raw.strip().lower()
         
         if choice in {'8', 'o'}:
             _standing_orders_menu(state, io=io)

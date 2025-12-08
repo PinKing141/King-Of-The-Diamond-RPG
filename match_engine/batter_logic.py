@@ -1406,6 +1406,18 @@ class AtBatStateMachine:
         self.rival_intro_done = False
         self.rival_batter_mods: dict = {}
         self.rival_pitcher_mods: dict = {}
+        # Step-machine tracking
+        self._node: str | None = None
+        self._finished = False
+        self._batter_action: str | None = None
+        self._batter_mods: dict | None = None
+        self._slide_trait_mods: dict | None = None
+        self._batter_trait_mods: dict | None = None
+        self._pitcher_trait_mods: dict | None = None
+        self._bases_loaded_snapshot: bool = False
+        self._outs_snapshot: int = 0
+        self._pitch_res = None
+        self._tracker = None
 
     def _emit_state(self, state_name: str, payload: Optional[dict[str, object]] = None) -> None:
         if self.bus:
@@ -1941,56 +1953,117 @@ class AtBatStateMachine:
 
         return "continue"
 
-    def run(self):
-        """Simulates one complete At-Bat."""
-        state = self.state
-        self._phase_setup()
-        self._phase_rival_cutin()
+    # --- Step-driven interface ---
+    @property
+    def finished(self) -> bool:
+        return self._finished
 
-        while True:
+    def advance(self) -> None:
+        """Advance one state-node of the at-bat without internal while/continue loops."""
+
+        if self._finished:
+            return
+
+        if self._node is None:
+            self._phase_setup()
+            self._phase_rival_cutin()
+            self._node = "windup"
+            return
+
+        state = self.state
+
+        if self._node == "windup":
             self._emit_state(self.STATE_WINDUP, {
                 "inning": state.inning,
                 "half": state.top_bottom,
                 "batter_id": self.batter_id,
                 "pitcher_id": self.pitcher_id,
             })
-
             batter_action, batter_mods = self._phase_batter_decision()
             runner_status, batter_mods, slide_trait_mods = self._phase_runner_threats(batter_action, batter_mods)
             if runner_status == "end":
-                break
+                self._node = "post"
+                return
             if runner_status == "restart":
-                continue
+                self._node = "windup"
+                return
+            self._batter_action = batter_action
+            self._batter_mods = batter_mods
+            self._slide_trait_mods = slide_trait_mods
+            self._node = "prepare_traits"
+            return
 
-            batter_trait_mods, pitcher_trait_mods = self._phase_prepare_traits(batter_mods, slide_trait_mods)
-            bases_loaded_snapshot = _bases_loaded(state)
-            outs_snapshot = state.outs
+        if self._node == "prepare_traits":
+            batter_trait_mods, pitcher_trait_mods = self._phase_prepare_traits(
+                self._batter_mods or {},
+                self._slide_trait_mods or {},
+            )
+            self._batter_trait_mods = batter_trait_mods
+            self._pitcher_trait_mods = pitcher_trait_mods
+            self._bases_loaded_snapshot = _bases_loaded(state)
+            self._outs_snapshot = state.outs
+            self._node = "pitch"
+            return
 
-            pitch_res, tracker = self._phase_pitch(batter_action, batter_mods, batter_trait_mods, pitcher_trait_mods)
-            resolution = self._phase_resolution(pitch_res, bases_loaded_snapshot, outs_snapshot, tracker, batter_trait_mods)
+        if self._node == "pitch":
+            pitch_res, tracker = self._phase_pitch(
+                self._batter_action or "Normal",
+                self._batter_mods or {},
+                self._batter_trait_mods or {},
+                self._pitcher_trait_mods or {},
+            )
+            self._pitch_res = pitch_res
+            self._tracker = tracker
+            self._node = "resolution"
+            return
+
+        if self._node == "resolution":
+            resolution = self._phase_resolution(
+                self._pitch_res,
+                self._bases_loaded_snapshot,
+                self._outs_snapshot,
+                self._tracker,
+                self._batter_trait_mods or {},
+            )
             if resolution == "continue":
-                continue
+                self._node = "windup"
+                return
             if resolution == "contact":
-                self._phase_contact(pitch_res, batter_trait_mods, bases_loaded_snapshot, outs_snapshot)
-                self._emit_phase(AtBatPhase.POST_PLAY, {
-                    "inning": state.inning,
-                    "half": state.top_bottom,
-                    "batter_id": self.batter_id,
-                    "pitcher_id": self.pitcher_id,
-                })
-                break
+                self._node = "contact"
+                return
             if resolution == "end":
-                self._emit_phase(AtBatPhase.POST_PLAY, {
-                    "inning": state.inning,
-                    "half": state.top_bottom,
-                    "batter_id": self.batter_id,
-                    "pitcher_id": self.pitcher_id,
-                })
-                break
+                self._node = "post"
+                return
 
-        if callable(self.pressure_updater):
-            self.pressure_updater()
-        _broadcast_confidence_flashes(state, bus=self.bus)
+        if self._node == "contact":
+            self._phase_contact(
+                self._pitch_res,
+                self._batter_trait_mods or {},
+                self._bases_loaded_snapshot,
+                self._outs_snapshot,
+            )
+            self._node = "post"
+            return
+
+        if self._node == "post":
+            self._emit_phase(AtBatPhase.POST_PLAY, {
+                "inning": state.inning,
+                "half": state.top_bottom,
+                "batter_id": self.batter_id,
+                "pitcher_id": self.pitcher_id,
+            })
+            if callable(self.pressure_updater):
+                self.pressure_updater()
+            _broadcast_confidence_flashes(state, bus=self.bus)
+            self._finished = True
+            self._node = "done"
+            return
+
+    def run(self):
+        """Simulates one complete At-Bat using stepwise advance (compat wrapper)."""
+
+        while not self.finished:
+            self.advance()
         return
 
 

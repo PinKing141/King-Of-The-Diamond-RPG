@@ -19,7 +19,7 @@ def test_run_match_forwards_tournament_name_to_prepare_match():
     ):
         ScoreboardMock.return_value = SimpleNamespace()
 
-        def _fake_prepare(home_id, away_id, db_session, clutch_pitch=None, tournament_name=None):
+        def _fake_prepare(home_id, away_id, db_session, clutch_pitch=None, tournament_name=None, **_):
             captured["tournament_name"] = tournament_name
             return fake_state
 

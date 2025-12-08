@@ -9,6 +9,13 @@ from typing import Callable, List, Optional
 from ui.ui_core import choose_theme, panel, clear_screen, Colour, tick_pause
 
 
+def _safe_input(prompt: str) -> Optional[str]:
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
 class MenuOption:
     def __init__(self, key: str, label: str, action: Optional[Callable] = None, enabled: bool = True) -> None:
         self.key = key
@@ -42,7 +49,10 @@ class MenuScreen:
     def run(self):
         while True:
             self.show()
-            choice = input("> ").strip()
+            raw = _safe_input("> ")
+            if raw is None:
+                return None
+            choice = raw.strip()
             if not choice:
                 continue
             if choice.lower() == "q":

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Callable, DefaultDict, Dict, List, Optional
+from enum import Enum
+from typing import Any, Callable, DefaultDict, Dict, List, Optional, Union
 
+EventKey = Union[str, Enum]
 EventHandler = Callable[[Dict[str, Any]], None]
 
 
@@ -13,29 +15,38 @@ class EventBus:
     def __init__(self) -> None:
         self._subscribers: DefaultDict[str, List[EventHandler]] = defaultdict(list)
 
-    def subscribe(self, event_name: str, handler: EventHandler) -> None:
-        """Register a handler for an event."""
-        if handler not in self._subscribers[event_name]:
-            self._subscribers[event_name].append(handler)
+    def _key(self, event_name: EventKey) -> str:
+        return event_name.value if isinstance(event_name, Enum) else str(event_name)
 
-    def unsubscribe(self, event_name: str, handler: EventHandler) -> None:
+    def subscribe(self, event_name: EventKey, handler: EventHandler) -> None:
+        """Register a handler for an event."""
+        key = self._key(event_name)
+        if handler not in self._subscribers[key]:
+            self._subscribers[key].append(handler)
+
+    def unsubscribe(self, event_name: EventKey, handler: EventHandler) -> None:
         """Remove a previously registered handler."""
-        handlers = self._subscribers.get(event_name)
+        key = self._key(event_name)
+        handlers = self._subscribers.get(key)
         if not handlers:
             return
         if handler in handlers:
             handlers.remove(handler)
         if not handlers:
-            self._subscribers.pop(event_name, None)
+            self._subscribers.pop(key, None)
 
-    def publish(self, event_name: str, payload: Optional[Dict[str, Any]] = None) -> None:
+    def publish(self, event_name: EventKey, payload: Optional[Dict[str, Any]] = None) -> None:
         """Dispatch an event to all subscribers."""
-        handlers = list(self._subscribers.get(event_name, ()))
+        key = self._key(event_name)
+        handlers = list(self._subscribers.get(key, ()))
         if not handlers:
             return
         data = payload or {}
         for handler in handlers:
-            handler(data)
+            try:
+                handler(data)
+            except Exception as exc:  # Defensive guard so one bad handler doesn't cascade
+                print(f"EventBus handler failed for '{key}': {exc}")
 
     def clear(self) -> None:
         """Remove all subscribers (useful for tests)."""

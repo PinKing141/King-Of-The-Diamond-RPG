@@ -1,8 +1,9 @@
 """Sample several generated pitch arsenals to confirm modern pitch names appear."""
-from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+from core.paths import get_app_paths
+
+ROOT = get_app_paths().root
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

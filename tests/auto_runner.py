@@ -5,7 +5,7 @@ import builtins
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.event_bus import EventBus
-from database.setup_db import School, get_session
+from database.setup_db import School, get_session, session_scope
 from core.analytics import TELEMETRY_EVENT, initialise_analytics
 from game.mechanics.pitch_minigame import trigger_pitch_minigame
 from match_engine.commentary import set_commentary_enabled
@@ -133,8 +133,7 @@ def run_auto_harness() -> bool:
     """Spin up analytics, drive one inning, and confirm telemetry hits the event bus."""
 
     set_commentary_enabled(False)
-    session = get_session()
-    try:
+    with session_scope() as session:
         home, away = _select_schools(session)
         payload = _build_clutch_payload(home, "Telemetry AutoRunner")
         state = prepare_match(home.id, away.id, session, clutch_pitch=payload)
@@ -157,8 +156,6 @@ def run_auto_harness() -> bool:
 
         flush_telemetry(state)
         return bool(telemetry_events and telemetry_events[0].get("events"))
-    finally:
-        session.close()
 
 
 def main() -> None:

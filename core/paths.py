@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from importlib import resources
+from pathlib import Path
+from typing import Optional
+
+try:
+    from appdirs import user_data_dir
+except ImportError:  # lightweight fallback
+    def user_data_dir(appname: str, appauthor: str = "") -> str:
+        base = Path.home() / ".local" / "share"
+        return str(base / appname)
+
+
+_APP_NAME = "Koshien_RPG"
+_APP_AUTHOR = ""
+
+
+@dataclass
+class AppPaths:
+    root: Path
+    data_dir: Path
+    saves_dir: Path
+    cache_dir: Path
+
+
+def get_app_paths() -> AppPaths:
+    data_dir = Path(user_data_dir(_APP_NAME, _APP_AUTHOR))
+    saves_dir = data_dir / "saves"
+    cache_dir = data_dir / "cache"
+    for p in (data_dir, saves_dir, cache_dir):
+        os.makedirs(p, exist_ok=True)
+    return AppPaths(root=Path(__file__).resolve().parents[1], data_dir=data_dir, saves_dir=saves_dir, cache_dir=cache_dir)
+
+
+def data_path(*parts: str) -> Path:
+    """Resolve a path inside the packaged `data` directory."""
+    return get_app_paths().root.joinpath("data", *parts)
+
+
+def save_path(*parts: str) -> Path:
+    """Resolve a path within the user save directory (appdirs-backed)."""
+    return get_app_paths().saves_dir.joinpath(*parts)
+
+
+def active_db_path(filename: str = "koshien_active.db") -> Path:
+    """Return the path to the active SQLite database file in the save directory."""
+    return save_path(filename)
+
+
+def load_text_resource(package: str, resource_name: str) -> Optional[str]:
+    """Load a bundled text resource using importlib.resources; return None if missing."""
+    try:
+        with resources.files(package).joinpath(resource_name).open("r", encoding="utf-8") as handle:
+            return handle.read()
+    except Exception:
+        return None
+
+
+def load_json_resource(package: str, resource_name: str):
+    import json
+    text = load_text_resource(package, resource_name)
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None

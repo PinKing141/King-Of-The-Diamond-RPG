@@ -7,6 +7,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, Optional
 
+from core.paths import data_path
+
 
 class ConfigLoader:
     """Lazy JSON loader that exposes balancing data to the rest of the game."""
@@ -21,8 +23,7 @@ class ConfigLoader:
         env_path = os.getenv("BALANCING_CONFIG_PATH")
         if env_path:
             return Path(env_path).expanduser().resolve()
-        base = Path(__file__).resolve().parents[1]
-        return base / "data" / "balancing.json"
+        return data_path("balancing.json")
 
     @classmethod
     def configure(cls, *, path: Optional[str] = None) -> None:
@@ -83,8 +84,7 @@ class SeasonConfigLoader:
 
     @classmethod
     def _default_path(cls) -> Path:
-        base = Path(__file__).resolve().parents[1]
-        return base / "data" / "season_config.json"
+        return data_path("season_config.json")
 
     @classmethod
     def configure(cls, *, path: Optional[str] = None) -> None:

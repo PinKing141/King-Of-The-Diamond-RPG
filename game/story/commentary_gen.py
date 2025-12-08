@@ -9,9 +9,12 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from game.story import commentary_pools as pools
-from core.rng import get_rng
+from core.rng import get_rng, new_rng
 
-rng = get_rng()
+def commentary_rng() -> object:
+    return new_rng()
+
+rng = commentary_rng()
 
 _BREAKING_FAMILIES = {"breaker", "curve", "slider", "slurve", "sweeper", "changeup", "splitter", "forkball"}
 _FASTBALL_HINTS = {"4-seam", "4 seam", "fastball", "heater", "2-seam", "sinker", "cutter"}

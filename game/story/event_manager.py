@@ -5,7 +5,6 @@ from typing import List, Optional
 
 from database.setup_db import Player, School
 from core.io_interface import IOInterface
-from ui.ui_display import Colour
 # Import the new Dialogue Manager
 from game.story.dialogue_manager import run_dialogue_event
 from core.game_context import GameContext

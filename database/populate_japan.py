@@ -19,6 +19,7 @@ from database.setup_db import (
     create_database,
     Coach,
     ScoutingData,
+    ScoutingNetwork,
     session_scope,
     GeoLocation,
 )
@@ -225,10 +226,10 @@ def _determine_school_era(philosophy_name: str, prestige: int) -> tuple[str, int
     return state, random.randint(*momentum_range)
 
 
-def seed_school_meta(philosophy_name: str, philosophy_data: dict, prestige: int) -> tuple[str, str, int]:
+def seed_school_meta(philosophy_name: str, philosophy_data: dict, prestige: int) -> tuple[dict, str, int]:
     network = _build_scouting_network(prestige, philosophy_data)
     era_label, momentum = _determine_school_era(philosophy_name, prestige)
-    return json.dumps(network), era_label, momentum
+    return network, era_label, momentum
 
 
 def _build_elite_name(prefecture: str) -> str:
@@ -803,7 +804,7 @@ def populate_world():
 
                     prestige_low, prestige_high = data.get('prestige_range', (25, 80))
                     prestige = random.randint(int(prestige_low), int(prestige_high))
-                    network_blob, era_state, era_momentum = seed_school_meta(phil_name, data, prestige)
+                    network_map, era_state, era_momentum = seed_school_meta(phil_name, data, prestige)
 
                     school = School(
                         name=school_name,
@@ -819,12 +820,14 @@ def populate_world():
                         trust_weight=data.get('trust_weight', 0.5),
                         stats_weight=data.get('stats_weight', 0.5),
                         injury_tolerance=data.get('injury_tolerance', 0.0),
-                        scouting_network=network_blob,
+                        scouting_network=json.dumps(network_map),
                         current_era=era_state,
                         era_momentum=era_momentum,
                     )
                     session.add(school)
                     session.flush()
+                    for scope, rating in (network_map or {}).items():
+                        session.add(ScoutingNetwork(school_id=school.id, scope=scope, rating=rating))
                     schools_in_pref += 1
                     total_schools += 1
 

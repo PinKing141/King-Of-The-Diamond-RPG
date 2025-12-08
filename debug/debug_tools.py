@@ -43,12 +43,13 @@ def _get_player(context, session, state):
     if context and getattr(context, "session", None) and getattr(context, "player_id", None):
         try:
             return context.session.get(Player, context.player_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[Debug] Failed to fetch player from context: {exc}")
     if session and state and getattr(state, "active_player_id", None):
         try:
             return session.get(Player, state.active_player_id)
-        except Exception:
+        except Exception as exc:
+            print(f"[Debug] Failed to fetch player from session: {exc}")
             return None
     return None
 
@@ -59,7 +60,8 @@ def _resolve_user_school_id(session, state):
             player = session.get(Player, state.active_player_id)
             if player:
                 return getattr(player, "school_id", None)
-        except Exception:
+        except Exception as exc:
+            print(f"[Debug] Failed to resolve user school id: {exc}")
             return None
     return None
 

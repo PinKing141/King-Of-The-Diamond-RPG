@@ -252,12 +252,22 @@ def _write_file(path: Path, events: List[TelemetryEvent]) -> None:
 
 
 def _persist_to_gamestate(session, events: List[TelemetryEvent]) -> None:
+    """Persist a lightweight summary instead of the full event log to avoid bloating saves."""
+    if not events:
+        return
     try:
         from database.setup_db import GameState
     except Exception:
         return
+
     row = session.query(GameState).first()
     if not row:
         return
-    row.last_telemetry_blob = json.dumps(events)
+
+    summary = {
+        "version": "summary-v1",
+        "event_count": len(events),
+        "tail_types": [evt.get("type") for evt in events[-10:]],
+    }
+    row.last_telemetry_blob = json.dumps(summary)
     session.add(row)

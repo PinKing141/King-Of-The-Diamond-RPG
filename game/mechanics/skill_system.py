@@ -8,13 +8,17 @@ import os
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from database.setup_db import Player, PlayerSkill
-from core.rng import get_rng
+from core.rng import get_rng, new_rng
 from game.mechanics.trait_catalog import SKILL_DEFINITIONS
 from sqlalchemy.orm import selectinload
 
 logger = logging.getLogger(__name__)
 PROGRESSION_DEBUG = os.getenv("PROGRESSION_DEBUG", "").lower() in {"1", "true", "yes"}
-_SKILL_RNG = get_rng()
+_SKILL_RNG = new_rng()
+_SKILL_CACHE: Dict[int, Set[str]] = {}
+_PASSIVE_MOD_CACHE: Dict[int, Dict[str, float]] = {}
+_PASSIVE_APPLIED: Set[int] = set()
+_LAST_PASSIVE: Dict[int, Dict[str, float]] = {}
 
 # ---------------------------------------------------------------------------
 # Acquisition helpers
@@ -150,9 +154,9 @@ def _meets_single_requirement(player, requirement: Dict) -> bool:
 def _skill_key_cache(player) -> Set[str]:
     if not player:
         return set()
-    cache = getattr(player, "_skill_key_cache", None)
-    if cache is not None:
-        return cache
+    pid = getattr(player, "id", None)
+    if pid is not None and pid in _SKILL_CACHE:
+        return _SKILL_CACHE[pid]
     skills = getattr(player, "skills", None)
     keys: Set[str] = set()
     if skills:
@@ -163,30 +167,30 @@ def _skill_key_cache(player) -> Set[str]:
                     keys.add(str(key).lower())
         except TypeError:
             pass
-    setattr(player, "_skill_key_cache", keys)
+    if pid is not None:
+        _SKILL_CACHE[pid] = keys
     return keys
 
 
 def _invalidate_skill_caches(player) -> None:
     if not player:
         return
-    for attr in (
-        "_passive_modifiers_cache",
-        "_behavior_tendency_cache",
-        "_synergy_profile_cache",
-        "_synergy_summary_cache",
-    ):
-        if hasattr(player, attr):
-            setattr(player, attr, None)
+    pid = getattr(player, "id", None)
+    if pid is None:
+        return
+    _SKILL_CACHE.pop(pid, None)
+    _PASSIVE_MOD_CACHE.pop(pid, None)
+    _PASSIVE_APPLIED.discard(pid)
+    _LAST_PASSIVE.pop(pid, None)
 
 
 def gather_passive_skill_modifiers(player) -> Dict[str, float]:
     """Aggregate additive modifiers from passive skills."""
     if not player:
         return {}
-    cache = getattr(player, "_passive_modifiers_cache", None)
-    if cache is not None:
-        return cache
+    pid = getattr(player, "id", None)
+    if pid is not None and pid in _PASSIVE_MOD_CACHE:
+        return _PASSIVE_MOD_CACHE[pid]
     modifiers: Dict[str, float] = defaultdict(float)
     for key in list_player_skill_keys(player):
         data = SKILL_DEFINITIONS.get(key)
@@ -201,14 +205,16 @@ def gather_passive_skill_modifiers(player) -> Dict[str, float]:
                 continue
     balanced, _summary = _apply_synergy_balancing(player, dict(modifiers))
     memo = dict(balanced)
-    setattr(player, "_passive_modifiers_cache", memo)
+    if pid is not None:
+        _PASSIVE_MOD_CACHE[pid] = memo
     return memo
 
 
 def apply_passive_skill_modifiers(player) -> Dict[str, float]:
     """Apply passive modifiers directly to the player attrs (once per load)."""
-    if getattr(player, "_passive_modifiers_applied", False):
-        return getattr(player, "_last_passive_modifiers", {})
+    pid = getattr(player, "id", None)
+    if pid is not None and pid in _PASSIVE_APPLIED:
+        return _LAST_PASSIVE.get(pid, {})
     modifiers = gather_passive_skill_modifiers(player)
     for stat, delta in modifiers.items():
         try:
@@ -218,8 +224,9 @@ def apply_passive_skill_modifiers(player) -> Dict[str, float]:
             continue
         except Exception:
             continue
-    setattr(player, "_passive_modifiers_applied", True)
-    setattr(player, "_last_passive_modifiers", modifiers)
+    if pid is not None:
+        _PASSIVE_APPLIED.add(pid)
+        _LAST_PASSIVE[pid] = modifiers
     return modifiers
 
 

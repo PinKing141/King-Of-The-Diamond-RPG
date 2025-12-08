@@ -4,9 +4,9 @@ import hashlib
 import json
 import random
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence, Tuple
 
+from core.paths import data_path
 from core.rng import get_rng
 
 
@@ -60,7 +60,7 @@ class PitchingMechanicsProfile:
         }
 
 
-def _load_list(path: Path, default: Sequence[str]) -> Sequence[str]:
+def _load_list(path, default: Sequence[str]) -> Sequence[str]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
@@ -71,10 +71,10 @@ def _load_list(path: Path, default: Sequence[str]) -> Sequence[str]:
     return tuple(default)
 
 
-DATA_ROOT = Path(__file__).resolve().parents[1] / "data"
+DATA_ROOT = data_path()
 
 _ARM_SLOTS: Sequence[str] = _load_list(
-    DATA_ROOT / "arm_slots.json",
+    data_path("arm_slots.json"),
     (
         "Over-the-Top",
         "Three-Quarters",
@@ -84,7 +84,7 @@ _ARM_SLOTS: Sequence[str] = _load_list(
 )
 _POSTURES = ("closed", "neutral", "open")
 _SIGNATURE_ADJECTIVES = _load_list(
-    DATA_ROOT / "signature_adjectives.json",
+    data_path("signature_adjectives.json"),
     ("Lab", "Whip", "Tower", "Glide", "Orbit", "Storm", "Echo", "Pulse", "Spiral", "Latch"),
 )
 _NOTES = (

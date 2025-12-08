@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Dict, Any
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
+from core.services import SessionProvider, TempEffects
 from world.rivals import get_ledger, RivalMatchContext
 from game.story import StoryTracker
 
@@ -15,25 +17,25 @@ class GameContext:
     session_factory: Callable[[], Session]
     player_id: Optional[int] = None
     school_id: Optional[int] = None
-    _session: Optional[Session] = field(default=None, init=False, repr=False)
-    temp_effects: Dict[str, Any] = field(default_factory=dict)
-    rivalry_ledger = get_ledger()
+    temp_effects_init: Optional[Dict[str, Any]] = None
+    session_provider: Optional[SessionProvider] = None
     story_tracker: StoryTracker = field(default_factory=StoryTracker)
+    rivalry_ledger = get_ledger()
+    _temp_effects_store: TempEffects = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.session_provider = self.session_provider or SessionProvider(self.session_factory)
+        self._temp_effects_store = TempEffects(self.temp_effects_init)
 
     @property
     def session(self) -> Session:
-        if self._session is None:
-            self._session = self.session_factory()
-        return self._session
+        return self.session_provider.get()
 
     def refresh_session(self) -> None:
-        self.close_session()
-        self._session = self.session_factory()
+        self.session_provider.refresh()
 
     def close_session(self) -> None:
-        if self._session is not None:
-            self._session.close()
-            self._session = None
+        self.session_provider.close()
 
     def set_player(self, player_id: int, school_id: Optional[int]) -> None:
         self.player_id = player_id
@@ -73,18 +75,36 @@ class GameContext:
                 hero_team_id=self.school_id,
                 rival_team_id=opponent_school_id,
             )
-        except Exception:
+        except SQLAlchemyError as exc:
+            # Log and continue so rivalry detection doesn't fail silently.
+            print(f"Rival lookup failed: {exc}")
             return None
 
     # --- Temporary Buff Helpers ---
+    @property
+    def temp_effects_store(self) -> TempEffects:
+        return self._temp_effects_store
+
+    @property
+    def temp_effects(self) -> Dict[str, Any]:
+        return self._temp_effects_store.data
+
+    @temp_effects.setter
+    def temp_effects(self, payload: Optional[Dict[str, Any]]) -> None:
+        # Allow dataclass init to assign temp_effects before store is built.
+        if isinstance(getattr(self, "_temp_effects_store", None), TempEffects):
+            self._temp_effects_store = TempEffects(payload)
+        else:
+            object.__setattr__(self, "_temp_effects_store", TempEffects(payload))
+
     def set_temp_effect(self, key: str, payload: Any) -> None:
-        self.temp_effects[key] = payload
+        self._temp_effects_store.set(key, payload)
 
     def get_temp_effect(self, key: str, default=None):
-        return self.temp_effects.get(key, default)
+        return self._temp_effects_store.get(key, default)
 
     def clear_temp_effect(self, key: str) -> None:
-        self.temp_effects.pop(key, None)
+        self._temp_effects_store.clear(key)
 
     def clear_all_temp_effects(self) -> None:
-        self.temp_effects.clear()
+        self._temp_effects_store.clear_all()

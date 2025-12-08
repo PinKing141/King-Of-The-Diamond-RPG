@@ -1,6 +1,7 @@
 # world_sim/tournament_sim.py
 import json
-from pathlib import Path
+
+from core.paths import data_path, load_json_resource
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from database.setup_db import GameState, Player, PlayerRelationship, School, session_scope
@@ -14,10 +15,17 @@ from match_engine.resolver import resolve_match
 from ui.ui_display import Colour, clear_screen
 from .sim_utils import quick_resolve_match
 
+
+def _safe_input(prompt: str, default: str = "") -> str:
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        return default
+
 rng = get_rng()
 REGISTERED_DIALOGUE_IDS: Set[str] = set()
 _DIALOGUE_LIBRARY: Dict[str, Dict[str, Any]] = {}
-_DIALOGUE_PATH = Path(__file__).resolve().parents[1] / "data" / "dialogues.json"
+_DIALOGUE_PATH = data_path("dialogues.json")
 
 
 def _register_dialogue(dialogue_id: str) -> str:
@@ -41,12 +49,14 @@ def _load_dialogues() -> None:
     global _DIALOGUE_LIBRARY
     if _DIALOGUE_LIBRARY:
         return
-    try:
-        with _DIALOGUE_PATH.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, ValueError, json.JSONDecodeError):
-        _DIALOGUE_LIBRARY = {}
-        return
+    payload = load_json_resource("data", "dialogues.json")
+    if payload is None:
+        try:
+            with _DIALOGUE_PATH.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, json.JSONDecodeError):
+            _DIALOGUE_LIBRARY = {}
+            return
     _DIALOGUE_LIBRARY = {entry.get("id"): entry for entry in payload if isinstance(entry, dict) and entry.get("id")}
 
 
@@ -65,13 +75,13 @@ def _play_dialogue(dialogue_id: str) -> None:
     print(f"\n{Colour.BOLD}{speaker}:{Colour.RESET} {text}\n")
     options = dialogue.get("options") or []
     if not options:
-        input("Press Enter to continue...")
+        _safe_input("Press Enter to continue...")
         return
     for idx, option in enumerate(options, start=1):
         print(f"  {idx}. {option.get('text', '...')}")
     choice = 0
     while choice < 1 or choice > len(options):
-        raw = input("Choose a response (default 1): ").strip()
+        raw = _safe_input("Choose a response (default 1): ", default="1").strip()
         if not raw:
             choice = 1
             break
@@ -81,16 +91,19 @@ def _play_dialogue(dialogue_id: str) -> None:
     response = selected.get("response")
     if response:
         print(f"\n{response}\n")
-    input("Press Enter to continue...")
+    _safe_input("Press Enter to continue...")
 
-def run_koshien_tournament(user_school_id, participants=None, context=None):
+def run_koshien_tournament(user_school_id, participants=None, context=None, session=None):
     """
     Summer Koshien: 49 Teams (Qualifiers Winners).
     """
-    with session_scope() as session:
+    if session is None:
+        with session_scope() as sess:
+            _run_generic_tournament("SUMMER KOSHIEN", user_school_id, participants, sess, context=context)
+    else:
         _run_generic_tournament("SUMMER KOSHIEN", user_school_id, participants, session, context=context)
 
-def run_spring_koshien(user_school_id, context=None, qualifiers=None):
+def run_spring_koshien(user_school_id, context=None, qualifiers=None, session=None):
     """
     Spring Koshien (Senbatsu): 32 teams invited based on Autumn Regionals.
     Falls back to prestige seeding if no qualifier list is present.
@@ -99,12 +112,14 @@ def run_spring_koshien(user_school_id, context=None, qualifiers=None):
     clear_screen()
     print(f"{Colour.HEADER}=== SPRING SENBATSU (INVITATIONAL) SELECTION ==={Colour.RESET}\n")
 
-    managed_session = context is None or not getattr(context, "session", None)
-    if managed_session:
-        session_ctx = session_scope()
-        session = session_ctx.__enter__()
-    else:
-        session = context.session
+    managed_session = False
+    if session is None:
+        if context is None or not getattr(context, "session", None):
+            managed_session = True
+            session_ctx = session_scope()
+            session = session_ctx.__enter__()
+        else:
+            session = context.session
 
     try:
         qualifier_ids = qualifiers or []
@@ -134,7 +149,7 @@ def run_spring_koshien(user_school_id, context=None, qualifiers=None):
                 print(f"Your prestige ({user_school.prestige}) was not high enough to impress the committee.")
                 print("You watch the Spring tournament from home...")
 
-        input("Press Enter to continue...")
+        _safe_input("Press Enter to continue...")
 
         _run_generic_tournament("SPRING SENBATSU", user_school_id, participants, session, context=context)
     finally:
@@ -256,7 +271,7 @@ def _run_generic_tournament(title, user_school_id, participants, session, contex
             
             if is_user_match and winner.id != user_school_id:
                 print(f"\n{Colour.FAIL}You have been eliminated.{Colour.RESET}")
-                input("Press Enter...")
+                _safe_input("Press Enter...")
                 return 
                 
         current_bracket = next_round
@@ -300,7 +315,7 @@ def _handle_between_round_story(session, user_school_id: int, bracket: List[Scho
         print(
             f"   Avg fatigue: {avg_fatigue:.1f}% | Avg stamina: {avg_stamina:.1f}"
         )
-        input("Press Enter to continue...")
+        _safe_input("Press Enter to continue...")
         return
     _play_dialogue(DIALOGUE_TEAM_PRACTICE)
 

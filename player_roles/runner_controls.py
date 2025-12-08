@@ -30,6 +30,8 @@ def player_runner_turn(runner, pitcher, state, *, io: Optional[IOInterface] = No
     
     while True:
         choice = prompter("Command: ")
+        if choice is None:
+            return "Stay"
         if choice == '1': return "Stay"
         if choice == '2': return "Lead"
         if choice == '3': return "Steal"

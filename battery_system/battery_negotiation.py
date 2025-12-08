@@ -17,6 +17,12 @@ from .pitcher_personality import does_pitcher_accept
 from game.personnel.relationship_manager import seed_relationships
 
 
+def _log_state(state, message: str) -> None:
+    log_list = getattr(state, "logs", None)
+    if isinstance(log_list, list):
+        log_list.append(message)
+
+
 def _player_team_id(player): 
     return getattr(player, 'team_id', getattr(player, 'school_id', None))
 
@@ -44,8 +50,9 @@ def _maybe_flag_synchronized_pitch(state, pitcher, catcher, trust_snapshot: int)
                 rel = seed_relationships(session, pitcher)
                 partner_id = getattr(rel, "battery_partner_id", None)
                 bond_high = bool(partner_id == catcher_id and (getattr(rel, "battery_rel", 0) or 0) >= 95)
-            except Exception:
+            except Exception as exc:
                 bond_high = False
+                _log_state(state, f"Battery trust lookup failed: {exc}")
     if not bond_high:
         return False
 
@@ -89,9 +96,10 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
         memory = get_or_create_catcher_memory(state)
         pitch_call = generate_catcher_sign(catcher, pitcher, batter, state, memory=memory)
         suggestion, location, intent = pitch_call.pitch, pitch_call.location, pitch_call.intent
-    except Exception:
+    except Exception as exc:
         pitch = type("_P", (), {"pitch_name": "Auto", "break_level": 50})()
         suggestion, location, intent = pitch, "Zone", "Normal"
+        _log_state(state, f"Battery negotiation defaulted: catcher sign generation failed ({exc})")
 
     # 1. Identify Roles
     human_teams = getattr(state, "human_team_ids", set()) or set()
@@ -287,8 +295,9 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
     perfect_location = False
     try:
         perfect_location = _maybe_flag_synchronized_pitch(state, pitcher, catcher, trust)
-    except Exception:
+    except Exception as exc:
         perfect_location = False
+        _log_state(state, f"Sync pitch check skipped: {exc}")
 
     if perfect_location:
         call_snapshot["perfect_location"] = True

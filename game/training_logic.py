@@ -5,8 +5,9 @@ import random
 from typing import List, Optional, Tuple
 
 from game.systems.health_system import check_injury_risk, apply_injury, get_performance_modifiers
-from database.setup_db import PitchRepertoire, Player
+from database.setup_db import PitchRepertoire, Player, PlayerXP
 from game.systems.academic_system import resolve_study_session, clamp, is_academically_eligible
+from core.config_loader import ConfigLoader
 from core.game_context import GameContext
 from game.personnel.personality_effects import adjust_player_morale, decay_slump
 from game.personnel.player_progression import (
@@ -19,10 +20,14 @@ from game.mechanics.skill_system import check_and_grant_skills, list_player_skil
 from game.mechanics.trait_logic import get_progression_speed_multiplier
 from game.mechanics.pitch_mastery import MASTERY_THRESHOLDS, mastery_level_for_xp, mastery_progress
 from ui.ui_display import Colour
-from core.constants import _BALANCE as BALANCE
 
 logger = logging.getLogger(__name__)
 PROGRESSION_DEBUG = os.getenv("PROGRESSION_DEBUG", "").lower() in {"1", "true", "yes"}
+
+FATIGUE_COSTS = ConfigLoader.get_section("fatigue_costs", {}) or {}
+XP_GAINS = ConfigLoader.get_section("xp_gains", {}) or {}
+TRAINING_EFFICIENCY = ConfigLoader.get_section("training_efficiency", {}) or {}
+INJURY_RISK = ConfigLoader.get_section("injury_risk", {}) or {}
 
 
 def _get_player(context: GameContext) -> Optional[Player]:
@@ -66,6 +71,12 @@ def _xp_threshold(stat_value: Optional[float]) -> float:
 
 
 def _load_training_xp(player: Player) -> dict:
+    entries = getattr(player, "xp_entries", None) or []
+    pool = {entry.stat_key: float(entry.xp or 0.0) for entry in entries if getattr(entry, "stat_key", None)}
+    if pool:
+        return pool
+
+    # Legacy fallback: hydrate from the old JSON blob if present.
     raw = getattr(player, 'training_xp', None)
     if not raw:
         return {}
@@ -73,22 +84,47 @@ def _load_training_xp(player: Player) -> dict:
         data = json.loads(raw)
     except (TypeError, json.JSONDecodeError):
         return {}
+
     cleaned = {}
     for key, value in data.items():
         try:
             cleaned[key] = float(value)
         except (TypeError, ValueError):
             continue
+
+    if cleaned and hasattr(player, "xp_entries"):
+        for stat_key, xp_value in cleaned.items():
+            player.xp_entries.append(PlayerXP(stat_key=stat_key, xp=xp_value))
+        player.training_xp = '{}'
+
     return cleaned
 
 
 def _save_training_xp(player: Player, payload: dict) -> None:
-    if not payload:
-        player.training_xp = '{}'
-        return
-    # Round stored floats to reduce noise in the save file.
-    snapshot = {k: round(v, 4) for k, v in payload.items() if v > 0}
-    player.training_xp = json.dumps(snapshot)
+    existing = {entry.stat_key: entry for entry in getattr(player, "xp_entries", []) if getattr(entry, "stat_key", None)}
+    seen: set[str] = set()
+
+    for stat_key, value in payload.items():
+        if value <= 0:
+            continue
+        rounded = round(float(value), 4)
+        entry = existing.get(stat_key)
+        if entry is None:
+            entry = PlayerXP(stat_key=stat_key, xp=rounded)
+            player.xp_entries.append(entry)
+        else:
+            entry.xp = rounded
+        seen.add(stat_key)
+
+    for stat_key, entry in list(existing.items()):
+        if stat_key not in seen:
+            try:
+                player.xp_entries.remove(entry)
+            except ValueError:
+                pass
+
+    # Clear legacy blob so future loads rely on PlayerXP rows.
+    player.training_xp = '{}'
 
 
 def _apply_training_xp(player: Player, xp_gains: dict) -> Tuple[dict, dict]:
@@ -111,7 +147,7 @@ def _apply_training_xp(player: Player, xp_gains: dict) -> Tuple[dict, dict]:
     return level_ups, pool
 
 
-def _maybe_trigger_breakthrough(player: Player, xp_gains: dict, xp_pool: dict) -> Optional[dict]:
+def _maybe_trigger_breakthrough(player: Player, xp_gains: dict, xp_pool: dict, rng: Optional[random.Random]) -> Optional[dict]:
     if not xp_gains:
         return None
     determination = getattr(player, 'determination', None)
@@ -119,7 +155,7 @@ def _maybe_trigger_breakthrough(player: Player, xp_gains: dict, xp_pool: dict) -
         determination = getattr(player, 'drive', 50) or 50
     chance = BREAKTHROUGH_BASE_CHANCE + max(0.0, determination - 50) * BREAKTHROUGH_SCALE
     chance = max(BREAKTHROUGH_MIN, min(BREAKTHROUGH_MAX, chance))
-    roll = random.random()
+    roll = rng.random()
     if roll > chance:
         return None
     focus_stat = max(xp_gains.items(), key=lambda item: item[1])[0]
@@ -140,8 +176,10 @@ def apply_scheduled_action(
     *,
     commit: bool = True,
     progression_state: Optional[dict] = None,
+    rng: Optional[random.Random] = None,
 ) -> dict:
     """Execute a scheduled action and return a structured result dict."""
+    rng = rng or random
     player = _get_player(context)
     if not player:
         return {"status": "error", "message": "Player not found."}
@@ -154,10 +192,10 @@ def apply_scheduled_action(
     position = player.position
     is_academic_ok = is_academically_eligible(player, player.school)
 
-    costs = BALANCE.get('fatigue_costs', {})
-    xp_rates = BALANCE.get('xp_gains', {})
-    eff = BALANCE.get('training_efficiency', {})
-    risk = BALANCE.get('injury_risk', {})
+    costs = FATIGUE_COSTS
+    xp_rates = XP_GAINS
+    eff = TRAINING_EFFICIENCY
+    risk = INJURY_RISK
 
     def _is_reserve_player(p: Player) -> bool:
         role = (getattr(p, 'role', '') or '').upper()
@@ -325,10 +363,10 @@ def apply_scheduled_action(
             summary = f"Bullpen tune-up: {target.pitch_name} already mastered."
         else:
             span = max(1, next_threshold - prev_threshold)
-            base_pct = random.uniform(0.05, 0.10)
-            inspiration = random.random() < 0.15
+            base_pct = rng.uniform(0.05, 0.10)
+            inspiration = rng.random() < 0.15
             if inspiration:
-                base_pct = random.uniform(0.15, 0.20)
+                base_pct = rng.uniform(0.15, 0.20)
             gain = max(1, int(round(span * base_pct)))
             target.mastery_xp = current_xp + gain
             target.mastery_level = mastery_level_for_xp(target.mastery_xp)
@@ -411,7 +449,7 @@ def apply_scheduled_action(
     applied_stat_changes: dict = {}
 
     for stat, value in stat_gains.items():
-        variance = random.uniform(0.9, 1.1)
+        variance = rng.uniform(0.9, 1.1)
         final_value = value * variance
         if stat in XP_TRACKED_STATS:
             xp_gains[stat] = xp_gains.get(stat, 0.0) + final_value
@@ -429,7 +467,7 @@ def apply_scheduled_action(
     breakthrough_event: Optional[dict] = None
     if xp_gains:
         level_ups, xp_pool = _apply_training_xp(player, xp_gains)
-        breakthrough_event = _maybe_trigger_breakthrough(player, xp_gains, xp_pool)
+        breakthrough_event = _maybe_trigger_breakthrough(player, xp_gains, xp_pool, rng)
         _save_training_xp(player, xp_pool)
 
     if level_ups and PROGRESSION_DEBUG:

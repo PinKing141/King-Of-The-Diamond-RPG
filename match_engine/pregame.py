@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from database.setup_db import Player, School, GameState, PlayerRelationship
 from game.coach_strategy import export_mod_descriptors
 from game.personnel.player_progression import fetch_player_milestone_tags
+from core.services import SessionProvider, TempEffects
 from core.rng import get_rng
 from core.event_bus import EventBus
 from match_engine.confidence import adjust_confidence, initialize_confidence
@@ -114,6 +115,8 @@ class MatchState:
         away_bench: Optional[Iterable[Player]] = None,
         event_bus: EventBus | None = None,
         clutch_pitch_payload: Optional[Dict[str, Any]] = None,
+        session_provider: SessionProvider | None = None,
+        temp_effects_store: TempEffects | None = None,
     ):
         # Teams (Now Schools)
         self.home_team = home_team
@@ -156,7 +159,18 @@ class MatchState:
         self.logs = []
 
         # Shared session for writing back results/injuries
-        self.db_session = db_session
+        self.session_provider: SessionProvider | None = session_provider or (
+            SessionProvider(lambda: db_session, initial_session=db_session)
+            if db_session is not None
+            else None
+        )
+        self.db_session = db_session or (self.session_provider.get() if self.session_provider else None)
+        if self.db_session is None:
+            raise ValueError("MatchState requires a database session")
+
+        # Scoped temporary effects buffer (mirrors GameContext helpers)
+        self.temp_effects_store: TempEffects = temp_effects_store or TempEffects()
+        self.temp_effects = self.temp_effects_store.data
 
         # Runtime trackers for enhanced commentary cues
         self.pitcher_diagnostics = {}
@@ -352,6 +366,19 @@ class MatchState:
         
     def log(self, message):
         self.logs.append(message)
+
+    # --- Temporary Buff Helpers (parity with GameContext) ---
+    def set_temp_effect(self, key: str, payload: Any) -> None:
+        self.temp_effects_store.set(key, payload)
+
+    def get_temp_effect(self, key: str, default=None):
+        return self.temp_effects_store.get(key, default)
+
+    def clear_temp_effect(self, key: str) -> None:
+        self.temp_effects_store.clear(key)
+
+    def clear_all_temp_effects(self) -> None:
+        self.temp_effects_store.clear_all()
 
 
 def _build_presence_profiles(state: MatchState) -> List[PresenceProfile]:
@@ -574,11 +601,20 @@ def prepare_match(
     tournament_name: Optional[str] = None,
     rival_match_context=None,
     rival_presentation: Optional[Dict[str, Any]] = None,
+    session_provider: SessionProvider | None = None,
+    temp_effects_store: TempEffects | None = None,
 ):
     """
     Loads teams, builds lineups, selects pitchers.
     Returns a ready-to-use MatchState object.
     """
+    provider = session_provider or (
+        SessionProvider(lambda: db_session, initial_session=db_session) if db_session is not None else None
+    )
+    db_session = db_session or (provider.get() if provider else None)
+    if db_session is None:
+        raise ValueError("prepare_match requires a database session")
+
     # Use School model, use session.get()
     home_team = db_session.get(School, home_id)
     away_team = db_session.get(School, away_id)
@@ -632,6 +668,8 @@ def prepare_match(
         away_bench=away_bench,
         event_bus=event_bus,
         clutch_pitch_payload=clutch_pitch,
+        session_provider=provider,
+        temp_effects_store=temp_effects_store,
     )
     match_state.tournament_name = tournament_name
     match_state.tournament = tournament_name

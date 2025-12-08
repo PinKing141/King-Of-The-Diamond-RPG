@@ -39,8 +39,9 @@ ELITE_SOUNDS = {
 class BrassBand:
     """Adaptive dugout audio cues that respond to prestige, momentum, and walk-up themes."""
 
-    def __init__(self, state) -> None:
+    def __init__(self, state, *, rng: Optional[random.Random] = None) -> None:
         self.state = state
+        self.rng = rng or getattr(state, "rng", random)
         self.bus: Optional[EventBus] = getattr(state, "event_bus", None)
         self.current_song: Optional[str] = None
         self.last_batter_id: Optional[int] = None
@@ -116,13 +117,13 @@ class BrassBand:
 
     def _play_context_music(self, mood: str) -> None:
         if self.support_tier == 0:
-            if random.random() < 0.15:
-                self._publish_song(random.choice(SILENCE_SOUNDS), "DIM")
+            if self.rng.random() < 0.15:
+                self._publish_song(self.rng.choice(SILENCE_SOUNDS), "DIM")
             return
         if self.support_tier == 1:
-            if random.random() < 0.2:
+            if self.rng.random() < 0.2:
                 team_name = getattr(self.state.home_team, "name", "Team")
-                raw = random.choice(CHANT_SOUNDS)
+                raw = self.rng.choice(CHANT_SOUNDS)
                 text = raw.replace("[Team Name]", team_name)
                 self._publish_song(text, "DIM")
             return

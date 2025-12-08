@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
 
-from core.rng import DeterministicRNG, get_rng
+from core.rng import DeterministicRNG, get_rng, new_rng
 from game.mechanics.skill_system import (
     SKILL_DEFINITIONS,
     grant_skill_by_key,
@@ -35,7 +35,7 @@ def maybe_assign_bad_trait(
         return None
 
     chance = max(0.0, min(1.0, chance))
-    rng = rng or get_rng()
+    rng = rng or new_rng()
     if rng.random() > chance:
         return None
 
@@ -51,7 +51,7 @@ def seed_negative_traits(
     session: Session, players: Iterable, *, chance: float = 0.1, rng: Optional[DeterministicRNG] = None
 ) -> int:
     """Iterate through players, rolling for a negative trait assignment."""
-    rng = rng or get_rng()
+    rng = rng or new_rng()
     total = 0
     for player in players:
         if maybe_assign_bad_trait(session, player, chance=chance, rng=rng):

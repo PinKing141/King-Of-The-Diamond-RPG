@@ -7,7 +7,7 @@ from typing import Iterable, Optional, Sequence
 from sqlalchemy.orm import Session
 
 from database.setup_db import Player
-from core.rng import DeterministicRNG, get_rng
+from core.rng import DeterministicRNG, get_rng, new_rng
 from game.mechanics.skill_system import grant_skill_by_key, list_meetable_skills
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ _POTENTIAL_GRADE_MULTIPLIERS = {
 }
 
 _INITIAL_TRAIT_CAP = 3
-_trait_rng = get_rng()
+_trait_rng = new_rng()
 
 
 def _clamp(value: float, low: float, high: float) -> float:

@@ -7,8 +7,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from database.setup_db import Team
-from game.training_logic import apply_scheduled_action
 from core.game_context import GameContext
+from game.services.training_service import TrainingService
+from game.services.training_domain import apply_training_action_dto
+from core.repositories import PlayerRepository, TeamRepository
+from game.services.progression_port import ProgressionPort
 
 
 DAYS_OF_WEEK = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']
@@ -18,9 +21,11 @@ FAST_PRACTICE_MATCHES = os.getenv("FAST_PRACTICE_MATCHES", "").lower() in {"1", 
 PRACTICE_OPPONENT_SAMPLE = int(os.getenv("PRACTICE_OPPONENT_SAMPLE", "0") or 0)
 
 
-def _pick_practice_opponent(session, school_id: Optional[int]) -> Optional[Team]:
+def _pick_practice_opponent(session, school_id: Optional[int], *, rng: Optional[random.Random] = None) -> Optional[Team]:
     if school_id is None:
         return None
+
+    rng = rng or random
 
     base_query = session.query(Team).filter(Team.id != school_id)
     total = base_query.count()
@@ -30,7 +35,7 @@ def _pick_practice_opponent(session, school_id: Optional[int]) -> Optional[Team]
     if PRACTICE_OPPONENT_SAMPLE and PRACTICE_OPPONENT_SAMPLE < total:
         offsets = set()
         while len(offsets) < PRACTICE_OPPONENT_SAMPLE:
-            offsets.add(random.randrange(total))
+            offsets.add(rng.randrange(total))
         candidates = []
         for offset in offsets:
             opponent = (
@@ -43,9 +48,9 @@ def _pick_practice_opponent(session, school_id: Optional[int]) -> Optional[Team]
             if opponent:
                 candidates.append(opponent)
         if candidates:
-            return random.choice(candidates)
+            return rng.choice(candidates)
 
-    offset = random.randrange(total)
+    offset = rng.randrange(total)
     return (
         session.query(Team)
         .filter(Team.id != school_id)
@@ -193,6 +198,12 @@ def execute_schedule_core(
     context: GameContext,
     schedule_grid,
     current_week: int,
+    *,
+    training_service: Optional[TrainingService] = None,
+    rng_seed: Optional[int] = None,
+    player_repo: Optional[PlayerRepository] = None,
+    team_repo: Optional[TeamRepository] = None,
+    progression_service: Optional[ProgressionPort] = None,
 ) -> ScheduleExecution:
     """Apply a planned schedule to the database and return structured outcomes."""
     session = context.session
@@ -201,14 +212,23 @@ def execute_schedule_core(
 
         from match_engine.resolver import resolve_match  # Local import avoids circular dependency
 
-    my_team = session.get(Team, context.school_id)
-    if not my_team:
+    my_team = session.get(Team, context.school_id) if session else None
+    if session and not my_team:
         raise ValueError("Active team not found for current player.")
 
     slot_results: List[SlotResult] = []
     warnings: List[str] = []
     headlines: List[str] = []
     progression_state: Dict[str, object] = {}
+
+    service = training_service or TrainingService.with_seed(rng_seed)
+    rng = service.rng
+
+    player_dto = None
+    if player_repo is not None:
+        player_dto = player_repo.get_active_player()
+        if player_dto is None:
+            raise ValueError("Active player not found via repository.")
 
     for d_idx, day_slots in enumerate(schedule_grid):
         day_dirty = False
@@ -217,12 +237,35 @@ def execute_schedule_core(
                 continue
 
             try:
-                action_result = apply_scheduled_action(
-                    context,
-                    action,
-                    commit=False,
-                    progression_state=progression_state,
-                )
+                if player_dto is not None:
+                    result = apply_training_action_dto(
+                        player_dto,
+                        action,
+                        rng=rng,
+                        progression_service=progression_service,
+                        progression_state=progression_state,
+                    )
+                    player_dto = result.dto
+                    action_result = {
+                        "status": "ok",
+                        "message": result.summary,
+                        "fatigue_change": result.fatigue_change,
+                        "stat_changes": result.stat_changes,
+                        "xp_gains": result.xp_gains,
+                        "mastery_gains": result.mastery_gains,
+                        "breakthrough": result.breakthrough,
+                        "new_fatigue": player_dto.fatigue,
+                        "skills_unlocked": result.skills_unlocked,
+                        "milestones": result.milestones,
+                    }
+                    player_repo.save_player(player_dto)
+                else:
+                    action_result = service.apply_action(
+                        context,
+                        action,
+                        commit=False,
+                        progression_state=progression_state,
+                    )
                 summary = action_result.get("message", "Done.")
                 slot_result = SlotResult(
                     day_index=d_idx,
@@ -232,8 +275,8 @@ def execute_schedule_core(
                 )
                 slot_result.training_details = action_result
 
-                if 'match' in action and 'b_team' not in action:
-                    opponent = _pick_practice_opponent(session, context.school_id)
+                if 'match' in action and 'b_team' not in action and session:
+                    opponent = _pick_practice_opponent(session, context.school_id, rng=rng)
                     if not opponent:
                         slot_result.error = "No opponents available for practice match."
                     else:

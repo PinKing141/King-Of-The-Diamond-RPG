@@ -14,7 +14,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.setup_db import School, Player, PitchRepertoire
 from database.populate_japan import roll_arm_slot
-from ui.ui_display import Colour, clear_screen
 from player_roles.two_way import roll_two_way_profile
 from game.systems.academic_system import roll_academic_profile
 from game.personnel.relationship_manager import seed_relationships
@@ -38,7 +37,6 @@ GROWTH_STYLE_INFO = {
     "Balanced": {"desc": "Jack of all trades.", "pros": "No weakness", "cons": "No specialty"}
 }
 
-FRAME_WIDTH = 84
 STEP_TITLES = {
     0: "Name Entry",
     1: "Select Position",
@@ -103,7 +101,10 @@ def _io_log(io: Optional[IOInterface], message: str, *, level: str = "info") -> 
 def _io_prompt(io: Optional[IOInterface], prompt: str, *, options: Optional[List[str]] = None, default: str = "") -> str:
     if io:
         return io.prompt(prompt, options=options)
-    response = input(prompt)
+    try:
+        response = input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        return default
     if options and response not in options:
         return default
     return response if response else default
@@ -182,11 +183,12 @@ def _load_cities_for_prefecture(session: Session, prefecture: str) -> List[Dict[
     return city_rows
 
 def _render_city_directory(prefecture: str, cities: List[Dict[str, Any]], columns: int = 3) -> None:
+    # UI-specific rendering handled by the view layer; retain for compatibility when IO is absent.
     if not cities:
         print(f"No registered baseball schools for {prefecture} yet.")
         return
 
-    col_width = FRAME_WIDTH // max(columns, 1)
+    col_width = 84 // max(columns, 1)
     for idx, entry in enumerate(cities, start=1):
         label = f"{idx:>2}. {entry['name']} ({entry['school_count']})"
         print(label.ljust(col_width), end="")
@@ -216,14 +218,14 @@ def _bar(value: Optional[int], width: int = 20) -> str:
 
 
 def _render_creation_banner(step: int, data: dict, subtitle: str) -> None:
-    clear_screen()
+    # Deprecated direct rendering retained for legacy CLI usage.
     stage_index = min(step, TOTAL_STEPS - 1)
     stage = stage_index + 1
-    print(f"{Colour.CYAN}{'═' * FRAME_WIDTH}{Colour.RESET}")
+    print(f"{'═' * 84}")
     title = f"CHARACTER CREATION  |  STEP {stage}/{TOTAL_STEPS}"
-    print(title.center(FRAME_WIDTH))
-    print(subtitle.center(FRAME_WIDTH))
-    print(f"{Colour.CYAN}{'═' * FRAME_WIDTH}{Colour.RESET}")
+    print(title.center(84))
+    print(subtitle.center(84))
+    print(f"{'═' * 84}")
 
     full_name = " ".join(part for part in [data['last_name'], data['first_name']] if part).strip()
     summary = [
@@ -233,11 +235,12 @@ def _render_creation_banner(step: int, data: dict, subtitle: str) -> None:
         f"School: {(data.get('school').name if data.get('school') else '--')}"
     ]
     for line in summary:
-        print(line.ljust(FRAME_WIDTH))
-    print("─" * FRAME_WIDTH)
+        print(line.ljust(84))
+    print("─" * 84)
 
 
 def _render_stat_overview(position: str, stats: dict) -> None:
+    # Deprecated direct rendering retained for legacy CLI usage.
     if not stats:
         return
     if position == "Pitcher":
@@ -264,7 +267,8 @@ def _render_stat_overview(position: str, stats: dict) -> None:
 
 
 def _print_option(title: str) -> None:
-    print(f"{Colour.GOLD}{title}{Colour.RESET}")
+    # Deprecated direct rendering retained for legacy CLI usage.
+    print(title)
 
 
 def _validate_pitch_selection(selection: Optional[List[str]]) -> Tuple[bool, str]:
@@ -398,7 +402,6 @@ def commit_player_to_db(session: Session, data) -> int:
     determination_seed = traits['drive'] + random.randint(-6, 6)
     clean_stats.setdefault('determination', max(30, min(95, determination_seed)))
     clean_stats.setdefault('ability_points', 0)
-    clean_stats.setdefault('training_xp', '{}')
 
     p = Player(
         first_name=data['first_name'],
@@ -434,466 +437,509 @@ def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Option
 
     picks = _dedupe_preserve_order([p for p in (pitch_names or []) if p in PITCH_SELECTION_POOL])
     if not picks:
-        picks = list(DEFAULT_PITCH_ARSENAL)
-    picks = picks[:MAX_PITCHES]
-    if not picks:
-        return
+# ------------------------------------------------------
+# DECISION-BASED CHARACTER CREATION ENGINE
+# ------------------------------------------------------
+from dataclasses import dataclass, field
 
-    control = stats.get('control') or getattr(player, 'control', 50) or 50
-    movement = stats.get('movement') or getattr(player, 'movement', 50) or 50
-    base_xp = 0
-    base_level = mastery_level_for_xp(base_xp)
+from core.decisions import DecisionRequest, DecisionResult
 
-    for name in picks:
-        quality = max(30, min(95, int(control + random.randint(-6, 6))))
-        break_level = max(30, min(95, int(movement + random.randint(-6, 6))))
-        entry = PitchRepertoire(
-            player_id=player.id,
-            pitch_name=name,
-            quality=quality,
-            break_level=break_level,
-            mastery_xp=base_xp,
-            mastery_level=base_level,
+
+@dataclass
+class CreatePlayerState:
+    first_name: str = ""
+    last_name: str = ""
+    position: Optional[str] = None
+    specific_pos: Optional[str] = None
+    growth_style: Optional[str] = None
+    stats: Optional[dict] = None
+    rerolls_left: int = 3
+    hometown: Optional[str] = None
+    prefecture_choice: Optional[str] = None
+    school: Optional[School] = None
+    pitch_arsenal: List[str] = field(default_factory=list)
+    starter_trait: Optional[bool] = None
+
+
+class CreatePlayerEngine:
+    """State machine that emits DecisionRequests instead of blocking IO."""
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.state = CreatePlayerState()
+        self.step = 0
+        self._awaiting: Optional[str] = None
+        self._scratch: dict = {}
+
+    # --------- helpers ---------
+    def _prompt(self, message: str, *, options: Optional[List[str]] = None, default: str = "") -> DecisionResult:
+        request = DecisionRequest(kind="prompt", message=message, options=options, default=default)
+        return DecisionResult(summary=None, requests=[request], done=False, data=self._serialize_state())
+
+    def _log_and_prompt(self, lines: List[str], prompt: DecisionRequest) -> DecisionResult:
+        requests = [DecisionRequest(kind="log", message=line) for line in lines]
+        requests.append(prompt)
+        return DecisionResult(summary=None, requests=requests, done=False, data=self._serialize_state())
+
+    def _serialize_state(self) -> Dict[str, Any]:
+        return {
+            "step": self.step,
+            "state": self.state.__dict__,
+        }
+
+    # --------- step processing ---------
+    def advance(self, response: Optional[str] = None) -> DecisionResult:
+        # Handle response to previous prompt
+        if self._awaiting:
+            handler = getattr(self, f"_handle_{self._awaiting}")
+            handler(response or "")
+            self._awaiting = None
+
+        if self.is_complete():
+            return DecisionResult(
+                summary="Character created",
+                requests=[],
+                done=True,
+                data={"player_id": self.result()},
+            )
+
+        while True:
+            if self.step == 0:
+                return self._step_name_entry()
+            if self.step == 1:
+                return self._step_position()
+            if self.step == 2:
+                return self._step_starter_trait()
+            if self.step == 3:
+                return self._step_stats()
+            if self.step == 4:
+                return self._step_growth_style()
+            if self.step == 5:
+                return self._step_hometown()
+            if self.step == 6:
+                return self._step_school()
+            if self.step == 7:
+                return self._step_pitch_arsenal()
+            if self.step == 8:
+                return self._step_finalize()
+            return DecisionResult(summary="Invalid step", requests=[], done=True, data=self._serialize_state())
+
+    # --- Step 0: name ---
+    def _step_name_entry(self) -> DecisionResult:
+        if "name_phase" not in self._scratch:
+            self._scratch["name_phase"] = "first"
+        phase = self._scratch["name_phase"]
+
+        if phase == "first":
+            self._awaiting = "name_first"
+            return self._prompt("First Name: ")
+        if phase == "last":
+            self._awaiting = "name_last"
+            return self._prompt("Last Name: ")
+        if phase == "confirm":
+            self._awaiting = "name_confirm"
+            full = f"{self.state.last_name} {self.state.first_name}".strip()
+            return self._log_and_prompt(
+                [f"Name: {full or '--'}"],
+                DecisionRequest(kind="prompt", message="Continue with this name? (y/n)", options=["y", "n"], default="n"),
+            )
+        # done
+        self._scratch.pop("name_phase", None)
+        self.step += 1
+        return self.advance()
+
+    def _handle_name_first(self, value: str) -> None:
+        if value.strip():
+            self.state.first_name = value.strip()
+        self._scratch["name_phase"] = "last"
+
+    def _handle_name_last(self, value: str) -> None:
+        if value.strip():
+            self.state.last_name = value.strip()
+        self._scratch["name_phase"] = "confirm"
+
+    def _handle_name_confirm(self, value: str) -> None:
+        valid, msg = _validate_name(self.state.first_name, self.state.last_name)
+        if not valid:
+            self._scratch["name_phase"] = "first"
+            self._scratch["name_error"] = msg
+            return
+        if (value or "").lower().startswith("y"):
+            self._scratch.pop("name_phase", None)
+            self.step += 1
+        else:
+            self._scratch["name_phase"] = "first"
+
+    # --- Step 1: position ---
+    def _step_position(self) -> DecisionResult:
+        positions = [
+            "Pitcher",
+            "Catcher",
+            "First Base",
+            "Second Base",
+            "Third Base",
+            "Shortstop",
+            "Left Field",
+            "Center Field",
+            "Right Field",
+        ]
+        lines = ["Select Player Position"] + [f"{idx}. {label}" for idx, label in enumerate(positions, start=1)] + ["0. Back"]
+        self._awaiting = "position_pick"
+        return self._log_and_prompt(
+            lines,
+            DecisionRequest(kind="prompt", message="Choice: ", default="0"),
         )
-        session.add(entry)
-    session.commit()
 
+    def _handle_position_pick(self, value: str) -> None:
+        if value == "0":
+            self.step = max(0, self.step - 1)
+            return
+        if not value.isdigit():
+            return
+        positions = [
+            "Pitcher",
+            "Catcher",
+            "First Base",
+            "Second Base",
+            "Third Base",
+            "Shortstop",
+            "Left Field",
+            "Center Field",
+            "Right Field",
+        ]
+        pick = int(value) - 1
+        if 0 <= pick < len(positions):
+            specific = positions[pick]
+            self.state.specific_pos = specific
+            if specific == "Pitcher":
+                self.state.position = "Pitcher"
+            elif specific == "Catcher":
+                self.state.position = "Catcher"
+            elif specific in {"First Base", "Second Base", "Third Base", "Shortstop"}:
+                self.state.position = "Infielder"
+            else:
+                self.state.position = "Outfielder"
+            if self.state.position != "Pitcher":
+                self.state.pitch_arsenal = []
+                self.state.starter_trait = None
+            else:
+                self.state.starter_trait = None
+            self.step += 1
 
-
-# ------------------------------------------------------
-# CHARACTER CREATION MENU (unchanged logic)
-# ------------------------------------------------------
-def create_hero(session: Session, *, io: Optional[IOInterface] = None) -> Optional[int]:
-    _reset_hometown_cache()
-    step = 0
-    data = {
-        "first_name": "", "last_name": "",
-        "position": None, "specific_pos": None,
-        "growth_style": None,
-        "stats": None, "rerolls_left": 3,
-        "hometown": None,
-        "prefecture_choice": None,
-        "school": None,
-        "pitch_arsenal": [],
-        "starter_trait": None,
-    }
-    
-    while True:
-        step_title = STEP_TITLES.get(step, "Overview")
-        _render_creation_banner(step, data, step_title)
-        
-        # STEP 0: NAME ENTRY
-        if step == 0:
-            _print_option("Player Identity")
-            if data['first_name'] or data['last_name']:
-                _io_log(io, f"Current: {data['last_name']} {data['first_name']}")
-            _io_log(io, "Enter new values or leave blank to keep current.")
-
-            first = _io_prompt(io, "First Name: ").strip()
-            if first:
-                data['first_name'] = first
-            last = _io_prompt(io, "Last Name: ").strip()
-            if last:
-                data['last_name'] = last
-
-            valid, msg = _validate_name(data['first_name'], data['last_name'])
-            if not valid:
-                _io_log(io, msg, level="warning")
-                time.sleep(1)
-                continue
-
-            confirm = _io_prompt(io, "Continue with this name? (y/n): ", options=["y", "n"], default="n").strip().lower()
-            if confirm == 'y':
-                step += 1
-            continue
-
-        # STEP 1: POSITION SELECTION
-        elif step == 1:
-            _print_option("Select Player Position")
-            positions = [
-                "Pitcher",
-                "Catcher",
-                "First Base",
-                "Second Base",
-                "Third Base",
-                "Shortstop",
-                "Left Field",
-                "Center Field",
-                "Right Field",
+    # --- Step 2: starter trait ---
+    def _step_starter_trait(self) -> DecisionResult:
+        if not self.state.position:
+            self.step = 0
+            return self.advance()
+        if self.state.position != "Pitcher":
+            self.state.starter_trait = None
+            self.step += 1
+            return self.advance()
+        status = self.state.starter_trait
+        if status is None:
+            self._awaiting = "starter_roll"
+            lines = [
+                "Starter Trait Gacha",
+                "One roll decides if the coaches tag you with the Starter trait.",
+                "Odds: 35% chance. No rerolls.",
+                "1. Roll Gacha",
+                "0. Back",
             ]
-            for idx, label in enumerate(positions, start=1):
-                _io_log(io, f" {idx}. {label}")
-            _io_log(io, " 0. Back")
-            _io_log(io, f"{Colour.GOLD}Coach's staff will decide starter vs reliever roles after creation.{Colour.RESET}")
+            return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Choice: ", default="0"))
+        lines = [
+            "Starter Trait secured." if status else "No Starter Trait. Earn it through performance.",
+            "1. Continue",
+            "0. Back",
+        ]
+        self._awaiting = "starter_ack"
+        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Choice: ", default="1"))
 
-            choice = _io_prompt(io, "Choice: ").strip()
-            if choice == '0':
-                step -= 1
-                continue
-            if not choice.isdigit():
-                continue
-            pick = int(choice) - 1
-            if 0 <= pick < len(positions):
-                specific = positions[pick]
-                data['specific_pos'] = specific
-                if specific == "Pitcher":
-                    data['position'] = "Pitcher"
-                elif specific == "Catcher":
-                    data['position'] = "Catcher"
-                elif specific in {"First Base", "Second Base", "Third Base", "Shortstop"}:
-                    data['position'] = "Infielder"
-                else:
-                    data['position'] = "Outfielder"
-                if data['position'] != "Pitcher":
-                    data['pitch_arsenal'] = []
-                    data['starter_trait'] = None
-                else:
-                    data['starter_trait'] = None
-                step += 1
-            continue
+    def _handle_starter_roll(self, value: str) -> None:
+        if value == "0":
+            self.step = max(0, self.step - 1)
+            return
+        if value == "1":
+            self.state.starter_trait = random.random() < 0.35
+        # stay on step to acknowledge result
 
-        # STEP 2: STARTER TRAIT GACHA
-        elif step == 2:
-            if not data.get('position'):
-                _io_log(io, "Select a position before rolling for traits.", level="warning")
-                time.sleep(1)
-                step -= 1
-                continue
-            if data['position'] != "Pitcher":
-                data['starter_trait'] = None
-                step += 1
-                continue
+    def _handle_starter_ack(self, value: str) -> None:
+        if value == "0":
+            self.state.starter_trait = None
+            return
+        if value == "1":
+            self.step += 1
 
-            _print_option("Starter Trait Gacha")
-            status = data.get('starter_trait')
-            if status is None:
-                _io_log(io, "One roll decides if the coaches tag you with the Starter trait.")
-                _io_log(io, "Odds: 35% chance. No rerolls.")
-                _io_log(io, "1. Roll Gacha")
-                _io_log(io, "0. Back")
-                sel = _io_prompt(io, "Choice: ").strip()
-                if sel == '0':
-                    step -= 1
-                    continue
-                if sel == '1':
-                    won = random.random() < 0.35
-                    data['starter_trait'] = won
-                    message = "Starter trait unlocked!" if won else "No starter trait this time."
-                    colour = Colour.GREEN if won else Colour.RED
-                    _io_log(io, f"{colour}{message}{Colour.RESET}")
-                    time.sleep(1.5)
-                continue
+    # --- Step 3: stats / rerolls ---
+    def _step_stats(self) -> DecisionResult:
+        if self.state.stats is None:
+            self.state.stats = roll_stats(self.state.position)
+        s = self.state.stats
+        lines = [
+            f"Rerolls left: {self.state.rerolls_left}",
+            f"HEIGHT: {s['height_cm']} cm",
+            f"WEIGHT: {s['weight_kg']} kg",
+        ]
+        if s.get('is_two_way') and s.get('secondary_position'):
+            primary = self.state.position or 'Primary'
+            lines.append(f"TWO-WAY POTENTIAL: {primary} / {s['secondary_position']}")
+        lines.append("1. Accept Stats")
+        lines.append("2. Reroll" + (" (LOCKED)" if self.state.rerolls_left <= 0 else ""))
+        lines.append("0. Back")
+        self._awaiting = "stats_choice"
+        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Choice: ", default="1"))
 
-            result_txt = "Starter Trait secured. Coaches expect you to anchor games." if status else "No Starter Trait. Earn it through performance."
-            _io_log(io, result_txt)
-            _io_log(io, "1. Continue")
-            _io_log(io, "0. Back")
-            sel = _io_prompt(io, "Choice: ").strip()
-            if sel == '0':
-                data['starter_trait'] = None
-                step -= 1
-                continue
-            if sel == '1':
-                step += 1
-            continue
+    def _handle_stats_choice(self, value: str) -> None:
+        if value == "0":
+            self.step = max(0, self.step - 1)
+            return
+        if value == "1":
+            self.step += 1
+            return
+        if value == "2":
+            if self.state.rerolls_left > 0:
+                self.state.rerolls_left -= 1
+                self.state.stats = roll_stats(self.state.position)
+            return
 
-        # STEP 3: STATS + REROLLS (NOW BEFORE GROWTH STYLE)
-        elif step == 3:
-            if data['stats'] is None:
-                data['stats'] = roll_stats(data['position'])
-            
-            s = data['stats']
-            _io_log(io, f"Rerolls left: {data['rerolls_left']}")
-            _io_log(io, f"HEIGHT: {s['height_cm']} cm")
-            _io_log(io, f"WEIGHT: {s['weight_kg']} kg")
-            if s.get('is_two_way') and s.get('secondary_position'):
-                primary = data.get('position') or 'Primary'
-                _io_log(io, f"{Colour.gold}TWO-WAY POTENTIAL: {primary} / {s['secondary_position']}{Colour.RESET}")
+    # --- Step 4: growth style ---
+    def _step_growth_style(self) -> DecisionResult:
+        if self.state.position == "Pitcher":
+            styles = ["Power Pitcher", "Technical Pitcher", "Fierce Pitcher", "Marathon Pitcher", "Balanced"]
+        elif self.state.position == "Catcher":
+            styles = ["Offensive Catcher", "Defensive General", "Balanced"]
+        else:
+            styles = ["Power Hitter", "Speedster", "Balanced"]
+        lines = [f"Select Growth Style for {self.state.specific_pos}"]
+        lines.extend([f"{i+1}. {s}" for i, s in enumerate(styles)])
+        lines.append("0. Back")
+        self._scratch["growth_styles"] = styles
+        self._awaiting = "growth_pick"
+        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Choice: ", default="1"))
 
-            _render_stat_overview(data['position'], s)
+    def _handle_growth_pick(self, value: str) -> None:
+        styles = self._scratch.get("growth_styles", [])
+        if value == "0":
+            self.step = max(0, self.step - 1)
+            return
+        if not value.isdigit():
+            return
+        idx = int(value) - 1
+        if 0 <= idx < len(styles):
+            self.state.growth_style = styles[idx]
+            self.step += 1
 
-            _io_log(io, "\nOptions:")
-            _io_log(io, "1. Accept Stats")
-            if data['rerolls_left'] > 0:
-                _io_log(io, "2. Reroll (Uses 1 attempt)")
+    # --- Step 5: hometown ---
+    def _step_hometown(self) -> DecisionResult:
+        # simplified: pick prefecture and optional city by free text search
+        prefectures = get_prefecture_catalog(self.session)
+        if not prefectures:
+            self.state.hometown = "Tokyo"
+            self.state.prefecture_choice = "Tokyo"
+            self.step += 1
+            return self.advance()
+        if "hometown_phase" not in self._scratch:
+            self._scratch["hometown_phase"] = "pref"
+        phase = self._scratch["hometown_phase"]
+        if phase == "pref":
+            lines = ["Select Prefecture (type name, 0 to Back)"]
+            lines.extend([", ".join(prefectures[i:i+5]) for i in range(0, len(prefectures), 5)])
+            self._awaiting = "hometown_pref"
+            return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Prefecture: ", default="Tokyo"))
+        if phase == "city":
+            pref = self.state.prefecture_choice or ""
+            cities = _load_cities_for_prefecture(self.session, pref)
+            names = [c['name'] for c in cities][:15]
+            lines = [f"Prefecture: {pref}", "Enter city keyword or leave blank to use prefecture only."]
+            if names:
+                lines.append("Examples: " + ", ".join(names))
+            self._awaiting = "hometown_city"
+            return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="City (blank to skip): ", default=""))
+        # done
+        self._scratch.pop("hometown_phase", None)
+        self.step += 1
+        return self.advance()
+
+    def _handle_hometown_pref(self, value: str) -> None:
+        val = value.strip()
+        if val == "0":
+            self.step = max(0, self.step - 1)
+            return
+        prefectures = get_prefecture_catalog(self.session)
+        matches = [p for p in prefectures if val.lower() in p.lower()] if val else prefectures
+        if not matches:
+            return
+        pick = matches[0]
+        self.state.prefecture_choice = pick
+        self._scratch["hometown_phase"] = "city"
+
+    def _handle_hometown_city(self, value: str) -> None:
+        pref = self.state.prefecture_choice or ""
+        city = value.strip()
+        if city:
+            cities = _load_cities_for_prefecture(self.session, pref)
+            match = next((c for c in cities if city.lower() in c['name'].lower()), None)
+            if match:
+                self.state.hometown = f"{pref} — {match['name']}"
             else:
-                _io_log(io, "2. Reroll (LOCKED)")
-            _io_log(io, "0. Back")
+                self.state.hometown = f"{pref} — {city}"
+        else:
+            self.state.hometown = pref
+        self._scratch.pop("hometown_phase", None)
+        self.step += 1
 
-            sel = _io_prompt(io, "Choice: ")
-            if sel == '0': step -= 1; continue
-            elif sel == '1': step += 1; continue
-            elif sel == '2':
-                if data['rerolls_left'] > 0:
-                    data['rerolls_left'] -= 1
-                    data['stats'] = roll_stats(data['position'])
+    # --- Step 6: school ---
+    def _step_school(self) -> DecisionResult:
+        hometown = self.state.hometown or ''
+        pref = self.state.prefecture_choice
+        if not pref and hometown:
+            pref = hometown.split('—')[0].strip()
+        pref = pref or "Tokyo"
+
+        city = None
+        if '—' in hometown:
+            city = hometown.split('—', 1)[1].strip()
+
+        base_query = self.session.query(School).filter(School.prefecture == pref)
+        offers = []
+        if city:
+            offers = (
+                base_query.filter(School.city_name == city)
+                .order_by(func.random())
+                .limit(5)
+                .all()
+            )
+        if not offers:
+            offers = base_query.order_by(func.random()).limit(5).all()
+        if not offers:
+            offers = self.session.query(School).order_by(func.random()).limit(5).all()
+
+        self._scratch["school_offers"] = offers
+        lines = [f"Offers from {pref}{' — ' + city if city else ''}:"]
+        for i, t in enumerate(offers):
+            lines.append(f" {i+1}. {t.name} (Rank: {t.prestige})")
+        lines.append("0. Back")
+        self._awaiting = "school_pick"
+        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Select Team: ", default="1"))
+
+    def _handle_school_pick(self, value: str) -> None:
+        offers: List[School] = self._scratch.get("school_offers", [])
+        if value == "0":
+            self.step = max(0, self.step - 1)
+            return
+        if not value.isdigit():
+            return
+        idx = int(value) - 1
+        if 0 <= idx < len(offers):
+            self.state.school = offers[idx]
+            acad_skill, last_score = roll_academic_profile(self.state.hometown, self.state.school)
+            self.state.stats = self.state.stats or {}
+            self.state.stats['academic_skill'] = acad_skill
+            self.state.stats['test_score'] = last_score
+            self.step += 1
+
+    # --- Step 7: pitch arsenal ---
+    def _step_pitch_arsenal(self) -> DecisionResult:
+        if self.state.position != "Pitcher":
+            self.state.pitch_arsenal = []
+            self.step += 1
+            return self.advance()
+        current = ", ".join(self.state.pitch_arsenal) if self.state.pitch_arsenal else "--"
+        lines = [
+            "Configure Pitch Arsenal",
+            f"Need {MIN_PITCHES}-{MAX_PITCHES} total pitches.",
+            f"Current: {current}",
+            "Enter comma-separated pitch names or leave blank for defaults.",
+            "Valid options: " + ", ".join(PITCH_SELECTION_POOL),
+        ]
+        self._awaiting = "pitch_entry"
+        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Pitches: ", default=", ".join(DEFAULT_PITCH_ARSENAL)))
+
+    def _handle_pitch_entry(self, value: str) -> None:
+        picks = [p.strip() for p in (value or "").split(',') if p.strip()]
+        valid, message = _validate_pitch_selection(picks)
+        if not valid:
+            self._scratch["pitch_error"] = message
+            return
+        self.state.pitch_arsenal = _dedupe_preserve_order(picks)
+        self.step += 1
+
+    # --- Step 8: finalize ---
+    def _step_finalize(self) -> DecisionResult:
+        summary_lines = [
+            f"Name:   {self.state.last_name} {self.state.first_name}",
+            f"Role:   {self.state.specific_pos}",
+            f"Style:  {self.state.growth_style}",
+            f"Hometown: {self.state.hometown}",
+            f"School: {(self.state.school.name if self.state.school else '--')}",
+        ]
+        acad_skill = (self.state.stats or {}).get('academic_skill', '??')
+        last_score = (self.state.stats or {}).get('test_score', '??')
+        summary_lines.append(f"Academics: Skill {acad_skill} / Latest Test {last_score}")
+        if self.state.position == "Pitcher":
+            arm_slot = (self.state.stats or {}).get('arm_slot') or "Three-Quarters"
+            summary_lines.append(f"Arm Slot: {arm_slot}")
+            trait_txt = "Unlocked" if self.state.starter_trait else "--"
+            summary_lines.append(f"Starter Trait: {trait_txt}")
+            arsenal = _dedupe_preserve_order(self.state.pitch_arsenal)
+            summary_lines.append(f"Pitches: {', '.join(arsenal) if arsenal else '--'}")
+        summary_lines.append("1. Start Game")
+        summary_lines.append("0. Back")
+        self._awaiting = "final_choice"
+        return self._log_and_prompt(summary_lines, DecisionRequest(kind="prompt", message="Choice: ", default="1"))
+
+    def _handle_final_choice(self, value: str) -> None:
+        if value == "0":
+            self.step = max(0, self.step - 1)
+            return
+        if value == "1":
+            player_id = commit_player_to_db(self.session, self.state.__dict__)
+            self._scratch["created_player_id"] = player_id
+            self.step += 1
+
+    # --------- terminal ---------
+    def is_complete(self) -> bool:
+        return self.step > 8 and "created_player_id" in self._scratch
+
+    def result(self) -> Optional[int]:
+        return self._scratch.get("created_player_id")
+
+
+def drive_create_player(session: Session, io: Optional[IOInterface] = None) -> Optional[int]:
+    """Compatibility adapter that drives the decision engine using IOInterface."""
+
+    engine = CreatePlayerEngine(session)
+    response: Optional[str] = None
+    while True:
+        result = engine.advance(response)
+        response = None
+        for request in result.requests:
+            if request.kind == "log":
+                if io:
+                    io.log(request.message, level=request.level)
                 else:
-                    _io_log(io, "No rerolls left!", level="warning")
-                    time.sleep(1)
+                    print(request.message)
+            elif request.kind == "prompt":
+                if io:
+                    response = io.prompt(request.message, options=request.options)
+                else:
+                    response = input(request.message)
+        if result.done and engine.result() is not None:
+            return engine.result()
+        if engine.is_complete():
+            return engine.result()
 
-        # STEP 4: GROWTH STYLE (AFTER STATS)
-        elif step == 4:
-            _print_option(f"Select Growth Style for {data['specific_pos']}:")
 
-            if data['position'] == "Pitcher":
-                styles = ["Power Pitcher", "Technical Pitcher", "Fierce Pitcher", "Marathon Pitcher", "Balanced"]
-            elif data['position'] == "Catcher":
-                styles = ["Offensive Catcher", "Defensive General", "Balanced"]
-            else:
-                styles = ["Power Hitter", "Speedster", "Balanced"]
+create_hero = drive_create_player
 
-            for i, s in enumerate(styles):
-                _io_log(io, f" {i+1}. {s}")
-            _io_log(io, " 0. Back")
 
-            sel = _io_prompt(io, "Choice: ")
-            if sel == '0': step -= 1; continue
+if __name__ == "__main__":
+    from database.setup_db import get_session
 
-            try:
-                idx = int(sel) - 1
-                if 0 <= idx < len(styles):
-                    s_name = styles[idx]
-                    info = GROWTH_STYLE_INFO.get(s_name, GROWTH_STYLE_INFO['Balanced'])
-
-                    _io_log(io, f"\n{Colour.gold}>> {s_name} <<{Colour.RESET}")
-                    _io_log(io, f"{info['desc']}")
-                    _io_log(io, f"{Colour.GREEN}PROS: {info['pros']}{Colour.RESET}")
-                    _io_log(io, f"{Colour.RED}CONS: {info['cons']}{Colour.RESET}")
-
-                    if _io_prompt(io, "Confirm? (y/n): ", options=["y", "n"], default="n").lower() == 'y':
-                        data['growth_style'] = s_name
-                        step += 1
-            except: pass
-
-        # STEP 5: HOMETOWN (PREFECTURE -> CITY)
-        elif step == 5:
-            prefectures = get_prefecture_catalog(session)
-            if not prefectures:
-                _io_log(io, "No prefecture data found. Defaulting to Tokyo.", level="warning")
-                data['hometown'] = "Tokyo"
-                data['prefecture_choice'] = "Tokyo"
-                step += 1
-                continue
-
-            selected_pref = None
-            back_to_prev = False
-            while not selected_pref and not back_to_prev:
-                _print_option("Select Prefecture (type to filter, 0 to Back):")
-                filter_text = _io_prompt(io, "Filter: ").strip().lower()
-                if filter_text == '0':
-                    step -= 1
-                    back_to_prev = True
-                    break
-                filtered = [p for p in prefectures if filter_text in p.lower()] or prefectures
-                for idx, pref in enumerate(filtered, start=1):
-                    cities_preview = _load_cities_for_prefecture(session, pref)
-                    city_count = len(cities_preview)
-                    sample_names = ", ".join(entry['name'] for entry in cities_preview[:2])
-                    preview = f"{city_count} cities"
-                    if sample_names:
-                        preview += f": {sample_names}"
-                    _io_log(io, f" {idx:>2}. {pref} [{preview}]")
-                choice = _io_prompt(io, "Choice #: ").strip()
-                if not choice.isdigit():
-                    continue
-                pick = int(choice)
-                if 1 <= pick <= len(filtered):
-                    selected_pref = filtered[pick - 1]
-            if back_to_prev:
-                data['prefecture_choice'] = None
-                continue
-            if not selected_pref:
-                continue
-            data['prefecture_choice'] = selected_pref
-
-            city_rows = _load_cities_for_prefecture(session, selected_pref)
-            if not city_rows:
-                _io_log(io, "No active cities registered in this prefecture yet. Using prefecture only.", level="warning")
-                data['hometown'] = selected_pref
-                step += 1
-                selected_pref = None
-                continue
-
-            show_directory = True
-            while True:
-                if show_directory:
-                    _print_option(f"{selected_pref}: cities with baseball schools (Enter to refresh, 0=Back)")
-                    _render_city_directory(selected_pref, city_rows)
-                    _io_log(io, "Type a city number, enter text to search, or 'P' to use the prefecture only.")
-                    show_directory = False
-
-                city_input = _io_prompt(io, "City #: ").strip()
-                if city_input == '':
-                    show_directory = True
-                    continue
-                if city_input == '0':
-                    selected_pref = None
-                    data['prefecture_choice'] = None
-                    break
-                if city_input.lower() in {'p', 'pref'}:
-                    data['hometown'] = selected_pref
-                    step += 1
-                    selected_pref = None
-                    break
-                if city_input.isdigit():
-                    idx_choice = int(city_input)
-                    if 1 <= idx_choice <= len(city_rows):
-                        entry = city_rows[idx_choice - 1]
-                        data['hometown'] = f"{selected_pref} — {entry['name']}"
-                        step += 1
-                        selected_pref = None
-                        break
-                    _io_log(io, "Invalid city number. Press Enter to see the list again.", level="warning")
-                    continue
-
-                matches = get_city_matches(session, selected_pref, city_input)
-                if not matches:
-                    _io_log(io, "No cities match that keyword. Press Enter to show the directory again.", level="warning")
-                    continue
-
-                _io_log(io, "\nMatching Cities:")
-                for i, match in enumerate(matches, start=1):
-                    label = f"{match['name']} ({match['school_count']}) [#{match['ordinal']}]"
-                    _io_log(io, f" {i}. {label}")
-                choice = _io_prompt(io, "Choice (Enter to continue searching): ").strip()
-                if not choice:
-                    continue
-                if not choice.isdigit():
-                    continue
-                pick = int(choice)
-                if 1 <= pick <= len(matches):
-                    entry = matches[pick - 1]
-                    data['hometown'] = f"{selected_pref} — {entry['name']}"
-                    step += 1
-                    selected_pref = None
-                    break
-                _io_log(io, "Invalid selection.", level="warning")
-
-            if not selected_pref:
-                continue
-
-        # STEP 6: SCHOOL SELECTION
-        elif step == 6:
-            hometown = data.get('hometown') or ''
-            pref = data.get('prefecture_choice')
-            if not pref and hometown:
-                pref = hometown.split('—')[0].strip()
-            pref = pref or "Tokyo"
-
-            city = None
-            if '—' in hometown:
-                city = hometown.split('—', 1)[1].strip()
-
-            base_query = session.query(School).filter(School.prefecture == pref)
-            offers = []
-            if city:
-                offers = (
-                    base_query.filter(School.city_name == city)
-                    .order_by(func.random())
-                    .limit(5)
-                    .all()
-                )
-            if not offers:
-                offers = base_query.order_by(func.random()).limit(5).all()
-            if not offers:
-                offers = session.query(School).order_by(func.random()).limit(5).all()
-
-            location_label = f"{pref} — {city}" if city else pref
-            _print_option(f"Offers from {location_label}:")
-            for i, t in enumerate(offers):
-                _io_log(io, f" {i+1}. {t.name} (Rank: {t.prestige})")
-            _io_log(io, " 0. Back")
-
-            sel = _io_prompt(io, "Select Team: ")
-            if sel == '0': step -= 1; continue
-            
-            try:
-                idx = int(sel) - 1
-                if 0 <= idx < len(offers):
-                    data['school'] = offers[idx]
-                    acad_skill, last_score = roll_academic_profile(data.get('hometown'), data['school'])
-                    data.setdefault('stats', {})
-                    data['stats']['academic_skill'] = acad_skill
-                    data['stats']['test_score'] = last_score
-                    step += 1
-            except: pass
-
-        # STEP 7: PITCH SELECTION (PITCHERS ONLY)
-        elif step == 7:
-            if data['position'] != "Pitcher":
-                data['pitch_arsenal'] = []
-                step += 1
-                continue
-
-            # Start empty; only the user's toggles populate this list.
-            selected = _dedupe_preserve_order(data.get('pitch_arsenal'))
-            while True:
-                _render_creation_banner(step, data, STEP_TITLES.get(step, "Configure Pitch Arsenal"))
-                _print_option("Configure Pitch Arsenal")
-                _io_log(io, f"Need {MIN_PITCHES}-{MAX_PITCHES} total pitches. Mix and match however you like.")
-                current_display = ", ".join(selected) if selected else "--"
-                _io_log(io, f"Selected [{len(selected)}/{MAX_PITCHES}]: {current_display}")
-                _io_log(io, "Choices: toggle #, D=Done, R=Reset (empty), C=Clear, 0=Back")
-                for idx, pitch in enumerate(PITCH_SELECTION_POOL, start=1):
-                    marker = "*" if pitch in selected else " "
-                    fb_tag = " (FB)" if pitch in FASTBALL_PITCHES else ""
-                    _io_log(io, f" {idx:>2}. [{marker}] {pitch}{fb_tag}")
-
-                sel = _io_prompt(io, "Command: ").strip().lower()
-                if sel in {'0', 'b'}:
-                    data['pitch_arsenal'] = _dedupe_preserve_order(selected)
-                    step -= 1
-                    break
-                if sel in {'d', 'done'}:
-                    valid, message = _validate_pitch_selection(selected)
-                    if valid:
-                        data['pitch_arsenal'] = _dedupe_preserve_order(selected)
-                        step += 1
-                        break
-                    _io_log(io, message, level="warning")
-                    time.sleep(1)
-                    continue
-                if sel in {'c', 'clear'}:
-                    selected = []
-                    continue
-                if sel in {'r', 'reset'}:
-                    selected = []
-                    continue
-                if sel.isdigit():
-                    idx = int(sel) - 1
-                    if 0 <= idx < len(PITCH_SELECTION_POOL):
-                        pitch_name = PITCH_SELECTION_POOL[idx]
-                        if pitch_name in selected:
-                            selected.remove(pitch_name)
-                        else:
-                            if len(selected) >= MAX_PITCHES:
-                                _io_log(io, f"Remove a pitch before adding a new one (max {MAX_PITCHES}).", level="warning")
-                                time.sleep(1)
-                                continue
-                            selected.append(pitch_name)
-                    continue
-                _io_log(io, "Unknown command.", level="warning")
-                time.sleep(1)
-                continue
-            continue
-
-        # STEP 8: FINAL CONFIRMATION
-        elif step == 8:
-            _io_log(io, f"Name:   {data['last_name']} {data['first_name']}")
-            _io_log(io, f"Role:   {data['specific_pos']}")
-            _io_log(io, f"Style:  {data['growth_style']}")
-            _io_log(io, f"Hometown: {data['hometown']}")
-            school_name = data['school'].name if data.get('school') else '--'
-            _io_log(io, f"School: {Colour.gold}{school_name}{Colour.RESET}")
-            acad_skill = data['stats'].get('academic_skill', '??')
-            last_score = data['stats'].get('test_score', '??')
-            _io_log(io, f"Academics: Skill {acad_skill} / Latest Test {last_score}")
-            if data['position'] == "Pitcher":
-                arm_slot = data['stats'].get('arm_slot') or "Three-Quarters"
-                _io_log(io, f"Arm Slot: {arm_slot}")
-                trait_txt = "Unlocked" if data.get('starter_trait') else "--"
-                _io_log(io, f"Starter Trait: {trait_txt}")
-                arsenal = _dedupe_preserve_order(data.get('pitch_arsenal'))
+    temp_session = get_session()
+    try:
+        create_hero(temp_session)
+    finally:
+        temp_session.close()
                 _io_log(io, f"Pitches: {', '.join(arsenal) if arsenal else '--'}")
             _io_log(io, "─" * FRAME_WIDTH)
 

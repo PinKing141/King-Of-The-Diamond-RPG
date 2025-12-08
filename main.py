@@ -7,6 +7,7 @@ from ui.ui_core import DEFAULT_THEME
 from game.personnel.create_player import create_hero
 from game.save_manager import show_save_menu
 from core.game_context import GameContext
+from core.services import SessionProvider
 from game.loop.season_manager import SeasonManager
 from game.interfaces import SeasonView
 from ui.console_view import ConsoleView
@@ -76,9 +77,10 @@ def get_player_info(session, state):
     return "Unknown Player"
 
 
-def start_new_career_same_world(view: SeasonView):
+def start_new_career_same_world(view: SeasonView, *, session=None):
     """Create a new first-year while keeping the current database intact."""
-    session = get_session()
+    owns_session = session is None
+    session = session or get_session()
     try:
         state = initialize_game_state(session)
         ensure_world_population(session, view)
@@ -101,7 +103,8 @@ def start_new_career_same_world(view: SeasonView):
         view.announce_new_career_ready()
         return True
     finally:
-        session.close()
+        if owns_session:
+            session.close()
 
 
 def rebuild_world_database(view: SeasonView):
@@ -118,10 +121,13 @@ def rebuild_world_database(view: SeasonView):
     return True
 
 
-def launch_game_engine(view: SeasonView):
+def launch_game_engine(view: SeasonView, *, session=None, session_provider: SessionProvider | None = None):
     """Bootstraps the GameContext and hands off to the SeasonManager."""
-    session = get_session()
-    context = GameContext(session_factory=get_session)
+
+    provider = session_provider or SessionProvider(get_session, initial_session=session)
+    owns_provider = session_provider is None
+    session = session or provider.get()
+    context = GameContext(session_factory=provider.get, session_provider=provider)
     session.expire_all()
 
     try:
@@ -131,39 +137,50 @@ def launch_game_engine(view: SeasonView):
             view.display_error("ERROR: Player not created.")
             return
 
-        manager = SeasonManager(context, session, view=view)
+        manager = SeasonManager(context, session, view=view, session_provider=provider)
         manager.run_season_loop()
     finally:
-        session.close()
+        if owns_provider:
+            provider.close()
         context.close_session()
 
 
-def main_menu(view: ConsoleView):
+def main_menu(view: ConsoleView, *, session=None, session_provider: SessionProvider | None = None):
     create_database()
-    while True:
-        session = get_session()
+    provider = session_provider or SessionProvider(get_session, initial_session=session)
 
-        state = session.query(GameState).first()
-        has_save = state is not None
-        player_info = get_player_info(session, state) if has_save else "No Data"
+    try:
+        session = provider.get()
+        while True:
+            state = session.query(GameState).first()
+            has_save = state is not None
+            player_info = get_player_info(session, state) if has_save else "No Data"
 
-        choice = view.prompt_main_menu(player_info=player_info, has_save=has_save)
-        session.close()
+            choice = view.prompt_main_menu(player_info=player_info, has_save=has_save)
+            session.expire_all()
 
-        if choice == "1":
-            launch_game_engine(view)
-        elif choice == "2":
-            if show_save_menu("LOAD"):
-                continue
-        elif choice == "3":
-            if start_new_career_same_world(view):
-                launch_game_engine(view)
-        elif choice == "4":
-            if view.prompt_rebuild_world():
-                if rebuild_world_database(view):
-                    launch_game_engine(view)
-        elif choice == "5":
-            sys.exit()
+            if choice == "1":
+                launch_game_engine(view, session=session, session_provider=provider)
+            elif choice == "2":
+                if show_save_menu("LOAD"):
+                    provider.close()
+                    provider = SessionProvider(get_session)
+                    session = provider.get()
+                    continue
+            elif choice == "3":
+                if start_new_career_same_world(view, session=session):
+                    launch_game_engine(view, session=session, session_provider=provider)
+            elif choice == "4":
+                if view.prompt_rebuild_world():
+                    if rebuild_world_database(view):
+                        provider.close()
+                        provider = SessionProvider(get_session)
+                        session = provider.get()
+                        launch_game_engine(view, session=session, session_provider=provider)
+            elif choice == "5":
+                break
+    finally:
+        provider.close()
 
 
 def run_game_loop():

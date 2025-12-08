@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass
 from typing import Optional
 
-from database.setup_db import School, ScoutingData, get_session
+from database.setup_db import School, ScoutingData
 
 MAX_KNOWLEDGE_LEVEL = 3
 
@@ -99,6 +99,15 @@ def _decode_network(payload) -> dict:
         return {}
 
 
+def _network_from_school(school: Optional[School]) -> dict:
+    if not school:
+        return {}
+    entries = getattr(school, "scouting_network_entries", None) or []
+    if entries:
+        return {row.scope: row.rating for row in entries if getattr(row, "scope", None)}
+    return _decode_network(getattr(school, 'scouting_network', None))
+
+
 def _pref_region(prefecture: Optional[str]) -> str:
     if not prefecture:
         return "Unknown"
@@ -121,7 +130,7 @@ def _scouting_scope(user: Optional[School], target: Optional[School]) -> str:
 
 def _network_modifiers(user: Optional[School], target: Optional[School]):
     scope = _scouting_scope(user, target)
-    network = _decode_network(getattr(user, 'scouting_network', None) if user else None)
+    network = _network_from_school(user)
     rating = network.get(scope)
     fallback_keys = ("National", "Regional", "Local", "International")
     if rating is None:
@@ -150,29 +159,22 @@ def describe_network_advantage(user: Optional[School], target: Optional[School])
     }
 
 
-def get_scouting_info(school_id: int, session=None) -> ScoutingInfoData:
-    """Retrieve or create scouting record for a target school."""
-    owns_session = session is None
-    if owns_session:
-        session = get_session()
+def get_scouting_info(school_id: int, session) -> ScoutingInfoData:
+    """Retrieve or create scouting record for a target school using the provided session."""
 
-    try:
-        info = session.get(ScoutingData, school_id)
+    info = session.get(ScoutingData, school_id)
 
-        if not info:
-            info = ScoutingData(school_id=school_id, knowledge_level=0, rivalry_score=0)
-            session.add(info)
-            session.commit()
+    if not info:
+        info = ScoutingData(school_id=school_id, knowledge_level=0, rivalry_score=0)
+        session.add(info)
+        session.commit()
 
-        session.refresh(info)
-        return ScoutingInfoData(
-            school_id=info.school_id,
-            knowledge_level=info.knowledge_level,
-            rivalry_score=info.rivalry_score,
-        )
-    finally:
-        if owns_session:
-            session.close()
+    session.refresh(info)
+    return ScoutingInfoData(
+        school_id=info.school_id,
+        knowledge_level=info.knowledge_level,
+        rivalry_score=info.rivalry_score,
+    )
 
 
 def perform_scout_action(

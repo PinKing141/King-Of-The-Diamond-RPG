@@ -419,6 +419,11 @@ class School(Base):
     games_home = relationship("Game", foreign_keys="Game.home_school_id", back_populates="home_school")
     games_away = relationship("Game", foreign_keys="Game.away_school_id", back_populates="away_school")
     scouting_data = relationship("ScoutingData", back_populates="school")
+    scouting_network_entries = relationship(
+        "ScoutingNetwork",
+        back_populates="school",
+        cascade="all, delete-orphan",
+    )
     location = relationship("GeoLocation", back_populates="schools")
 
 
@@ -541,6 +546,11 @@ class Player(Base):
         back_populates="player",
         cascade="all, delete-orphan",
     )
+    xp_entries = relationship(
+        "PlayerXP",
+        back_populates="player",
+        cascade="all, delete-orphan",
+    )
 
 
 # ============================================================
@@ -578,6 +588,21 @@ class PlayerMilestone(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     player = relationship("Player")
+
+
+class PlayerXP(Base):
+    __tablename__ = 'player_xp'
+    __table_args__ = (
+        Index('ix_player_xp_player_id', 'player_id'),
+        Index('uq_player_xp_player_stat', 'player_id', 'stat_key', unique=True),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(Integer, ForeignKey('players.id'), nullable=False)
+    stat_key = Column(String, nullable=False)
+    xp = Column(Float, default=0.0)
+
+    player = relationship("Player", back_populates="xp_entries")
 
 
 # ============================================================
@@ -689,6 +714,21 @@ class ScoutingData(Base):
     last_scouted_week = Column(Integer, default=0)
 
     school = relationship("School", back_populates="scouting_data")
+
+
+class ScoutingNetwork(Base):
+    __tablename__ = 'scouting_network'
+    __table_args__ = (
+        Index('ix_scouting_network_school_id', 'school_id'),
+        Index('uq_scouting_network_scope', 'school_id', 'scope', unique=True),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    school_id = Column(Integer, ForeignKey('schools.id'), nullable=False)
+    scope = Column(String, nullable=False)
+    rating = Column(Integer, default=50)
+
+    school = relationship("School", back_populates="scouting_network_entries")
 
 
 # ============================================================

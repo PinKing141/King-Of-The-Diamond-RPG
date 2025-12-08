@@ -39,8 +39,8 @@ def _rebind_db_engine():
 
     try:
         setup_db.engine.dispose()
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"Warning: engine dispose failed during rebind: {exc}")
 
     setup_db.engine = create_engine(f"sqlite:///{DB_PATH}")
     setup_db.SessionLocal.configure(bind=setup_db.engine)
@@ -193,8 +193,8 @@ def autosave_match_state(*, state=None, reason: str = "mid-match") -> None:
         _backup_database(DB_PATH, AUTOSAVE_PATH)
         with open(AUTOSAVE_META, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
-    except Exception:
-        # Autosave should fail silently to avoid blocking gameplay.
+    except (sqlite3.Error, OSError) as exc:
+        print(f"Autosave skipped: {exc}")
         return
 
 def save_game(slot_num):

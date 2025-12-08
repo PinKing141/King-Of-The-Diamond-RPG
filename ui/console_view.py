@@ -12,6 +12,14 @@ from game.save_manager import show_save_menu
 from game.interfaces import SeasonView
 from world.ui.scouting_report import view_scouting_menu
 from game.story.event_manager import EventRequest
+from core.decisions import DecisionRequest
+
+
+def _safe_input(prompt: str, default: str = "") -> str:
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        return default
 
 
 class ConsoleIO(IOInterface):
@@ -29,7 +37,10 @@ class ConsoleIO(IOInterface):
 
     def prompt(self, prompt: str, *, options: Optional[List[str]] = None) -> str:
         while True:
-            response = input(prompt)
+            try:
+                response = input(prompt)
+            except (EOFError, KeyboardInterrupt):
+                return ""
             if options is None or not options:
                 return response
             if response in options:
@@ -101,10 +112,11 @@ class ConsoleView(SeasonView):
         print(f"{Colour.MAGENTA}Heads up:{Colour.RESET} Big game aura this week. No rival intel found, but the band is on standby.")
 
     def prompt_continue(self, prompt: str = "Press Enter to continue...") -> None:
-        input(prompt)
+        _safe_input(prompt)
 
     def prompt_yes_no(self, prompt: str) -> bool:
-        return input(prompt).strip().lower().startswith("y")
+        response = _safe_input(prompt)
+        return response.strip().lower().startswith("y")
 
     # ---------- menus ----------
     def prompt_weekly_menu(self, *, scouting_available: bool, context: Any, session: Any, state: Any) -> str:
@@ -189,7 +201,7 @@ class ConsoleView(SeasonView):
     # ---------- screens ----------
     def show_character_sheet(self, session: Any, snapshot: dict) -> None:
         show_page(render_screen, session, snapshot)
-        input("Press Enter to return...")
+        _safe_input("Press Enter to return...")
 
     def show_save_menu(self) -> None:
         show_page(show_save_menu, "SAVE")
@@ -199,11 +211,11 @@ class ConsoleView(SeasonView):
 
     def show_weekly_dashboard(self, summary: Any) -> None:
         render_weekly_dashboard(summary)
-        input()
+        _safe_input("")
 
     def show_smart_sim_stop(self, reason: str) -> None:
         print(f"\n{Colour.WARNING}Smart Sim stopped: {reason}{Colour.RESET}")
-        input("Press Enter to continue...")
+        _safe_input("Press Enter to continue...")
 
     def show_progress(self, message: str, end: str = "\n") -> None:
         print(message, end=end)
@@ -230,7 +242,7 @@ class ConsoleView(SeasonView):
             f"{theme['accent']}[5]{Colour.RESET} Exit",
         ]
         panel("Main Menu", menu_lines, theme=self.theme, width=70)
-        return input("\nSelect: ").strip()
+        return _safe_input("\nSelect: ").strip()
 
     def prompt_rebuild_world(self) -> bool:
         return self.prompt_yes_no(f"{Colour.RED}Rebuild entire world? This deletes all progress. (y/n): {Colour.RESET}")
@@ -247,6 +259,31 @@ class ConsoleView(SeasonView):
 
     def announce_new_career_ready(self) -> None:
         print(f"{Colour.GREEN}New career ready. Jumping into the season...{Colour.RESET}")
+
+    # ---------- decision request bridge ----------
+    def handle_decision_requests(self, requests: list) -> Optional[str]:
+        """Bridge DecisionRequest flow back to existing console prompts."""
+
+        for req in requests:
+            if not isinstance(req, DecisionRequest):
+                continue
+            if req.kind == "prompt" and req.message == "weekly_menu":
+                payload = req.payload or {}
+                scouting_available = bool(payload.get("scouting_available"))
+                return self.prompt_weekly_menu(
+                    scouting_available=scouting_available,
+                    context=payload.get("context"),
+                    session=payload.get("session"),
+                    state=payload.get("state"),
+                )
+            if req.kind == "prompt" and req.message == "command_menu":
+                payload = req.payload or {}
+                return self.prompt_command_menu(
+                    context=payload.get("context"),
+                    session=payload.get("session"),
+                    state=payload.get("state"),
+                )
+        return None
         time.sleep(1)
 
     def announce_player_created(self) -> None:

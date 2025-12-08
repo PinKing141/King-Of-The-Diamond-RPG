@@ -2,6 +2,7 @@ import json
 import time
 import sys
 import random
+from sqlalchemy.exc import SQLAlchemyError
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -45,6 +46,8 @@ from game.loop.weekly_scheduler_core import (
     WeekSummary,
     execute_schedule_core,
 )
+from core.sqlalchemy_repositories import SQLAlchemyPlayerRepository, SQLAlchemyTeamRepository
+from game.services.progression_port import SQLAlchemyProgressionService
 from game.systems.academic_system import score_to_letter_grade
 from world.media_engine import generate_weekly_news
 
@@ -243,6 +246,14 @@ def _select_coach_order(player: Optional[Player], current_week: int) -> Optional
     return rng.choice(COACH_ORDER_DEFS)
 
 
+def _schedule_seed(context: GameContext, current_week: int) -> int:
+    """Deterministic per-week seed to drive TrainingService and practice RNG."""
+
+    player_component = (context.player_id or 0) * 1_001
+    school_component = (context.school_id or 0) * 37
+    return player_component + school_component + current_week * 101
+
+
 def _describe_order_requirement(order: CoachOrder) -> str:
     requirement = order.requirement or {}
     if requirement.get('type') == 'action_count':
@@ -303,7 +314,9 @@ def _team_load_snapshot(player: Optional[Player]) -> Optional[Tuple[float, float
     if session is not None:
         try:
             roster = session.query(Player).filter(Player.school_id == school_id).all()
-        except Exception:
+        except SQLAlchemyError as exc:
+            # Log and continue with fallback lookup so we don't silently lose roster context.
+            print(f"Roster lookup failed for school_id={school_id}: {exc}")
             roster = None
     if not roster:
         school = getattr(player, "school", None)
@@ -338,7 +351,8 @@ def _record_coach_order_result(
 
     try:
         gamestate_row = session.query(GameState).first()
-    except Exception:
+    except SQLAlchemyError as exc:
+        print(f"Coach order result persistence skipped: {exc}")
         return
 
     if not gamestate_row:
@@ -594,8 +608,8 @@ def _finalize_week_outcomes(
         decay_log: List[str] = []
         try:
             apply_mastery_decay(session, player, maintained=maintained, log=decay_log)
-        except Exception:
-            decay_log = []
+        except SQLAlchemyError as exc:
+            decay_log = [f"Pitch mastery decay skipped: {exc}"]
         for entry in decay_log:
             summary.add_event(entry)
 
@@ -609,9 +623,9 @@ def _finalize_week_outcomes(
             headlines=summary.newsletter or getattr(execution, "headlines", None),
             prestige=getattr(school, "prestige", None),
         )
-    except Exception:
-        # If media generation fails, leave summary intact so the week can continue.
-        pass
+    except Exception as exc:
+        # If media generation fails, surface the issue instead of failing silently.
+        summary.add_warning(f"Weekly news generation failed: {exc}")
 
     context.set_temp_effect('last_week_summary', summary.to_payload())
     return summary
@@ -692,8 +706,8 @@ def generate_auto_schedule(player: Optional[Player], coach_order: Optional[Coach
     return schedule_state, mandatory_schedule
 
 
-def run_week_automatic(context: GameContext, current_week: int):
-    player, coach_order, exam_summary, _ = _initialize_week(context, current_week, enable_events=False, io=None)
+def run_week_automatic(context: GameContext, current_week: int, *, rng_seed=None):
+    player, coach_order, exam_summary, event_result = _initialize_week(context, current_week, enable_events=False, io=None)
     if not player:
         summary = WeekSummary(week_number=current_week)
         summary.flag_interrupt("Active player missing; cannot simulate week.")
@@ -703,7 +717,13 @@ def run_week_automatic(context: GameContext, current_week: int):
     skipped_mandatory: List[Dict[str, object]] = []
 
     try:
-        execution, summary = execute_schedule_silent(context, schedule_grid, current_week)
+        seed = rng_seed if rng_seed is not None else _schedule_seed(context, current_week)
+        execution, summary = execute_schedule_silent(
+            context,
+            schedule_grid,
+            current_week,
+            rng_seed=seed,
+        )
     except ValueError as err:
         summary = WeekSummary(week_number=current_week)
         summary.add_warning(str(err))
@@ -1042,10 +1062,23 @@ def plan_week_ui(
 
     return schedule_grid, skipped_mandatory
 
-def execute_schedule_silent(context: GameContext, schedule_grid, current_week):
+def execute_schedule_silent(context: GameContext, schedule_grid, current_week, *, rng_seed=None):
     """Execute schedule math without emitting per-slot narration."""
 
-    execution = execute_schedule_core(context, schedule_grid, current_week)
+    provider = context.session_provider
+    player_repo = SQLAlchemyPlayerRepository(provider)
+    team_repo = SQLAlchemyTeamRepository(provider)
+    progression_service = SQLAlchemyProgressionService(provider)
+
+    execution = execute_schedule_core(
+        context,
+        schedule_grid,
+        current_week,
+        rng_seed=rng_seed,
+        player_repo=player_repo,
+        team_repo=team_repo,
+        progression_service=progression_service,
+    )
     summary = _summarize_execution(current_week, execution)
     return execution, summary
 
@@ -1109,7 +1142,8 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
         return False
 
     try:
-        execution, summary = execute_schedule_silent(context, schedule_grid, current_week)
+        seed = _schedule_seed(context, current_week)
+        execution, summary = execute_schedule_silent(context, schedule_grid, current_week, rng_seed=seed)
     except ValueError as err:
         log(f"Execution aborted: {err}", level="error")
         return False

@@ -1,9 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from core.rng import get_rng
+from core.config_loader import ConfigLoader
+from core.rng import DeterministicRNG, get_rng
+from core.enums import StatType
+
+
+class StatType(str, Enum):
+    DRIVE = "drive"
+    LOYALTY = "loyalty"
+    VOLATILITY = "volatility"
+    MENTAL = "mental"
+    DISCIPLINE = "discipline"
+    CLUTCH = "clutch"
+    POWER = "power"
+    TRUST_BASELINE = "trust_baseline"
+    SPEED = "speed"
 
 
 @dataclass(frozen=True)
@@ -21,7 +36,28 @@ class ArchetypeProfile:
 
 DEFAULT_ARCHETYPE = "steady"
 
-ARCHETYPE_LIBRARY: Dict[str, ArchetypeProfile] = {
+def _load_archetypes() -> Dict[str, ArchetypeProfile]:
+    data = ConfigLoader.get_section("player_archetypes", {}) or {}
+    if not data:
+        return {}
+    library: Dict[str, ArchetypeProfile] = {}
+    for key, payload in data.items():
+        library[key] = ArchetypeProfile(
+            key=key,
+            label=payload.get("label", key.title()),
+            description=payload.get("description", ""),
+            stat_mods=payload.get("stat_mods", {}),
+            tags=tuple(payload.get("tags", ()) or ()),
+            weight=float(payload.get("weight", 1.0) or 1.0),
+            focus_bias=dict(payload.get("focus_bias", {}) or {}),
+            position_bias=dict(payload.get("position_bias", {}) or {}),
+            affinity=dict(payload.get("affinity", {}) or {}),
+        )
+    return library
+
+
+_FALLBACK_ARCHETYPES: Dict[str, ArchetypeProfile] = {
+    # Minimal fallback mirrors legacy in case config is missing
     "steady": ArchetypeProfile(
         key="steady",
         label="Steady Anchor",
@@ -33,62 +69,10 @@ ARCHETYPE_LIBRARY: Dict[str, ArchetypeProfile] = {
         position_bias={"infielder": 1.1, "pitcher": 1.05},
         affinity={"loyalty": 60, "volatility": -45},
     ),
-    "firebrand": ArchetypeProfile(
-        key="firebrand",
-        label="Firebrand",
-        description="Hypercompetitive sparkplugs who feed on adrenaline and can ignite (or scorch) morale.",
-        stat_mods={"drive": 4, "clutch": 5, "volatility": 10, "discipline": -3},
-        tags=("emotional", "streaky"),
-        weight=0.9,
-        focus_bias={"power": 1.3, "guts": 1.25, "gamblers": 1.2},
-        position_bias={"outfielder": 1.1, "pitcher": 1.05},
-        affinity={"drive": 60, "volatility": 60},
-    ),
-    "strategist": ArchetypeProfile(
-        key="strategist",
-        label="Field Strategist",
-        description="Film-room junkies who lean on prep, reads, and surgical execution over raw chaos.",
-        stat_mods={"discipline": 6, "mental": 6, "clutch": 2, "power": -3},
-        tags=("cerebral", "planner"),
-        weight=0.85,
-        focus_bias={"technical": 1.25, "balanced": 1.1},
-        position_bias={"catcher": 1.25, "infielder": 1.1},
-        affinity={"discipline": 60, "mental": 60, "volatility": -40},
-    ),
-    "showman": ArchetypeProfile(
-        key="showman",
-        label="Showman",
-        description="Spotlight seekers who thrive on dramatic swings and crave big-stage moments.",
-        stat_mods={"power": 6, "clutch": 6, "loyalty": -4, "volatility": 4},
-        tags=("flashy", "crowd-pleaser"),
-        weight=0.75,
-        focus_bias={"power": 1.3, "random": 1.15},
-        position_bias={"outfielder": 1.15, "corner": 1.1},
-        affinity={"power": 60, "clutch": 60},
-    ),
-    "guardian": ArchetypeProfile(
-        key="guardian",
-        label="Guardian",
-        description="Culture keepers who protect younger teammates and keep the battery/tactics aligned.",
-        stat_mods={"loyalty": 8, "discipline": 3, "trust_baseline": 5, "power": -2},
-        tags=("captain", "mentor"),
-        weight=0.8,
-        focus_bias={"defense": 1.25, "battery": 1.4},
-        position_bias={"catcher": 1.3, "infielder": 1.1},
-        affinity={"loyalty": 65, "drive": 55},
-    ),
-    "sparkplug": ArchetypeProfile(
-        key="sparkplug",
-        label="Sparkplug",
-        description="High-motor hustlers whose energy bleeds into baserunning pressure and chaotic innings.",
-        stat_mods={"speed": 6, "drive": 4, "volatility": 4, "mental": 1},
-        tags=("energetic", "scrappy"),
-        weight=0.85,
-        focus_bias={"balanced": 1.1, "small_ball": 1.3},
-        position_bias={"outfielder": 1.1, "infielder": 1.05},
-        affinity={"speed": 65, "drive": 55},
-    ),
 }
+
+
+ARCHETYPE_LIBRARY: Dict[str, ArchetypeProfile] = _load_archetypes() or _FALLBACK_ARCHETYPES
 
 
 def list_archetype_profiles() -> List[ArchetypeProfile]:
@@ -96,7 +80,7 @@ def list_archetype_profiles() -> List[ArchetypeProfile]:
 
 
 def get_archetype_profile(key: Optional[str]) -> ArchetypeProfile:
-    return ARCHETYPE_LIBRARY.get((key or DEFAULT_ARCHETYPE).lower(), ARCHETYPE_LIBRARY[DEFAULT_ARCHETYPE])
+    return ARCHETYPE_LIBRARY.get((key or DEFAULT_ARCHETYPE).lower(), ARCHETYPE_LIBRARY.get(DEFAULT_ARCHETYPE))
 
 
 def get_player_archetype(player) -> str:

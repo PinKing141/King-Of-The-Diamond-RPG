@@ -9,6 +9,7 @@ modes used by tests).
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Protocol, Sequence
 
@@ -88,11 +89,13 @@ class MatchSimulation:
         bus: Optional[EventBus] = None,
         human_team_ids: Optional[Sequence[int]] = None,
         input_strategy: Optional["InputStrategy"] = None,
+        rng: Optional[random.Random] = None,
     ) -> None:
         self.state = state
         self.bus: EventBus = bus if isinstance(bus, EventBus) else EventBus()
         self.human_team_ids = set(human_team_ids or [])
         self.input_strategy = input_strategy
+        self.rng: random.Random = rng or getattr(state, "rng", random.Random())
         self.loop_state = MatchState.WAITING_FOR_PITCH
         self.awaiting_player_choice = False
         self._pending_choice_options: list[Dict[str, str]] = []
@@ -100,6 +103,7 @@ class MatchSimulation:
         self._pending_cut_in = False
         self._current_matchup: Optional[MatchupContext] = None
         self._trust_buffer: Dict[tuple[int, int], float] = {}
+        self._active_input_source: Optional[BatterInputSource] = None
 
     def step(self) -> Optional[PlayOutcome]:
         """Advance the simulation by one plate appearance or pause for cut-ins."""
@@ -240,7 +244,9 @@ class MatchSimulation:
 
         # Allow patched/mock state machines to observe PITCH_FLIGHT state.
         try:
-            AtBatStateMachine(self.state, input_source=self._active_input_source).run()
+            machine = AtBatStateMachine(self.state, input_source=self._active_input_source)
+            while not machine.finished:
+                machine.advance()
         except Exception as exc:
             logger.exception("AtBatStateMachine crashed during matchup execution")
             raise RuntimeError("AtBatStateMachine crashed during matchup execution") from exc

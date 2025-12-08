@@ -82,5 +82,92 @@
     "comment_control_cooldown": 8,
     "comment_dom_min_strikeouts": 4,
     "comment_dom_interval": 3
+  },
+  "player_archetypes": {
+    "steady": {
+      "label": "Steady Anchor",
+      "description": "Calm competitors who steady the locker room and rarely ride emotional rollercoasters.",
+      "stat_mods": {"loyalty": 5, "volatility": -8, "mental": 4, "discipline": 2},
+      "tags": ["stoic", "consistent"],
+      "weight": 1.0,
+      "focus_bias": {"balanced": 1.2, "defense": 1.1},
+      "position_bias": {"infielder": 1.1, "pitcher": 1.05},
+      "affinity": {"loyalty": 60, "volatility": -45}
+    },
+    "firebrand": {
+      "label": "Firebrand",
+      "description": "Hypercompetitive sparkplugs who feed on adrenaline and can ignite (or scorch) morale.",
+      "stat_mods": {"drive": 4, "clutch": 5, "volatility": 10, "discipline": -3},
+      "tags": ["emotional", "streaky"],
+      "weight": 0.9,
+      "focus_bias": {"power": 1.3, "guts": 1.25, "gamblers": 1.2},
+      "position_bias": {"outfielder": 1.1, "pitcher": 1.05},
+      "affinity": {"drive": 60, "volatility": 60}
+    },
+    "strategist": {
+      "label": "Field Strategist",
+      "description": "Film-room junkies who lean on prep, reads, and surgical execution over raw chaos.",
+      "stat_mods": {"discipline": 6, "mental": 6, "clutch": 2, "power": -3},
+      "tags": ["cerebral", "planner"],
+      "weight": 0.85,
+      "focus_bias": {"technical": 1.25, "balanced": 1.1},
+      "position_bias": {"catcher": 1.25, "infielder": 1.1},
+      "affinity": {"discipline": 60, "mental": 60, "volatility": -40}
+    },
+    "showman": {
+      "label": "Showman",
+      "description": "Spotlight seekers who thrive on dramatic swings and crave big-stage moments.",
+      "stat_mods": {"power": 6, "clutch": 6, "loyalty": -4, "volatility": 4},
+      "tags": ["flashy", "crowd-pleaser"],
+      "weight": 0.75,
+      "focus_bias": {"power": 1.3, "random": 1.15},
+      "position_bias": {"outfielder": 1.15, "corner": 1.1},
+      "affinity": {"power": 60, "clutch": 60}
+    },
+    "guardian": {
+      "label": "Guardian",
+      "description": "Culture keepers who protect younger teammates and keep the battery/tactics aligned.",
+      "stat_mods": {"loyalty": 8, "discipline": 3, "trust_baseline": 5, "power": -2},
+      "tags": ["captain", "mentor"],
+      "weight": 0.8,
+      "focus_bias": {"defense": 1.25, "battery": 1.4},
+      "position_bias": {"catcher": 1.3, "infielder": 1.1},
+      "affinity": {"loyalty": 65, "drive": 55}
+    },
+    "sparkplug": {
+      "label": "Sparkplug",
+      "description": "High-motor hustlers whose energy bleeds into baserunning pressure and chaotic innings.",
+      "stat_mods": {"speed": 6, "drive": 4, "volatility": 4, "mental": 1},
+      "tags": ["energetic", "scrappy"],
+      "weight": 0.85,
+      "focus_bias": {"balanced": 1.1, "small_ball": 1.3},
+      "position_bias": {"outfielder": 1.1, "infielder": 1.05},
+      "affinity": {"speed": 65, "drive": 55}
+    }
+  },
+  "coach_archetypes": {
+    "Stoic": {"bias": "balanced", "dialogue": "brief", "buff": "composure"},
+    "Gruff": {"bias": "power", "dialogue": "harsh", "buff": "toughness"},
+    "Tactical": {"bias": "defense", "dialogue": "smart", "buff": "iq"},
+    "Relentless": {"bias": "stamina", "dialogue": "intense", "buff": "endurance"},
+    "Charismatic": {"bias": "balanced", "dialogue": "smooth", "buff": "morale"},
+    "Unorthodox": {"bias": "trickery", "dialogue": "weird", "buff": "instinct"},
+    "Disciplined": {"bias": "defense", "dialogue": "formal", "buff": "control"},
+    "Mentorly": {"bias": "balanced", "dialogue": "warm", "buff": "growth"},
+    "Energetic": {"bias": "speed", "dialogue": "loud", "buff": "speed"},
+    "Cunning": {"bias": "trickery", "dialogue": "sly", "buff": "steal"},
+    "Serene": {"bias": "balanced", "dialogue": "calm", "buff": "recovery"},
+    "Intense": {"bias": "power", "dialogue": "scary", "buff": "clutch"},
+    "Eccentric": {"bias": "trickery", "dialogue": "riddle", "buff": "adaptability"},
+    "Nurturing": {"bias": "defense", "dialogue": "gentle", "buff": "trust"},
+    "Strict": {"bias": "standard", "dialogue": "harsh", "buff": "discipline"},
+    "Observant": {"bias": "tactical", "dialogue": "detail", "buff": "technique"},
+    "Ruthless": {"bias": "aggro", "dialogue": "cold", "buff": "power"},
+    "Passionate": {"bias": "aggro", "dialogue": "loud", "buff": "spirit"},
+    "Whimsical": {"bias": "random", "dialogue": "weird", "buff": "luck"},
+    "Logical": {"bias": "tactical", "dialogue": "robot", "buff": "analytics"},
+    "Philosophical": {"bias": "balanced", "dialogue": "riddle", "buff": "mental"},
+    "Old-School": {"bias": "bunt", "dialogue": "grumpy", "buff": "grit"},
+    "Maverick": {"bias": "gambler", "dialogue": "cocky", "buff": "clutch"}
   }
 }

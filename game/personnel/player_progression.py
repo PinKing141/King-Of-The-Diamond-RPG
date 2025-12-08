@@ -5,14 +5,14 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from database.setup_db import Game, GameState, Player, PlayerGameStats, PlayerMilestone
-from core.rng import DeterministicRNG, get_rng
+from core.rng import DeterministicRNG, get_rng, new_rng
+from core.paths import data_path
 from game.mechanics.skill_system import (
     SKILL_DEFINITIONS,
     grant_skill_by_key,
@@ -20,8 +20,7 @@ from game.mechanics.skill_system import (
 )
 from game.mechanics.trait_logic import get_progression_speed_multiplier
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MILESTONE_DATA_PATH = PROJECT_ROOT / "data" / "milestones.json"
+MILESTONE_DATA_PATH = data_path("milestones.json")
 
 logger = logging.getLogger(__name__)
 PROGRESSION_DEBUG = os.getenv("PROGRESSION_DEBUG", "").lower() in {"1", "true", "yes"}
@@ -48,7 +47,7 @@ class MilestoneUnlockResult:
     description: str
 
 
-_milestone_rng = get_rng()
+_milestone_rng = new_rng()
 _MILESTONE_CACHE: Optional[List[MilestoneDefinition]] = None
 
 

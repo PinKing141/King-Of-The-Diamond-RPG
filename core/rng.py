@@ -61,4 +61,9 @@ def seed_global_rng(seed_value: Optional[int]) -> None:
     _global_rng.seed(seed_value)
 
 
-__all__ = ["DeterministicRNG", "get_rng", "seed_global_rng"]
+def new_rng(seed_value: Optional[int] = None) -> DeterministicRNG:
+    """Create an isolated RNG for dependency-injected use in tests or subsystems."""
+    return DeterministicRNG(seed_value)
+
+
+__all__ = ["DeterministicRNG", "get_rng", "seed_global_rng", "new_rng"]

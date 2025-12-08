@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Dict, Optional, Tuple
 
-from sqlalchemy.exc import OperationalError, PendingRollbackError
+from sqlalchemy.exc import OperationalError, PendingRollbackError, SQLAlchemyError
 
 from database.setup_db import BatteryTrust, session_scope
 
@@ -65,7 +65,7 @@ def _commit_with_retry(session, retries: int = 5, delay: float = 0.1) -> None:
             time.sleep(delay)
         except PendingRollbackError:
             session.rollback()
-        except Exception:
+        except SQLAlchemyError:
             session.rollback()
             raise
 

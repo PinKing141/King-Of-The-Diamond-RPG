@@ -27,7 +27,10 @@ def prompt_defensive_shift(current_shift: str | None, *, io: Optional[IOInterfac
     logger(" 2. Infield In (Stop Bunt)")
     logger(" 3. Deep Outfield (No Doubles)")
     while True:
-        user_input = prompter("Set Alignment: ").strip()
+        raw = prompter("Set Alignment: ")
+        if raw is None:
+            return current_shift
+        user_input = raw.strip()
         if not user_input:
             return current_shift
         if user_input == "1":
@@ -50,7 +53,10 @@ def prompt_hero_dive(probability: float, defender_label: str, *, io: Optional[IO
     logger(" 1. Play Safe (hold to a single)")
     logger(" 2. Dive! (Highlight catch or disaster)")
     while True:
-        choice = prompter("Decision: ").strip()
+        raw = prompter("Decision: ")
+        if raw is None:
+            return "safe"
+        choice = raw.strip()
         if choice == "1":
             return "safe"
         if choice == "2":

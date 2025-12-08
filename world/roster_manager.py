@@ -1,5 +1,7 @@
 from collections import defaultdict
 
+from sqlalchemy.orm import selectinload
+
 from database.setup_db import School, Player, Coach, Roster, get_session
 from game.systems.academic_system import is_academically_eligible
 from game.coach_strategy import get_resting_player_ids
@@ -18,7 +20,11 @@ def run_roster_logic(target_school_id=None, db_session=None):
         db_session = get_session()
         close_session = True
 
-    schools = db_session.query(School).all()
+    schools = (
+        db_session.query(School)
+        .options(selectinload(School.coach), selectinload(School.players))
+        .all()
+    )
     if target_school_id:
         schools = [s for s in schools if s.id == target_school_id]
         
@@ -74,8 +80,11 @@ def update_school_roster(db_session, school):
     # Sort ALL players by Utility
     player_utilities.sort(key=lambda x: x[1], reverse=True)
     
-    # 2. Reset Roles
-    db_session.query(Roster).filter_by(school_id=school.id).delete()
+    # 2. Reset Roles (keep roster churn minimal by diffing)
+    existing_roster = {
+        r.position: r.player_id for r in db_session.query(Roster).filter_by(school_id=school.id)
+    }
+    desired_roster: dict[str, int] = {}
     usage_counts = defaultdict(int)
 
     def max_slots(player):
@@ -111,7 +120,7 @@ def update_school_roster(db_session, school):
             return False
         first_assignment = usage_counts[player.id] == 0
         usage_counts[player.id] += 1
-        add_to_roster(db_session, school.id, roster_slot, player.id)
+        desired_roster[roster_slot] = player.id
 
         player.is_starter = True
         if first_assignment:
@@ -169,6 +178,22 @@ def update_school_roster(db_session, school):
         p.is_starter = False
         p.role = "RESERVE"
         p.jersey_number = 99 # Or None, purely cosmetic distinction
+
+    # Persist roster changes only when the slot->player mapping changed
+    if desired_roster != existing_roster:
+        to_delete = [pos for pos, pid in existing_roster.items() if desired_roster.get(pos) != pid]
+        if to_delete:
+            (
+                db_session.query(Roster)
+                .filter(Roster.school_id == school.id, Roster.position.in_(to_delete))
+                .delete(synchronize_session=False)
+            )
+
+        to_add = {pos: pid for pos, pid in desired_roster.items() if existing_roster.get(pos) != pid}
+        if to_add:
+            db_session.add_all(
+                [Roster(school_id=school.id, position=pos, player_id=pid) for pos, pid in to_add.items()]
+            )
 
 def add_to_roster(db_session, school_id, pos, player_id):
     r = Roster(school_id=school_id, position=pos, player_id=player_id)
