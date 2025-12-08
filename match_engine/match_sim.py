@@ -8,14 +8,19 @@ modes used by tests).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Protocol, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from core.event_bus import EventBus
 from match_engine.states import EventType, HitType, InningHalf, MatchState, PlayMode
 from match_engine.input_system import BatterInputSource, FixedBatterInput, HumanBatterInput, CpuBatterInput
 from match_engine.batter_logic import AtBatStateMachine
+from match_engine.interfaces import BatterLike, PitcherLike
 from game.save_manager import autosave_match_state
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,8 +37,8 @@ class BatterChoice:
 class MatchupContext:
     inning: int
     half: InningHalf
-    pitcher: Any
-    batter: Any
+    pitcher: "PitcherLike"
+    batter: "BatterLike"
     lineup_attr: str
     balls: int
     strikes: int
@@ -121,24 +126,35 @@ class MatchSimulation:
                     choice_key = self.input_strategy.select_batter_choice(matchup, self._CHOICE_LIBRARY)
                     if choice_key:
                         self.submit_player_choice(choice_key)
-                except Exception:
-                    # Strategy errors should not crash the sim; fall back to auto-resolution.
-                    pass
+                except Exception as exc:
+                    # Surface strategy failures so they do not fail silently and mask defects.
+                    logger.exception("Input strategy failed during batter choice selection")
+                    raise RuntimeError("Input strategy failed during batter choice selection") from exc
 
             self._active_input_source = self._select_input_source(matchup)
             return None
 
         # Phase 2: Execute the matchup built on the previous call.
-        outcome = self._execute_matchup()
-        outcome = self._summarize_outcome(outcome)
-        if getattr(outcome, "drama_level", 0) >= 4:
-            try:
-                autosave_match_state(state=self.state, reason="high_drama_play")
-            except Exception:
-                pass
-        self.loop_state = MatchState.WAITING_FOR_PITCH
-        self._current_matchup = None
-        return outcome
+        try:
+            # If an earlier error cleared the input source, fall back to CPU to avoid deadlock.
+            if self._active_input_source is None:
+                self._active_input_source = self._select_input_source(self._current_matchup)
+
+            outcome = self._execute_matchup()
+            outcome = self._summarize_outcome(outcome)
+            if getattr(outcome, "drama_level", 0) >= 4:
+                try:
+                    autosave_match_state(state=self.state, reason="high_drama_play")
+                except Exception:
+                    pass
+            return outcome
+        finally:
+            # Always reset internal phase markers to avoid zombie matchups on errors.
+            self.loop_state = MatchState.WAITING_FOR_PITCH
+            self._current_matchup = None
+            self._pending_cut_in = False
+            self._pending_choice = None
+            self.awaiting_player_choice = False
 
     def submit_player_choice(self, choice_key: str) -> None:
         if choice_key not in self._CHOICE_LIBRARY:
@@ -157,12 +173,18 @@ class MatchSimulation:
     def _normalize_half(self, half: Optional[Any]) -> InningHalf:
         if half is None:
             raise ValueError("MatchSimulation requires state.top_bottom to be set before stepping.")
-        label = str(half).lower()
-        if label.startswith("t"):
-            return InningHalf.TOP
-        if label.startswith("b"):
-            return InningHalf.BOT
-        raise ValueError(f"Invalid inning half '{half}'. Expected Top/Bot.")
+        if isinstance(half, InningHalf):
+            return half
+
+        candidate = getattr(half, "value", half)
+        if isinstance(candidate, str):
+            label = candidate.strip().lower()
+            if label in {"top", "t"}:
+                return InningHalf.TOP
+            if label in {"bot", "bottom", "b"}:
+                return InningHalf.BOT
+
+        raise ValueError(f"Invalid inning half '{half}'. Expected Top/Bot or InningHalf enum.")
 
     def _validate_state(self) -> InningHalf:
         half = self._normalize_half(getattr(self.state, "top_bottom", None))
@@ -223,8 +245,9 @@ class MatchSimulation:
         # Allow patched/mock state machines to observe PITCH_FLIGHT state.
         try:
             AtBatStateMachine(self.state, input_source=self._active_input_source).run()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("AtBatStateMachine crashed during matchup execution")
+            raise RuntimeError("AtBatStateMachine crashed during matchup execution") from exc
 
         self.loop_state = MatchState.PLAY_RESOLUTION
         self.state.outs = getattr(self.state, "outs", 0) + 1

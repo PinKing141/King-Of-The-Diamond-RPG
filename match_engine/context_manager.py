@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+from match_engine.interfaces import BatterLike, PitcherLike, PlayerLike
+
 from battery_system.battery_trust import trust_scaled_wall
 
 
@@ -41,7 +43,7 @@ def _player_role(player) -> Optional[str]:
 	return getattr(player, "role", getattr(player, "player_role", getattr(player, "pitcher_role", None)))
 
 
-def _current_catcher(state):
+def _current_catcher(state) -> Optional[PlayerLike]:
 	"""Return the active catcher for the defense."""
 
 	if not state:
@@ -65,7 +67,7 @@ def _lookup_counter(state, attr_name: str, player_id: Optional[int]) -> int:
 	return 0
 
 
-def get_at_bat_context(state, batter, pitcher) -> Dict[str, object]:
+def get_at_bat_context(state, batter: BatterLike, pitcher: PitcherLike) -> Dict[str, object]:
 	"""Return a normalized dictionary summarizing the current plate appearance."""
 	inning = getattr(state, "inning", 1) or 1
 	top_half = getattr(state, "top_bottom", "Top") == "Top"

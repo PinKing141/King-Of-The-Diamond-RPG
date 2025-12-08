@@ -96,6 +96,50 @@ _NOTES = (
     "Razor release",
 )
 
+# --- Mechanics tuning knobs (document intent) ---
+AVG_AGGRESSION = 50
+AGGRESSION_TEMPO_DIVISOR = 200.0
+AVG_STAMINA = 60
+STAMINA_TEMPO_DIVISOR = 180.0
+BASE_TEMPO_SECONDS = 0.45
+TEMPO_NOISE_RANGE = (-0.1, 0.15)
+MIN_TEMPO_SECONDS = 0.2
+MAX_TEMPO_SECONDS = 1.2
+
+BASE_EXTENSION_FEET = 5.2
+BASELINE_HEIGHT_INCHES = 72
+EXTENSION_PER_INCH_OF_HEIGHT = 0.03
+EXTENSION_PER_WINGSPAN_INCH = 0.015
+EXTENSION_NOISE_RANGE = (-0.25, 0.35)
+MIN_EXTENSION_FEET = 4.6
+MAX_EXTENSION_FEET = 7.8
+
+RELEASE_HEIGHT_MIN = 4.2
+RELEASE_HEIGHT_MAX = 6.8
+ARM_SLOT_DROP = {"Over-the-Top": 0.0, "Three-Quarters": 0.5, "Low Three-Quarters": 0.9, "Sidearm": 1.4}
+DEFAULT_ARM_SLOT_DROP = 0.5
+
+AVG_EXTENSION_FEET = 6.0
+PERCEIVED_VELO_PER_FOOT = 0.65
+TEMPO_VELO_SCALAR = 4.5
+MIN_PERCEIVED_VELO = -2.0
+MAX_PERCEIVED_VELO = 4.5
+
+BALANCE_COMMAND_SCALAR = 0.25
+HIGH_TEMPO_THRESHOLD = 0.85
+HIGH_TEMPO_COMMAND_PENALTY = 0.05
+MIN_COMMAND_SCALAR = 0.75
+MAX_COMMAND_SCALAR = 1.25
+
+DECEPTION_MOVEMENT_SCALAR = 0.2
+RIDE_CLAMP = (0.8, 1.25)
+SINK_CLAMP = (0.8, 1.2)
+SWEEP_CLAMP = (0.8, 1.3)
+ARM_SLOT_VERTICAL_BONUS = {"Over-the-Top": 0.12, "Sidearm": -0.08}
+ARM_SLOT_HORIZONTAL_BONUS = {"Over-the-Top": -0.05, "Sidearm": 0.2, "Low Three-Quarters": 0.1}
+POSTURE_HORIZONTAL_BONUS = 0.05
+POSTURE_VERTICAL_BONUS = 0.05
+
 
 def _seed_from_pitcher(pitcher, seed: Optional[int]) -> int:
     if seed is not None:
@@ -117,58 +161,61 @@ def _random_for_pitcher(pitcher, seed: Optional[int]) -> random.Random:
 def _tempo_for_pitcher(pitcher, prng: random.Random) -> float:
     stamina = getattr(pitcher, "stamina", 55) or 55
     aggression = getattr(pitcher, "aggression", 55) or 55
-    base = 0.45 + (aggression - 50) / 200.0
-    base += (stamina - 60) / 180.0
-    return max(0.2, min(1.2, base + prng.uniform(-0.1, 0.15)))
+    base = BASE_TEMPO_SECONDS + (aggression - AVG_AGGRESSION) / AGGRESSION_TEMPO_DIVISOR
+    base += (stamina - AVG_STAMINA) / STAMINA_TEMPO_DIVISOR
+    noise = prng.uniform(*TEMPO_NOISE_RANGE)
+    return max(MIN_TEMPO_SECONDS, min(MAX_TEMPO_SECONDS, base + noise))
 
 
 def _extension_for_pitcher(pitcher, prng: random.Random) -> float:
     height = getattr(pitcher, "height_inches", 74) or 74
     wingspan_bonus = getattr(pitcher, "wingspan", height) - height
-    base = 5.2 + (height - 72) * 0.03 + wingspan_bonus * 0.015
-    return max(4.6, min(7.8, base + prng.uniform(-0.25, 0.35)))
+    base = BASE_EXTENSION_FEET + (height - BASELINE_HEIGHT_INCHES) * EXTENSION_PER_INCH_OF_HEIGHT
+    base += wingspan_bonus * EXTENSION_PER_WINGSPAN_INCH
+    noise = prng.uniform(*EXTENSION_NOISE_RANGE)
+    return max(MIN_EXTENSION_FEET, min(MAX_EXTENSION_FEET, base + noise))
 
 
 def _release_height(pitcher, prng: random.Random) -> float:
     height = getattr(pitcher, "height_inches", 74) or 74
     slot = getattr(pitcher, "arm_slot", None) or prng.choice(_ARM_SLOTS)
-    drop = {"Over-the-Top": 0.0, "Three-Quarters": 0.5, "Low Three-Quarters": 0.9, "Sidearm": 1.4}
-    return max(4.2, min(6.8, (height / 12) - drop.get(slot, 0.5) + prng.uniform(-0.15, 0.15)))
+    drop = ARM_SLOT_DROP.get(slot, DEFAULT_ARM_SLOT_DROP)
+    return max(RELEASE_HEIGHT_MIN, min(RELEASE_HEIGHT_MAX, (height / 12) - drop + prng.uniform(-0.15, 0.15)))
 
 
 def _perceived_velocity_bonus(extension: float, tempo: float) -> float:
-    ext_bonus = (extension - 6.0) * 0.65
-    tempo_bonus = (tempo - 0.5) * 4.5
-    return round(max(-2.0, min(4.5, ext_bonus + tempo_bonus)), 2)
+    ext_bonus = (extension - AVG_EXTENSION_FEET) * PERCEIVED_VELO_PER_FOOT
+    tempo_bonus = (tempo - 0.5) * TEMPO_VELO_SCALAR
+    return round(max(MIN_PERCEIVED_VELO, min(MAX_PERCEIVED_VELO, ext_bonus + tempo_bonus)), 2)
 
 
 def _command_scalar(balance: float, tempo: float) -> float:
-    base = 1.0 + (balance - 0.5) * 0.25
-    if tempo > 0.85:
-        base -= 0.05
-    return max(0.75, min(1.25, base))
+    base = 1.0 + (balance - 0.5) * BALANCE_COMMAND_SCALAR
+    if tempo > HIGH_TEMPO_THRESHOLD:
+        base -= HIGH_TEMPO_COMMAND_PENALTY
+    return max(MIN_COMMAND_SCALAR, min(MAX_COMMAND_SCALAR, base))
 
 
 def _movement_bias(arm_slot: str, posture: str, deception: float) -> Dict[str, float]:
     vertical = 1.0
     horizontal = 1.0
     if arm_slot == "Over-the-Top":
-        vertical += 0.12
-        horizontal -= 0.05
+        vertical += ARM_SLOT_VERTICAL_BONUS["Over-the-Top"]
+        horizontal += ARM_SLOT_HORIZONTAL_BONUS["Over-the-Top"]
     elif arm_slot == "Sidearm":
-        horizontal += 0.2
-        vertical -= 0.08
+        horizontal += ARM_SLOT_HORIZONTAL_BONUS["Sidearm"]
+        vertical += ARM_SLOT_VERTICAL_BONUS["Sidearm"]
     elif arm_slot == "Low Three-Quarters":
-        horizontal += 0.1
+        horizontal += ARM_SLOT_HORIZONTAL_BONUS["Low Three-Quarters"]
     if posture == "closed":
-        horizontal += 0.05
+        horizontal += POSTURE_HORIZONTAL_BONUS
     elif posture == "open":
-        vertical += 0.05
-    deception_bonus = (deception - 0.5) * 0.2
+        vertical += POSTURE_VERTICAL_BONUS
+    deception_bonus = (deception - 0.5) * DECEPTION_MOVEMENT_SCALAR
     return {
-        "ride": max(0.8, min(1.25, vertical + deception_bonus)),
-        "sink": max(0.8, min(1.2, vertical - deception_bonus * 0.5)),
-        "sweep": max(0.8, min(1.3, horizontal + deception_bonus * 0.75)),
+        "ride": max(RIDE_CLAMP[0], min(RIDE_CLAMP[1], vertical + deception_bonus)),
+        "sink": max(SINK_CLAMP[0], min(SINK_CLAMP[1], vertical - deception_bonus * 0.5)),
+        "sweep": max(SWEEP_CLAMP[0], min(SWEEP_CLAMP[1], horizontal + deception_bonus * 0.75)),
     }
 
 

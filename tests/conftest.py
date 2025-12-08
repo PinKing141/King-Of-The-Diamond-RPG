@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import types
 import os
 import sys
 from unittest.mock import MagicMock
@@ -8,8 +9,14 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy import create_engine
 
-# Ensure the project root is importable when running under pytest
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure the project root and world package are importable when running under pytest
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if repo_root not in sys.path:
+    sys.path.append(repo_root)
+
+world_path = os.path.join(repo_root, "world")
+if world_path not in sys.path:
+    sys.path.append(world_path)
 
 from core.rng import seed_global_rng
 from database import setup_db
@@ -82,3 +89,24 @@ def stub_battery_negotiation(monkeypatch):
         )
 
     monkeypatch.setattr(battery_negotiation, "run_battery_negotiation", _fake_call)
+
+
+@pytest.fixture(autouse=True)
+def shim_ui_display(monkeypatch):
+    """Ensure ui.ui_display imports in headless tests without terminal dependencies."""
+    try:
+        import ui.ui_display as ui_display
+        monkeypatch.setattr(ui_display, "clear_screen", lambda: None)
+    except Exception:
+        shim = types.ModuleType("ui.ui_display")
+
+        class _Colour:
+            HEADER = MAG = MAGENTA = BLUE = CYAN = GREEN = YELLOW = RED = WHITE = ""
+            RESET = BOLD = GOLD = dim = FAIL = WARNING = gold = ""
+
+        shim.Colour = _Colour
+        shim.clear_screen = lambda: None
+        ui_pkg = types.ModuleType("ui")
+        ui_pkg.ui_display = shim
+        monkeypatch.setitem(sys.modules, "ui", ui_pkg)
+        monkeypatch.setitem(sys.modules, "ui.ui_display", shim)

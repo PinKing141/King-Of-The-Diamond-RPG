@@ -1,6 +1,8 @@
 # Lightweight facade to avoid eager heavy imports that create circular dependencies
 
-__all__ = ["run_match", "resolve_match"]
+__all__ = ["run_match", "resolve_match", "BatterLike", "PitcherLike"]
+
+from .interfaces import BatterLike, PitcherLike
 
 
 def run_match(*args, **kwargs):
@@ -10,6 +12,6 @@ def run_match(*args, **kwargs):
 
 
 def resolve_match(*args, **kwargs):
-	from .resolver import resolve_match as _resolve_match
+	from .controller import resolve_match as _resolve_match
 
 	return _resolve_match(*args, **kwargs)

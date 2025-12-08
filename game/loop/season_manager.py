@@ -1,24 +1,20 @@
 import json
 import random
 import sys
-import time
 from typing import Optional, Tuple
 
 from core.event_bus import EventBus
 from database.setup_db import GameState, Player, School
-from debug.debug_tools import input_with_debug
 from core.analytics import initialise_analytics
 from core.config_loader import SeasonConfigLoader
 from core.exceptions import KoshienException, ScheduleError
 from core.game_context import GameContext
-from game.save_manager import show_save_menu
 from game.loop.season_engine import run_end_of_season_logic
 from game.loop.offseason_engine import graduate_third_years
 from game.training_logic import run_training_camp_event
 from game.loop.weekly_scheduler import build_mandatory_schedule, run_week_automatic, start_week
-from ui.scouting_report import view_scouting_menu
-from ui.ui_core import choose_theme, show_page, DEFAULT_THEME
-from ui.ui_display import Colour, clear_screen, render_screen, render_weekly_dashboard
+from game.interfaces import SeasonView
+from ui.ui_core import show_page
 from world_sim.prefecture_engine import simulate_background_matches
 from world_sim.qualifiers import run_season_qualifiers
 from world_sim.tournament_sim import run_koshien_tournament, run_spring_koshien
@@ -32,11 +28,11 @@ MONTH_NAMES = [
 class SeasonManager:
     """Orchestrates the weekly game loop, event triggers, and time advancement."""
 
-    def __init__(self, context: GameContext, session, *, theme: str = DEFAULT_THEME):
+    def __init__(self, context: GameContext, session, *, view: SeasonView):
         self.context = context
         self.session = session
         self.state: GameState = self._load_state()
-        self.theme = theme
+        self.view = view
         self.bus = initialise_analytics(EventBus())
 
     # --------- helpers ---------
@@ -57,7 +53,7 @@ class SeasonManager:
             if any("match" in (action or "") for action in mandatory.values()):
                 return True
         except (AttributeError, ValueError) as exc:
-            print(f"{Colour.WARNING}Warning: Could not check schedule: {exc}{Colour.RESET}")
+            self.view.display_warning(f"Warning: Could not check schedule: {exc}")
             return False
         except Exception as exc:
             raise ScheduleError(f"Unexpected scheduler failure: {exc}") from exc
@@ -80,11 +76,11 @@ class SeasonManager:
         }
         start_msg = tracker.check_triggers(user_player, stats)
         if start_msg:
-            print(f"{Colour.CYAN}[Story]{Colour.RESET} {start_msg}")
+            self.view.display_story_event(start_msg)
 
         beats = tracker.advance_arcs(user_player)
         for _, beat in beats.items():
-            print(f"{Colour.CYAN}[Story]{Colour.RESET} {beat}")
+            self.view.display_story_event(beat)
 
         self.context.set_temp_effect("story_arc_last_week", self.state.current_week)
 
@@ -97,7 +93,7 @@ class SeasonManager:
         try:
             schedule = build_mandatory_schedule(user_player)
         except Exception as exc:
-            print(f"{Colour.WARNING}Rivalry scan skipped: {exc}{Colour.RESET}")
+            self.view.display_warning(f"Rivalry scan skipped: {exc}")
             return
 
         match_event = None
@@ -137,7 +133,7 @@ class SeasonManager:
             rival_ctx = self.context.get_rival_context(user_player.id, opponent_school_id)
 
         if not rival_ctx and opponent_school_id is None:
-            print(f"{Colour.MAGENTA}Heads up:{Colour.RESET} Big game aura this week. No rival intel found, but the band is on standby.")
+            self.view.display_rivalry_aura()
             return
         if not rival_ctx:
             return
@@ -145,9 +141,7 @@ class SeasonManager:
         school = self.session.get(School, opponent_school_id) if opponent_school_id else None
         school_name = opponent_name or (getattr(school, "name", "Unknown School") if school else "Unknown School")
 
-        print(f"\n{Colour.RED}!!! RIVAL MATCH DETECTED !!!{Colour.RESET}")
-        print(f"You will face {school_name}. Your nemesis awaits.")
-        print(f"{Colour.YELLOW}Cue: Rival theme | Pre-game taunt unlocked{Colour.RESET}")
+        self.view.display_rivalry_detected(school_name)
         self.context.set_temp_effect("rival_match_context", rival_ctx)
         self.context.set_temp_effect("rival_presentation", {
             "music": "rival_theme",
@@ -156,21 +150,15 @@ class SeasonManager:
         })
 
     def _print_week_header(self) -> None:
-        month_label = MONTH_NAMES[(self.state.current_month - 1) % 12] if self.state.current_month else "--"
-        print(f"{Colour.gold}>>> YEAR {self.state.current_year} | WEEK {self.state.current_week} / 50{Colour.RESET}")
-        print(f"Date: {month_label} (Month {self.state.current_month})")
+        self.view.show_week_header(
+            year=self.state.current_year,
+            week=self.state.current_week,
+            week_max=50,
+            month=self.state.current_month,
+        )
 
     def _print_banner(self) -> None:
-        clear_screen()
-        theme = choose_theme(self.theme)
-        width = 68
-        deco = theme["decor"] * width
-        title = "⚾  KING OF THE DIAMOND RPG: THE FINAL  ⚾"
-        subtitle = "The Road to the Sacred Stadium begins here."
-        print(f"{theme['accent']}{deco}{Colour.RESET}")
-        print(f"{theme['accent']}{title.center(width)}{Colour.RESET}")
-        print(f"{theme['accent']}{deco}{Colour.RESET}")
-        print(f"{theme['muted']}{subtitle.center(width)}{Colour.RESET}\n")
+        self.view.show_banner()
 
     # --------- main loop ---------
     def run_season_loop(self) -> None:
@@ -179,7 +167,7 @@ class SeasonManager:
                 self.state = self._load_state()
                 user_player = self._get_active_player()
                 if not user_player:
-                    print(f"{Colour.FAIL}ERROR: Active player lost. Returning to menu.{Colour.RESET}")
+                    self.view.display_error("ERROR: Active player lost. Returning to menu.")
                     break
 
                 self.context.set_player(user_player.id, user_player.school_id)
@@ -213,15 +201,14 @@ class SeasonManager:
                     self._advance_time()
 
         except KoshienException as exc:
-            clear_screen()
-            print(f"\n{Colour.FAIL}!!! GAME ERROR !!!{Colour.RESET}")
-            print("A problem occurred that prevented the game from continuing:")
-            print(f"{Colour.BOLD}{exc}{Colour.RESET}")
-            print("\nProgress has been saved to 'crash_autosave.db' (if possible).")
-            input("\nPress Enter to exit...")
+            self.view.show_fatal_error(
+                "!!! GAME ERROR !!!",
+                "A problem occurred that prevented the game from continuing:",
+                details=str(exc),
+            )
             sys.exit(1)
         except Exception as exc:
-            print(f"\n{Colour.FAIL}CRITICAL UNHANDLED EXCEPTION: {exc}{Colour.RESET}")
+            self.view.display_error(f"CRITICAL UNHANDLED EXCEPTION: {exc}")
             raise
         finally:
             self.session.close()
@@ -229,17 +216,17 @@ class SeasonManager:
 
     # --------- loop sections ---------
     def _handle_end_of_season(self, user_player: Player) -> bool:
-        print(f"\n{Colour.HEADER}=== SEASON {self.state.current_year} COMPLETE ==={Colour.RESET}")
+        self.view.display_info(f"=== SEASON {self.state.current_year} COMPLETE ===")
 
         if user_player.year == 3:
-            print(f"\n{Colour.CYAN}CONGRATULATIONS ON YOUR GRADUATION!{Colour.RESET}")
-            print("Thank you for playing Koshien RPG.")
+            self.view.display_info("CONGRATULATIONS ON YOUR GRADUATION!")
+            self.view.display_info("Thank you for playing Koshien RPG.")
             run_end_of_season_logic(user_player_id=self.context.player_id)
-            input("Press Enter to exit...")
+            self.view.prompt_continue("Press Enter to exit...")
             return True
 
-        print("The third-years are retiring. Preparing for next season...")
-        input("[Press Enter to Advance Year]")
+        self.view.display_info("The third-years are retiring. Preparing for next season...")
+        self.view.prompt_continue("[Press Enter to Advance Year]")
 
         run_end_of_season_logic()
         self.session.expire_all()
@@ -251,34 +238,34 @@ class SeasonManager:
             return
 
         if event_type == "summer_qualifiers":
-            print(f"\n{Colour.RED}!!! THE SUMMER KOSHIEN QUALIFIERS !!!{Colour.RESET}")
-            input("Press Enter to begin...")
+            self.view.display_info("!!! THE SUMMER KOSHIEN QUALIFIERS !!!")
+            self.view.prompt_continue("Press Enter to begin...")
             reps = run_season_qualifiers(user_school_id, context=self.context)
             user_qualified = any(s.id == user_school_id for s in reps)
             if user_qualified:
-                print(f"{Colour.gold}YOU WON THE PREFECTURE!{Colour.RESET}")
+                self.view.display_info("YOU WON THE PREFECTURE!")
                 run_koshien_tournament(user_school_id, reps, context=self.context)
             else:
-                print(f"{Colour.FAIL}Eliminated in qualifiers.{Colour.RESET}")
+                self.view.display_warning("Eliminated in qualifiers.")
                 run_koshien_tournament(user_school_id, reps, context=self.context)
 
         elif event_type == "third_year_retirement":
-            print(f"\n{Colour.WARNING}Third-years retire after summer. Time for the new team to step up.{Colour.RESET}")
+            self.view.display_warning("Third-years retire after summer. Time for the new team to step up.")
             removed = graduate_third_years(self.session)
             try:
                 self.session.commit()
             except Exception:
                 self.session.rollback()
                 removed = 0
-            print(f"Removed {removed} graduating players. Set a new captain and lineup before autumn.")
-            input("Press Enter to continue...")
+            self.view.display_info(f"Removed {removed} graduating players. Set a new captain and lineup before autumn.")
+            self.view.prompt_continue("Press Enter to continue...")
 
         elif event_type == "autumn_regionals":
             from world_sim.regional_sim import run_autumn_regionals
 
-            print(f"\n{Colour.gold}=== THE ROAD TO SENBATSU: AUTUMN REGIONALS ==={Colour.RESET}")
-            print("The top schools from every prefecture clash for Spring bids.")
-            input("Press Enter to begin...")
+            self.view.display_info("=== THE ROAD TO SENBATSU: AUTUMN REGIONALS ===")
+            self.view.display_info("The top schools from every prefecture clash for Spring bids.")
+            self.view.prompt_continue("Press Enter to begin...")
 
             qualifiers = run_autumn_regionals(self.session, user_school_id, context=self.context)
             self.context.set_temp_effect("spring_qualifier_ids", qualifiers)
@@ -292,19 +279,19 @@ class SeasonManager:
                 self.session.rollback()
 
             if user_school_id in qualifiers:
-                print(f"\n{Colour.CYAN}Ticket punched! You qualified for Spring Koshien.{Colour.RESET}")
+                self.view.display_info("Ticket punched! You qualified for Spring Koshien.")
             else:
-                print(f"\n{Colour.dim}You did not qualify for the Spring Tournament.{Colour.RESET}")
+                self.view.display_info("You did not qualify for the Spring Tournament.")
 
         elif event_type == "winter_camp":
-            print(f"\n{Colour.WARNING}Winter Training Camp begins.{Colour.RESET}")
-            if input("Participate? (y/n): ").lower() == "y":
+            self.view.display_warning("Winter Training Camp begins.")
+            if self.view.prompt_yes_no("Participate? (y/n): "):
                 run_training_camp_event(self.context)
             else:
-                print("You skipped camp.")
+                self.view.display_info("You skipped camp.")
 
         elif event_type == "spring_koshien":
-            print(f"\n{Colour.CYAN}Spring Senbatsu Approaches.{Colour.RESET}")
+            self.view.display_info("Spring Senbatsu Approaches.")
             qualifiers = self.context.get_temp_effect("spring_qualifier_ids") or getattr(self.state, "spring_qualifier_ids", None)
             if isinstance(qualifiers, str):
                 try:
@@ -317,92 +304,62 @@ class SeasonManager:
         scouting_available = self._has_game_this_week(user_player, self.state.current_week)
 
         while True:
-            self._print_banner()
-            self._print_week_header()
-            print(f"{Colour.dim}Prepare your week:{Colour.RESET}")
-            print("\nWeek Prep Options:")
-            print(" 1. Plan Week")
-            label = "2. Scouting Report" if scouting_available else "2. Scouting Report (locked — no game this week)"
-            print(f" {label}")
-            print(" 3. Character Sheet")
-            print(" 4. Save Game")
-            print(" 0. Back to Main Menu")
+            intent = self.view.prompt_weekly_menu(
+                scouting_available=scouting_available,
+                context=self.context,
+                session=self.session,
+                state=self.state,
+            )
 
-            pre_choice = input_with_debug(">> ", context=self.context, session=self.session, state=self.state)
-            if pre_choice is None:
-                continue
-            pre_choice = pre_choice.strip().lower()
-
-            if pre_choice == "1":
+            if intent == "PLAN_WEEK":
                 executed = show_page(start_week, self.context, self.state.current_week, self.state)
                 if executed:
                     return "MENU"
                 continue
-            if pre_choice == "2":
-                if not scouting_available:
-                    print("Scouting is only available when a match is scheduled this week.")
-                    time.sleep(1)
-                    continue
-                show_page(view_scouting_menu, self.context)
+            if intent == "SCOUT":
+                self.view.show_scouting_menu(self.context)
                 continue
-            if pre_choice == "3":
-                show_page(render_screen, self.session, self._snapshot_player(user_player))
-                input("Press Enter to return...")
+            if intent == "CHARACTER_SHEET":
+                self.view.show_character_sheet(self.session, self._snapshot_player(user_player))
                 continue
-            if pre_choice == "4":
-                show_page(show_save_menu, "SAVE")
+            if intent == "SAVE":
+                self.view.show_save_menu()
                 continue
-            if pre_choice == "0":
+            if intent == "QUIT":
                 return "QUIT"
-            print("Invalid choice.")
 
     def _run_command_menu(self) -> str:
         while True:
-            self._print_banner()
-            self._print_week_header()
-            print("\nOptions:")
-            print(" [Enter] Next Week")
-            print(" [S] Scouting / Roster")
-            print(" [D] Save Game")
-            print(" [A] Smart Sim (Delegate Weeks)")
-            print(" [Q] Quit to Menu")
+            intent = self.view.prompt_command_menu(
+                context=self.context,
+                session=self.session,
+                state=self.state,
+            )
 
-            cmd_raw = input_with_debug(">> ", context=self.context, session=self.session, state=self.state)
-            if cmd_raw is None:
+            if intent == "SCOUT":
+                self.view.show_scouting_menu(self.context)
                 continue
-            cmd = cmd_raw.strip().lower()
-
-            if cmd == "s":
-                view_scouting_menu(self.context)
+            if intent == "SAVE":
+                self.view.show_save_menu()
                 continue
-            if cmd == "d":
-                show_save_menu("SAVE")
-                continue
-            if cmd == "a":
+            if intent == "SMART_SIM":
                 self._prompt_smart_sim()
                 self.session.refresh(self.state)
                 continue
-            if cmd == "q":
+            if intent == "QUIT":
                 return "QUIT"
-            if cmd == "":
+            if intent == "NEXT_WEEK":
                 return "NEXT_WEEK"
-            print("Invalid choice.")
 
     # --------- smart sim ---------
     def _prompt_smart_sim(self) -> None:
-        target_input = input_with_debug(
-            f"Simulate until week (>{self.state.current_week}): ",
+        target_week = self.view.prompt_smart_sim(
+            current_week=self.state.current_week,
             context=self.context,
             session=self.session,
             state=self.state,
         )
-        if target_input is None:
-            return
-        target_input = target_input.strip()
-        try:
-            target_week = int(target_input) if target_input else self.state.current_week + 1
-        except ValueError:
-            print("Invalid week.")
+        if target_week is None:
             return
 
         if target_week <= self.state.current_week:
@@ -415,11 +372,9 @@ class SeasonManager:
 
         summaries, reason = self._run_smart_simulation(target_week)
         if summaries:
-            render_weekly_dashboard(summaries[-1])
-            input()
+            self.view.show_weekly_dashboard(summaries[-1])
         if reason:
-            print(f"\n{Colour.WARNING}Smart Sim stopped: {reason}{Colour.RESET}")
-            input("Press Enter to continue...")
+            self.view.show_smart_sim_stop(reason)
         self.session.refresh(self.state)
 
     def _run_smart_simulation(self, target_week: int) -> Tuple[list, Optional[str]]:
@@ -441,7 +396,7 @@ class SeasonManager:
                 break
 
             user_school_id = player.school_id
-            print(f"\r >> Processing Week {self.state.current_week}...", end="")
+            self.view.show_progress(f"\r >> Processing Week {self.state.current_week}...", end="")
             simulate_background_matches(user_school_id, async_mode=True, verbose=True)
 
             self.context.refresh_session()
@@ -454,7 +409,7 @@ class SeasonManager:
 
             self._advance_time()
 
-        print()
+        self.view.show_progress("")
         return summaries, reason
 
     # --------- utilities ---------

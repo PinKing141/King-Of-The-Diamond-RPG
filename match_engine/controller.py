@@ -13,7 +13,7 @@ from .scoreboard import Scoreboard
 from .manager_ai import manage_team_between_innings
 
 from .telemetry import ensure_collector, flush_telemetry
-from database.setup_db import get_session
+from database.setup_db import Game, get_session, session_scope
 
 from game.personnel.relationship_manager import seed_relationships
 from match_engine.persistence import MatchPersistenceService
@@ -26,6 +26,7 @@ from .brass_band import BrassBand
 
 from battery_system.battery_trust import apply_trust_buffer
 from game.mechanics.pitch_mastery import summarize_mastery_report, flush_pitch_xp
+from game.coach_strategy import consume_strategy_mods
 
 HALF_TOP = InningHalf.TOP.value
 HALF_BOT = InningHalf.BOT.value
@@ -888,6 +889,7 @@ def run_match(
     away_id,
     *,
     fast: bool = False,
+    silent: bool = False,
     auto_play_inputs: bool = False,
     persist_results: bool = True,
     clutch_pitch: Optional[Dict[str, Any]] = None,
@@ -908,7 +910,7 @@ def run_match(
     # 1. Setup
     db_session = get_session()
     previous_commentary = commentary_enabled()
-    if fast:
+    if fast or silent:
         set_commentary_enabled(False)
     try:
         state = prepare_match(
@@ -975,3 +977,138 @@ def run_match(
     finally:
         set_commentary_enabled(previous_commentary)
         db_session.close()
+
+
+_RESOLVE_MODE_PRESETS: Dict[str, Dict[str, bool]] = {
+    "standard": {"fast": False, "silent": False},
+    "interactive": {"fast": False, "silent": False},
+    "fast": {"fast": True, "silent": False},
+    "silent": {"fast": False, "silent": True},
+}
+
+
+def _fetch_latest_score(home_id: int, away_id: int, tournament_name: str) -> str:
+    """Read the latest game for the two teams and optionally tag the tournament."""
+    score_str = "0 - 0"
+    try:
+        with session_scope() as session:
+            game = (
+                session.query(Game)
+                .filter(
+                    Game.home_school_id == home_id,
+                    Game.away_school_id == away_id,
+                )
+                .order_by(Game.id.desc())
+                .first()
+            )
+            if not game:
+                return score_str
+
+            score_str = f"{game.away_score} - {game.home_score}"
+            if tournament_name != "Practice Match" and game.tournament != tournament_name:
+                game.tournament = tournament_name
+                session.commit()
+    except Exception as exc:
+        logger.exception("Failed to fetch latest score from database")
+        raise RuntimeError("Failed to fetch latest score from database") from exc
+
+    return score_str
+
+
+def _simulate_match(
+    home_team,
+    away_team,
+    tournament_name: str,
+    *,
+    silent: bool,
+    fast: bool,
+    clutch_pitch: Optional[Dict[str, Any]] = None,
+    rival_match_context=None,
+    rival_presentation=None,
+    persist_results: bool = True,
+):
+    auto_play_inputs = fast or silent
+    human_team_ids = [] if auto_play_inputs else None
+
+    if fast:
+        winner = run_match(
+            home_team.id,
+            away_team.id,
+            fast=True,
+            silent=silent,
+            auto_play_inputs=auto_play_inputs,
+            persist_results=persist_results,
+            clutch_pitch=clutch_pitch,
+            tournament_name=tournament_name,
+            human_team_ids=human_team_ids,
+            rival_match_context=rival_match_context,
+            rival_presentation=rival_presentation,
+        )
+    elif silent:
+        winner = run_match(
+            home_team.id,
+            away_team.id,
+            silent=True,
+            auto_play_inputs=auto_play_inputs,
+            clutch_pitch=clutch_pitch,
+            tournament_name=tournament_name,
+            persist_results=persist_results,
+            human_team_ids=human_team_ids,
+            rival_match_context=rival_match_context,
+            rival_presentation=rival_presentation,
+        )
+    else:
+        winner = run_match(
+            home_team.id,
+            away_team.id,
+            auto_play_inputs=auto_play_inputs,
+            clutch_pitch=clutch_pitch,
+            tournament_name=tournament_name,
+            persist_results=persist_results,
+            human_team_ids=human_team_ids,
+            rival_match_context=rival_match_context,
+            rival_presentation=rival_presentation,
+        )
+
+    score_str = _fetch_latest_score(home_team.id, away_team.id, tournament_name)
+    with session_scope() as session:
+        consume_strategy_mods(session, home_team.id)
+        consume_strategy_mods(session, away_team.id)
+
+    return winner, score_str
+
+
+def resolve_match(
+    home_team,
+    away_team,
+    tournament_name: str = "Practice Match",
+    *,
+    mode: str = "standard",
+    silent: Optional[bool] = None,
+    clutch_pitch: Optional[Dict[str, Any]] = None,
+    rival_match_context=None,
+    rival_presentation=None,
+    persist_results: bool = True,
+):
+    """Unified entry point for orchestrating a simulated match.
+
+    The controller orchestrates; simulation remains pure and database writes stay here.
+    """
+
+    preset = _RESOLVE_MODE_PRESETS.get(mode)
+    if preset is None:
+        raise ValueError(f"Unknown resolve mode '{mode}'.")
+    fast = preset["fast"]
+    effective_silent = preset["silent"] if silent is None else silent
+    winner = _simulate_match(
+        home_team,
+        away_team,
+        tournament_name,
+        silent=effective_silent,
+        fast=fast,
+        clutch_pitch=clutch_pitch,
+        rival_match_context=rival_match_context,
+        rival_presentation=rival_presentation,
+        persist_results=persist_results,
+    )
+    return winner

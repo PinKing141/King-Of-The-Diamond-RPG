@@ -2,6 +2,8 @@ import os
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
+from match_engine.interfaces import BatterLike, PitcherLike, PlayerLike
+
 from database.setup_db import PitchRepertoire, session_scope
 from match_engine.pitch_definitions import PITCH_TYPES, ARM_SLOT_MODIFIERS
 from match_engine.commentary import commentary_enabled
@@ -739,28 +741,18 @@ def get_arsenal(pitcher_id):
     ]
     return fallback
 
-def get_current_catcher(state):
-    """
-    Helper to find the catcher for the defensive team.
-    """
-    if state.top_bottom == "Top":
-        # Home Team is pitching
-        lineup = state.home_lineup
-    else:
-        # Away Team is pitching
-        lineup = state.away_lineup
-        
-    # Find player with position 'Catcher'
-    for p in lineup:
-        if p.position == "Catcher":
-            return p
-            
-    # Fallback: Just return the first player if no catcher defined (e.g. testing)
+def get_current_catcher(state) -> Optional[PlayerLike]:
+    """Helper to find the catcher for the defensive team."""
+
+    lineup = state.home_lineup if getattr(state, "top_bottom", "Top") == "Top" else state.away_lineup
+    for player in lineup:
+        if getattr(player, "position", "") == "Catcher":
+            return player
     return lineup[0] if lineup else None
 
 def resolve_pitch(
-    pitcher,
-    batter,
+    pitcher: PitcherLike,
+    batter: BatterLike,
     state,
     batter_action="Normal",
     batter_mods=None,
