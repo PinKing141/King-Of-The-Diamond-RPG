@@ -1,7 +1,7 @@
 import json
 import random
 import sys
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.event_bus import EventBus
 from database.setup_db import GameState, Player, School
@@ -9,7 +9,7 @@ from core.analytics import initialise_analytics
 from core.config_loader import SeasonConfigLoader
 from core.exceptions import KoshienException, ScheduleError
 from core.game_context import GameContext
-from game.loop.season_engine import run_end_of_season_logic
+from game.loop.season_engine import SeasonEndResult, run_end_of_season_logic
 from game.loop.offseason_engine import graduate_third_years
 from game.training_logic import run_training_camp_event
 from game.loop.weekly_scheduler import build_mandatory_schedule, run_week_automatic, start_week
@@ -160,6 +160,34 @@ class SeasonManager:
     def _print_banner(self) -> None:
         self.view.show_banner()
 
+    def _render_events(self, events: List[Dict[str, Any]]) -> None:
+        for event in events:
+            payload = event.get("payload", {}) if isinstance(event, dict) else {}
+            event_type = event.get("type") if isinstance(event, dict) else None
+
+            if event_type == "SEASON_LOG":
+                text = str(payload.get("text", ""))
+                level = payload.get("level", "info")
+                if level == "warning":
+                    self.view.display_warning(text)
+                elif level == "error":
+                    self.view.display_error(text)
+                else:
+                    self.view.display_info(text)
+                continue
+
+            if event_type == "SEASON_EPILOGUE":
+                title = payload.get("title", "EPILOGUE")
+                desc = payload.get("description", "")
+                story_lines = payload.get("story_lines", [])
+                self.view.display_info(f"{title}: {desc}")
+                for line in story_lines:
+                    self.view.display_info(str(line))
+                continue
+
+            # Fallback for unrecognised events; keep visible in UI for debugging.
+            self.view.display_info(str(payload) if payload else str(event))
+
     # --------- main loop ---------
     def run_season_loop(self) -> None:
         try:
@@ -221,16 +249,18 @@ class SeasonManager:
         if user_player.year == 3:
             self.view.display_info("CONGRATULATIONS ON YOUR GRADUATION!")
             self.view.display_info("Thank you for playing Koshien RPG.")
-            run_end_of_season_logic(user_player_id=self.context.player_id)
+            result: SeasonEndResult = run_end_of_season_logic(user_player_id=self.context.player_id, event_bus=self.bus)
+            self._render_events(result.events)
             self.view.prompt_continue("Press Enter to exit...")
-            return True
+            return bool(result)
 
         self.view.display_info("The third-years are retiring. Preparing for next season...")
         self.view.prompt_continue("[Press Enter to Advance Year]")
 
-        run_end_of_season_logic()
+        result: SeasonEndResult = run_end_of_season_logic(event_bus=self.bus)
+        self._render_events(result.events)
         self.session.expire_all()
-        return False
+        return bool(result)
 
     def _handle_weekly_events(self, current_week: int, user_school_id: int) -> None:
         event_type = SeasonConfigLoader.get_event_for_week(current_week)

@@ -20,8 +20,9 @@ def ensure_world_population(session, view: SeasonView):
     """Ensure the database has a populated world map."""
     try:
         school_count = session.query(School).count()
-    except Exception:
-        school_count = 0
+    except Exception as exc:
+        view.display_error(f"Failed to read schools: {exc}")
+        raise
 
     if school_count < 10:
         view.announce_world_gen()

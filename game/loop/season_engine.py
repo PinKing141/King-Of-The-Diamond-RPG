@@ -1,8 +1,9 @@
 import json
 import os
-import sys
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from database.setup_db import (
     GameState,
@@ -19,9 +20,26 @@ from game.loop.offseason_engine import (
 from core.event_bus import EventBus
 from ui.ui_display import Colour
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+def _resolve_project_root() -> Path:
+    """Find the repo/data root without assuming this file's exact location."""
+
+    env_root = os.getenv("KOTD_ROOT")
+    if env_root:
+        candidate = Path(env_root).expanduser().resolve()
+        if (candidate / "data").exists():
+            return candidate
+
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "data").exists():
+            return parent
+
+    return current.parent
+
+
+PROJECT_ROOT = _resolve_project_root()
 EPILOGUE_DATA_PATH = PROJECT_ROOT / "data" / "epilogues.json"
-_EPILOGUE_CACHE: Optional[List[Dict[str, Any]]] = None
 
 ATTRIBUTE_DEFAULTS = {
     "velocity": 0,
@@ -41,15 +59,59 @@ ATTRIBUTE_DEFAULTS = {
 }
 
 
+@dataclass(frozen=True)
+class PlayerProfile:
+    player: Player
+    school: Optional[School]
+    position: Optional[str]
+    secondary_position: Optional[str]
+    positions: Set[str]
+    is_two_way: bool
+    is_injured: bool
+    growth_tag: str
+    total_score: int
+    prestige: int
+    titles: int
+    velocity: int
+    control: int
+    command: int
+    movement: int
+    stamina: int
+    power: int
+    contact: int
+    fielding: int
+    speed: int
+    throwing: int
+    catcher_leadership: int
+    mental: int
+    overall: int
+    clutch: int
+    innings_pitched: float
+    runs_allowed: int
+    home_runs: int
+    at_bats: int
+    hits: int
+    era: Optional[float]
+    batting_average: float
+
+
+@dataclass
+class SeasonEndResult:
+    graduated: bool
+    events: List[Dict[str, Any]]
+
+    def __bool__(self) -> bool:
+        return self.graduated
+
+
 def _emit_event(
     event_bus: Optional[EventBus],
-    sink: Optional[List[Dict[str, Any]]],
+    events: List[Dict[str, Any]],
     event_type: str,
     payload: Dict[str, Any],
 ) -> None:
     event = {"type": event_type, "payload": payload}
-    if sink is not None:
-        sink.append(event)
+    events.append(event)
     if event_bus:
         event_bus.publish(event_type, payload)
 
@@ -74,18 +136,16 @@ def _estimate_titles(school: Optional[School]) -> int:
     return 0
 
 
+@lru_cache(maxsize=None)
 def _load_epilogue_templates() -> List[Dict[str, Any]]:
-    global _EPILOGUE_CACHE
-    if _EPILOGUE_CACHE is None:
-        with EPILOGUE_DATA_PATH.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        # Highest priority first
-        _EPILOGUE_CACHE = sorted(
-            data,
-            key=lambda item: item.get("priority", 0),
-            reverse=True,
-        )
-    return _EPILOGUE_CACHE
+    with EPILOGUE_DATA_PATH.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    # Highest priority first
+    return sorted(
+        data,
+        key=lambda item: item.get("priority", 0),
+        reverse=True,
+    )
 
 
 def _aggregate_player_stats(session, player: Player) -> Dict[str, Any]:
@@ -118,10 +178,10 @@ def _aggregate_player_stats(session, player: Player) -> Dict[str, Any]:
     }
 
 
-def _build_player_profile(player: Player, school: Optional[School], session) -> Dict[str, Any]:
+def _build_player_profile(player: Player, school: Optional[School], session) -> PlayerProfile:
     stats = _aggregate_player_stats(session, player)
     total_score = _estimate_total_score(player)
-    prestige = school.prestige if school else 0
+    prestige = int(school.prestige or 0) if school else 0
     growth_tag = getattr(player, "growth_tag", "Normal")
 
     is_two_way = bool(getattr(player, "is_two_way", False))
@@ -129,46 +189,56 @@ def _build_player_profile(player: Player, school: Optional[School], session) -> 
     if secondary and secondary != player.position:
         is_two_way = True
 
-    return {
-        "player": player,
-        "school": school,
-        "position": player.position,
-        "secondary_position": secondary,
-        "positions": {player.position, secondary} if secondary else {player.position},
-        "is_two_way": is_two_way,
-        "is_injured": (player.injury_status or "").lower() not in ("", "healthy"),
-        "growth_tag": growth_tag,
-        "total_score": total_score,
-        "prestige": prestige or 0,
-        "titles": _estimate_titles(school),
-        "velocity": _safe_attr_value(player, "velocity", ATTRIBUTE_DEFAULTS["velocity"]),
-        "control": _safe_attr_value(player, "control", ATTRIBUTE_DEFAULTS["control"]),
-        "command": _safe_attr_value(player, "command", ATTRIBUTE_DEFAULTS["command"]),
-        "movement": _safe_attr_value(player, "movement", ATTRIBUTE_DEFAULTS["movement"]),
-        "stamina": _safe_attr_value(player, "stamina", ATTRIBUTE_DEFAULTS["stamina"]),
-        "power": _safe_attr_value(player, "power", ATTRIBUTE_DEFAULTS["power"]),
-        "contact": _safe_attr_value(player, "contact", ATTRIBUTE_DEFAULTS["contact"]),
-        "fielding": _safe_attr_value(player, "fielding", ATTRIBUTE_DEFAULTS["fielding"]),
-        "speed": _safe_attr_value(player, "speed", ATTRIBUTE_DEFAULTS["speed"]),
-        "throwing": _safe_attr_value(player, "throwing", ATTRIBUTE_DEFAULTS["throwing"]),
-        "catcher_leadership": _safe_attr_value(player, "catcher_leadership", ATTRIBUTE_DEFAULTS["catcher_leadership"]),
-        "mental": _safe_attr_value(player, "mental", ATTRIBUTE_DEFAULTS["mental"]),
-        "overall": _safe_attr_value(player, "overall", ATTRIBUTE_DEFAULTS["overall"]),
-        "clutch": _safe_attr_value(player, "clutch", ATTRIBUTE_DEFAULTS["clutch"]),
-        **stats,
-    }
+    positions = {pos for pos in (player.position, secondary) if pos}
+
+    return PlayerProfile(
+        player=player,
+        school=school,
+        position=player.position,
+        secondary_position=secondary,
+        positions=positions,
+        is_two_way=is_two_way,
+        is_injured=(player.injury_status or "").lower() not in ("", "healthy"),
+        growth_tag=growth_tag,
+        total_score=total_score,
+        prestige=prestige,
+        titles=_estimate_titles(school),
+        velocity=_safe_attr_value(player, "velocity", ATTRIBUTE_DEFAULTS["velocity"]),
+        control=_safe_attr_value(player, "control", ATTRIBUTE_DEFAULTS["control"]),
+        command=_safe_attr_value(player, "command", ATTRIBUTE_DEFAULTS["command"]),
+        movement=_safe_attr_value(player, "movement", ATTRIBUTE_DEFAULTS["movement"]),
+        stamina=_safe_attr_value(player, "stamina", ATTRIBUTE_DEFAULTS["stamina"]),
+        power=_safe_attr_value(player, "power", ATTRIBUTE_DEFAULTS["power"]),
+        contact=_safe_attr_value(player, "contact", ATTRIBUTE_DEFAULTS["contact"]),
+        fielding=_safe_attr_value(player, "fielding", ATTRIBUTE_DEFAULTS["fielding"]),
+        speed=_safe_attr_value(player, "speed", ATTRIBUTE_DEFAULTS["speed"]),
+        throwing=_safe_attr_value(player, "throwing", ATTRIBUTE_DEFAULTS["throwing"]),
+        catcher_leadership=_safe_attr_value(player, "catcher_leadership", ATTRIBUTE_DEFAULTS["catcher_leadership"]),
+        mental=_safe_attr_value(player, "mental", ATTRIBUTE_DEFAULTS["mental"]),
+        overall=_safe_attr_value(player, "overall", ATTRIBUTE_DEFAULTS["overall"]),
+        clutch=_safe_attr_value(player, "clutch", ATTRIBUTE_DEFAULTS["clutch"]),
+        innings_pitched=float(stats["innings_pitched"]),
+        runs_allowed=stats["runs_allowed"],
+        home_runs=stats["home_runs"],
+        at_bats=stats["at_bats"],
+        hits=stats["hits"],
+        era=stats["era"],
+        batting_average=stats["batting_average"],
+    )
 
 
-def _build_story_context(player: Player, school: Optional[School], profile: Dict[str, Any]) -> Dict[str, Any]:
+def _build_story_context(profile: PlayerProfile) -> Dict[str, Any]:
+    player = profile.player
+    school = profile.school
     first = player.first_name or (player.name.split(" ")[0] if player.name else "")
     last = player.last_name or (player.name.split(" ")[-1] if player.name else "Player")
     school_name = school.name if school else "his school"
 
-    innings = profile.get("innings_pitched", 0)
-    era = profile.get("era")
-    batting_average = profile.get("batting_average", 0.0)
-    titles = profile.get("titles", 0)
-    at_bats = profile.get("at_bats", 0)
+    innings = profile.innings_pitched
+    era = profile.era
+    batting_average = profile.batting_average
+    titles = profile.titles
+    at_bats = profile.at_bats
 
     if titles <= 0:
         titles_text = "no"
@@ -185,7 +255,7 @@ def _build_story_context(player: Player, school: Optional[School], profile: Dict
         "titles_text": titles_text,
         "era_text": "N/A" if era is None else f"{era:.2f}",
         "innings_text": f"{innings:.1f}" if innings else "0.0",
-        "hr_text": str(profile.get("home_runs", 0)),
+        "hr_text": str(profile.home_runs),
         "avg_text": f"{batting_average:.3f}" if at_bats else ".000",
         "color_gold": Colour.gold,
         "color_reset": Colour.RESET,
@@ -235,26 +305,26 @@ FIELD_MAP = {
 }
 
 
-def _template_matches(template: Dict[str, Any], profile: Dict[str, Any]) -> bool:
+def _template_matches(template: Dict[str, Any], profile: PlayerProfile) -> bool:
     conditions = template.get("conditions") or {}
     if not conditions:
         return True
 
     for key, requirement in conditions.items():
         if key == "positions":
-            if not any(pos in profile["positions"] for pos in requirement):
+            if not any(pos in profile.positions for pos in requirement):
                 return False
             continue
         if key == "requires_two_way":
-            if requirement and not profile.get("is_two_way"):
+            if requirement and not profile.is_two_way:
                 return False
             continue
         if key == "requires_injured":
-            if requirement and not profile.get("is_injured"):
+            if requirement and not profile.is_injured:
                 return False
             continue
         if key == "growth_tags":
-            if profile.get("growth_tag") not in requirement:
+            if profile.growth_tag not in requirement:
                 return False
             continue
 
@@ -263,7 +333,7 @@ def _template_matches(template: Dict[str, Any], profile: Dict[str, Any]) -> bool
             mapped = FIELD_MAP.get(field_key)
             if not mapped:
                 continue
-            value = profile.get(mapped)
+            value = getattr(profile, mapped, None)
             if value is None:
                 return False
             if prefix == "min" and value < requirement:
@@ -275,7 +345,7 @@ def _template_matches(template: Dict[str, Any], profile: Dict[str, Any]) -> bool
     return True
 
 
-def _select_epilogue_template(profile: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _select_epilogue_template(profile: PlayerProfile) -> Optional[Dict[str, Any]]:
     for template in _load_epilogue_templates():
         if _template_matches(template, profile):
             return template
@@ -307,7 +377,7 @@ def determine_career_outcome(player: Player, school: Optional[School], session) 
     profile = _build_player_profile(player, school, session)
     template = _select_epilogue_template(profile)
     if template:
-        context = _build_story_context(player, school, profile)
+        context = _build_story_context(profile)
         story = _format_story(template, context)
         color = _resolve_colour(template.get("color"))
         return (
@@ -327,11 +397,12 @@ def play_ending_sequence(
     story: str,
     *,
     event_bus: Optional[EventBus] = None,
-    event_sink: Optional[List[Dict[str, Any]]] = None,
+    events: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
+    events = events if events is not None else []
     _emit_event(
         event_bus,
-        event_sink,
+        events,
         "SEASON_EPILOGUE",
         {
             "title": title,
@@ -356,9 +427,8 @@ def run_end_of_season_logic(
     user_player_id: Optional[int] = None,
     *,
     event_bus: Optional[EventBus] = None,
-    event_sink: Optional[List[Dict[str, Any]]] = None,
-) -> bool:
-    events = event_sink if event_sink is not None else []
+) -> SeasonEndResult:
+    events: List[Dict[str, Any]] = []
     session = get_session()
     try:
         user_graduated = False
@@ -368,10 +438,10 @@ def run_end_of_season_logic(
                 user_graduated = True
                 school = user.school or session.query(School).get(user.school_id)
                 title, desc, color, story = determine_career_outcome(user, school, session)
-                play_ending_sequence(title, desc, color, story, event_bus=event_bus, event_sink=events)
+                play_ending_sequence(title, desc, color, story, event_bus=event_bus, events=events)
 
         if user_graduated:
-            return True
+            return SeasonEndResult(True, events)
 
         _emit_event(
             event_bus,
@@ -421,6 +491,6 @@ def run_end_of_season_logic(
             "SEASON_LOG",
             {"text": f"=== SEASON {state.current_year} START ===", "level": "success"},
         )
-        return False
+        return SeasonEndResult(False, events)
     finally:
         session.close()

@@ -206,8 +206,6 @@ class MatchSimulation:
         pitcher = self.state.home_pitcher if half == InningHalf.TOP else self.state.away_pitcher
         batter_id = getattr(batter, "id", None)
         pitcher_id = getattr(pitcher, "id", None)
-        play_mode = getattr(self.state, "play_mode", PlayMode.SIM.value)
-        self.state.fast_sim = str(play_mode).upper() == PlayMode.SIM.value
         return MatchupContext(
             inning=self.state.inning,
             half=half,
@@ -248,14 +246,15 @@ class MatchSimulation:
             raise RuntimeError("AtBatStateMachine crashed during matchup execution") from exc
 
         self.loop_state = MatchState.PLAY_RESOLUTION
-        self.state.outs = getattr(self.state, "outs", 0) + 1
 
         batter_id = getattr(self._current_matchup.batter, "id", None)
         pitcher_id = getattr(self._current_matchup.pitcher, "id", None)
         batting_side = self._batting_side(self._current_matchup.half)
         fielding_side = self._fielding_side(self._current_matchup.half)
 
-        runs_scored = 0
+        outs_before = self._current_matchup.outs_before
+        home_before = self._current_matchup.home_score
+        away_before = self._current_matchup.away_score
 
         payload = {
             "inning": self._current_matchup.inning,
@@ -265,17 +264,24 @@ class MatchSimulation:
         }
         self.bus.publish(EventType.PITCH_THROWN.value, payload)
 
-        half_complete = self.state.outs >= 3 or self._home_walkoff_ready()
-        result_type = "run_scored" if runs_scored else "out_in_play"
+        outs_after = getattr(self.state, "outs", outs_before)
+        outs_recorded = max(0, outs_after - outs_before)
+        home_after = getattr(self.state, "home_score", home_before)
+        away_after = getattr(self.state, "away_score", away_before)
+
+        runs_scored = (away_after - away_before) if batting_side == "away" else (home_after - home_before)
+
+        half_complete = outs_after >= 3 or self._home_walkoff_ready()
+        result_type = "run_scored" if runs_scored > 0 else ("out_recorded" if outs_recorded > 0 else "in_play")
 
         outcome = PlayOutcome(
             inning=self.state.inning,
             half=self.state.top_bottom,
             batter_id=batter_id,
             pitcher_id=pitcher_id,
-            outs_recorded=1,
+            outs_recorded=outs_recorded,
             runs_scored=runs_scored,
-            description="Auto-resolved plate appearance",
+            description="Plate appearance resolved",
             result_type=result_type,
             half_complete=half_complete,
             drama_level=0,
@@ -367,51 +373,12 @@ MatchSimulation._CHOICE_LIBRARY = {
 }
 
 
-__all__ = ["MatchSimulation", "MatchupContext", "PlayOutcome", "InputStrategy"]
-_RESOLVE_MODE_PRESETS: Dict[str, Dict[str, bool]] = {
-    "standard": {"fast": False, "silent": False},
-    "interactive": {"fast": False, "silent": False},
-    "fast": {"fast": True, "silent": False},
-    "silent": {"fast": False, "silent": True},
-}
+__all__ = ["MatchSimulation", "MatchupContext", "PlayOutcome", "InputStrategy", "resolve_match"]
 
 
-def resolve_match(
-    home_team,
-    away_team,
-    tournament_name: str = "Practice Match",
-    *,
-    mode: str = "standard",
-    silent: Optional[bool] = None,
-    clutch_pitch: Optional[Dict[str, Any]] = None,
-    persist_results: bool = True,
-):
-    """Unified entry point for orchestrating a simulated match.
+def resolve_match(*args, **kwargs):
+    """Compatibility shim forwarding to the controller's resolve_match."""
 
-    Parameters
-    ----------
-    mode: str
-        "standard" (default) runs the full engine with commentary on.
-        "fast" mirrors the previous sim_match_fast helper.
-        "silent" suppresses commentary without altering pace.
-    silent: Optional[bool]
-        Override the mode's default commentary setting when provided.
-    """
+    from match_engine.controller import resolve_match as _resolve_match
 
-    preset = _RESOLVE_MODE_PRESETS.get(mode)
-    if preset is None:
-        raise ValueError(f"Unknown resolve mode '{mode}'.")
-    fast = preset["fast"]
-    effective_silent = preset["silent"] if silent is None else silent
-    return _simulate_match(
-        home_team,
-        away_team,
-        tournament_name,
-        silent=effective_silent,
-        fast=fast,
-        clutch_pitch=clutch_pitch,
-        persist_results=persist_results,
-    )
-
-
-__all__ = ["MatchSimulation", "MatchupContext", "PlayOutcome"]
+    return _resolve_match(*args, **kwargs)
