@@ -3,7 +3,6 @@ from dataclasses import dataclass
 
 from match_engine.pitch_logic import describe_batter_tells
 from match_engine.states import EventType
-from ui.ui_display import Colour
 
 from game.catcher_ai import generate_catcher_sign, get_or_create_catcher_memory
 
@@ -199,18 +198,32 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
     )
 
     decision_func = decision_override or does_pitcher_accept
+    io = getattr(state, "io", None)
 
     while True:
         if user_is_pitcher:
-            print(f"\n{Colour.BLUE}[Catcher Sign] {suggestion.pitch_name} ({location}){Colour.RESET}")
-            print(f"   (Trust: {trust} | Dominance: {dominance:+.1f} | Shakes left: {max_shake_offs - shakes})")
+            if io:
+                io.log(f"\n[Catcher Sign] {suggestion.pitch_name} ({location})", level="accent")
+                io.log(f"   (Trust: {trust} | Dominance: {dominance:+.1f} | Shakes left: {max_shake_offs - shakes})")
+            else:
+                print(f"\n[Catcher Sign] {suggestion.pitch_name} ({location})")
+                print(f"   (Trust: {trust} | Dominance: {dominance:+.1f} | Shakes left: {max_shake_offs - shakes})")
+            
             intel = describe_batter_tells(state, batter)
             if intel:
-                print(f"   Intel: {' | '.join(intel)}")
+                if io:
+                    io.log(f"   Intel: {' | '.join(intel)}")
+                else:
+                    print(f"   Intel: {' | '.join(intel)}")
 
-            print("   1. Accept Sign")
-            print("   2. Shake Off")
-            choice = input("   >> ")
+            if io:
+                io.log("   1. Accept Sign")
+                io.log("   2. Shake Off")
+                choice = io.prompt("   >> ")
+            else:
+                print("   1. Accept Sign")
+                print("   2. Shake Off")
+                choice = input("   >> ")
 
             if choice == '1':
                 break
@@ -224,7 +237,10 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
                     "sync": sync,
                 },
             )
-            print("   (Shaking off...)")
+            if io:
+                io.log("   (Shaking off...)")
+            else:
+                print("   (Shaking off...)")
             if shakes >= max_shake_offs:
                 forced = True
                 _publish(EventType.BATTERY_FORCED_CALL, {"forced": True, "sync": sync})

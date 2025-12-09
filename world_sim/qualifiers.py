@@ -1,7 +1,18 @@
+"""Tournament qualifier simulation for regional tournaments.
+
+NOTE: This module currently uses direct print() calls with UI color codes.
+Future refactor should accept an IOInterface or logging callback to properly
+separate presentation from simulation logic. See docs/MVC_ARCHITECTURE.md
+"""
 import math
 
 from database.setup_db import School, session_scope
 from match_engine.resolver import resolve_match
+from ui.ui_display import Colour
+from core.rng import get_rng
+from .sim_utils import quick_resolve_match
+
+rng = get_rng()
 
 
 def _safe_input(prompt: str, default: str = "") -> str:
@@ -9,11 +20,6 @@ def _safe_input(prompt: str, default: str = "") -> str:
         return input(prompt)
     except (EOFError, KeyboardInterrupt):
         return default
-from ui.ui_display import Colour
-from core.rng import get_rng
-from .sim_utils import quick_resolve_match
-
-rng = get_rng()
 
 def generate_balanced_bracket(schools):
     """

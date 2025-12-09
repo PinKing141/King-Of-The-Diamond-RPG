@@ -16,7 +16,7 @@ from game.systems.scouting_system import (
 from core.game_context import GameContext
 from game.personnel.player_progression import fetch_player_milestone_tags
 from game.mechanics.skill_system import trait_synergy_summary
-from game.personnel.player_profile_renderer import generate_coach_title, render_coach_profile, render_team_scouting_report
+from ui.player_profile_renderer import generate_coach_title, render_coach_profile, render_team_scouting_report
 from game.systems.scouting_report_renderer import render_team_report
 
 

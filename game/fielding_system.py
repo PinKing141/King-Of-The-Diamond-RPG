@@ -12,7 +12,6 @@ from core.io_interface import IOInterface
 
 from database.setup_db import Player
 from core.rng import get_rng
-from ui.ui_display import Colour
 
 rng = get_rng()
 
@@ -59,7 +58,10 @@ def run_fielding_event(
     Returns a dict with keys: result_code, narrative
     """
     diff_mod = DIFFICULTY_MODIFIERS.get(difficulty.upper(), 1.0)
-    _log(io, f"\n{Colour.CYAN}--- FIELDING EVENT: {getattr(fielder, 'position', '??')} ({getattr(fielder, 'name', 'Player')}) ---{Colour.RESET}")
+    if io:
+        io.log(f"\n--- FIELDING EVENT: {getattr(fielder, 'position', '??')} ({getattr(fielder, 'name', 'Player')}) ---", level="accent")
+    else:
+        print(f"\n--- FIELDING EVENT: {getattr(fielder, 'position', '??')} ({getattr(fielder, 'name', 'Player')}) ---")
 
     approach = _get_approach_decision(fielder, is_user, ball_type, location, io=io)
     catch = _calculate_catch_outcome(fielder, approach, ball_type, location, diff_mod)
@@ -102,7 +104,10 @@ def _prompt(io: Optional[IOInterface], prompt: str) -> str:
 
 def _get_approach_decision(fielder: Player, is_user: bool, ball_type: str, location: str, *, io: Optional[IOInterface]) -> str:
     if is_user:
-        _log(io, f"\n{Colour.WARNING}A {ball_type.lower()} is hit to your {location.lower()}!{Colour.RESET}")
+        if io:
+            io.log(f"\nA {ball_type.lower()} is hit to your {location.lower()}!", level="warning")
+        else:
+            print(f"\nA {ball_type.lower()} is hit to your {location.lower()}!")
         _log(io, f"Stats: Fld {_defense(fielder):.0f} | Spd {_speed(fielder):.0f}")
         if location.upper() == "INFIELD":
             _log(io, "[1] Square Up (Safe) - Block the ball, prevent errors.")
@@ -130,7 +135,10 @@ def _get_throw_decision(
 ) -> str:
     lead_runner_base = 3 if runners.get(3) else (2 if runners.get(2) else 1 if runners.get(1) else 0)
     if is_user:
-        _log(io, f"\n{Colour.WARNING}You have the ball!{Colour.RESET}")
+        if io:
+            io.log("\nYou have the ball!", level="warning")
+        else:
+            print("\nYou have the ball!")
         _log(io, "[1] Sure Out (1st / cutoff)")
         if lead_runner_base > 1:
             target = "Home" if lead_runner_base == 3 else "3rd" if lead_runner_base == 2 else "2nd"
