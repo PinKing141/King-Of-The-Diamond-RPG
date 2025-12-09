@@ -251,7 +251,7 @@ class SeasonManager:
                     self.state = self._load_state()
                     continue
 
-                simulate_background_matches(user_player.school_id)
+                simulate_background_matches(self.session, user_player.school_id)
                 self._handle_weekly_events(self.state.current_week, user_player.school_id)
 
                 self.context.refresh_session()
@@ -497,7 +497,7 @@ class SeasonManager:
 
             user_school_id = player.school_id
             self.view.show_progress(f"\r >> Processing Week {self.state.current_week}...", end="")
-            simulate_background_matches(user_school_id, background=True, verbose=True)
+            simulate_background_matches(self.session, user_school_id, background=True, verbose=True)
 
             self.context.refresh_session()
             self.context.set_player(player.id, user_school_id)

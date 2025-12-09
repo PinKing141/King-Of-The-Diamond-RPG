@@ -33,6 +33,14 @@
     "match_intensity": 1.5,
     "drill_intensity": 1.0
   },
+  "world_sim": {
+    "max_background_games": 40,
+    "max_player_block_games": 6,
+    "feature_focus_games": 0
+  },
+  "weekly_scheduler": {
+    "smart_sim_fatigue_cap": 92
+  },
   "xp_gains": {
     "team_practice_base": 0.2,
     "match_a_team_base": 0.5,

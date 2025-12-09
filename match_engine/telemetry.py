@@ -2,15 +2,24 @@
 from __future__ import annotations
 
 import json
+from enum import Enum
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from core.config_loader import ConfigLoader
 
 
 DEFAULT_EVENT_NAME = "TELEMETRY_READY"
 TelemetryEvent = Dict[str, Any]
+
+
+class TelemetryEventType(str, Enum):
+    INNING_COMPLETE = "inning_complete"
+    WALKOFF = "walkoff"
+    GAME_OVER = "game_over"
+    CONFIDENCE_SWING = "confidence_swing"
+    UMPIRE_TILT = "umpire_tilt"
 
 
 def _clone_mapping(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -61,8 +70,13 @@ class TelemetryCollector:
     events: List[TelemetryEvent] = field(default_factory=list)
     action_metadata: Dict[str, Dict[str, Any]] = field(default_factory=get_actions_metadata)
 
-    def record_event(self, event_type: str, payload: Optional[Dict[str, Any]] = None) -> TelemetryEvent:
-        entry = {"type": event_type, "payload": payload or {}}
+    def record_event(
+        self,
+        event_type: Union[TelemetryEventType, str],
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> TelemetryEvent:
+        event_name = event_type.value if isinstance(event_type, TelemetryEventType) else event_type
+        entry = {"type": event_name, "payload": payload or {}}
         self.events.append(entry)
         return entry
 
@@ -80,7 +94,7 @@ class TelemetryCollector:
             "bottom": bottom_runs,
             "skipped_bottom": skipped_bottom,
         }
-        return self.record_event("inning_complete", payload)
+        return self.record_event(TelemetryEventType.INNING_COMPLETE, payload)
 
     def record_walkoff(
         self,
@@ -90,7 +104,7 @@ class TelemetryCollector:
         detail: Optional[Dict[str, Any]] = None,
     ) -> TelemetryEvent:
         payload = {"inning": inning, "runs_scored": runs_scored, "detail": detail or {}}
-        return self.record_event("walkoff", payload)
+        return self.record_event(TelemetryEventType.WALKOFF, payload)
 
     def record_game_over(
         self,
@@ -105,7 +119,7 @@ class TelemetryCollector:
             "winner_id": winner_id,
             "actions": _clone_mapping(self.action_metadata),
         }
-        return self.record_event("game_over", payload)
+        return self.record_event(TelemetryEventType.GAME_OVER, payload)
 
     def record_confidence_swing(
         self,
@@ -125,7 +139,7 @@ class TelemetryCollector:
             "reason": reason,
             "player_name": player_name,
         }
-        return self.record_event("confidence_swing", payload)
+        return self.record_event(TelemetryEventType.CONFIDENCE_SWING, payload)
 
     def record_umpire_tilt(
         self,
@@ -139,7 +153,7 @@ class TelemetryCollector:
             "away_team_id": away_team_id,
             "tilt": _clone_mapping(tilt_map or {}),
         }
-        return self.record_event("umpire_tilt", payload)
+        return self.record_event(TelemetryEventType.UMPIRE_TILT, payload)
 
 
 def ensure_collector(state: Any) -> TelemetryCollector:

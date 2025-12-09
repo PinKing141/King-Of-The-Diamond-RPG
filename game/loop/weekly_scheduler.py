@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from core.io_interface import IOInterface
+from core.config_loader import ConfigLoader
+from core.decisions import DecisionRequest
 
 from database.setup_db import Player, GameState
 from debug.debug_tools import input_with_debug
@@ -104,6 +106,8 @@ AUTO_SCHEDULE_TEMPLATE: Tuple[Tuple[str, str, str], ...] = (
 )
 
 SMART_SIM_FATIGUE_CAP = 92
+_scheduler_cfg = ConfigLoader.get("weekly_scheduler", default={}) or {}
+SMART_SIM_FATIGUE_CAP = int(_scheduler_cfg.get("smart_sim_fatigue_cap", SMART_SIM_FATIGUE_CAP))
 
 ERA_PRESSURE_WEIGHTS = {
     "DYNASTY": 1.35,
@@ -877,10 +881,38 @@ def render_planning_ui(
                 f" Progress: {status_colour}{progress}/{target}{Colour.RESET} ({status_label})"
             )
 
+
+    def _resolve_prompt(
+        message: str,
+        *,
+        io: Optional[IOInterface] = None,
+        context=None,
+        session=None,
+        state=None,
+        options: Optional[List[str]] = None,
+        default: str = "",
+    ) -> Optional[str]:
+        """Route prompt through DecisionRequest for UI layers that defer input."""
+
+        request = DecisionRequest(
+            kind="prompt",
+            message=message,
+            options=options,
+            default=default,
+            payload={"context": "weekly_scheduler"},
+        )
+        handler = getattr(io, "handle_decision_requests", None) if io else None
+        if callable(handler):
+            response = handler([request])
+            if response is not None:
+                return response
+
+        prompt_fn = io.prompt if io else (lambda msg, **kwargs: input_with_debug(msg, context=context, session=session, state=state))
+        return prompt_fn(message, options=options)
+
 def get_slot_choice(current_action: Optional[str], *, context=None, session=None, state=None, io: Optional[IOInterface] = None) -> Optional[str]:
     """Prompts the user for an action selection, defaulting to the current value."""
     log = io.log if io else print
-    prompt_fn = io.prompt if io else (lambda msg, **kwargs: input_with_debug(msg, context=context, session=session, state=state))
 
     log("\nSelect Action (Enter = keep current plan):")
     if current_action:
@@ -890,7 +922,7 @@ def get_slot_choice(current_action: Optional[str], *, context=None, session=None
     log(f" 3. {Colour.BLUE}LIFE{Colour.RESET}  (Study/Social)")
     log(" 0. BACK | X. EXIT PLANNING")
 
-    choice_raw = prompt_fn(">> ")
+    choice_raw = _resolve_prompt(">> ", io=io, context=context, session=session, state=state)
     if choice_raw is None:
         return None
     choice = choice_raw.strip().lower()
@@ -902,7 +934,7 @@ def get_slot_choice(current_action: Optional[str], *, context=None, session=None
 
     if choice == '1':
         log("   [P]ower  [S]peed  [St]amina  [C]ontrol  [Co]ntact  [Bu]llpen  [B]ack")
-        sub = prompt_fn("   Drill: ").lower().strip()
+        sub = (_resolve_prompt("   Drill: ", io=io, context=context, session=session, state=state) or "").lower().strip()
         mapping = {
             'p': 'train_power',
             's': 'train_speed',
@@ -918,7 +950,7 @@ def get_slot_choice(current_action: Optional[str], *, context=None, session=None
 
     if choice == '3':
         log("   [S]tudy  [F]riends  [M]ind  [B]ack")
-        sub = prompt_fn("   Activity: ").lower().strip()
+        sub = (_resolve_prompt("   Activity: ", io=io, context=context, session=session, state=state) or "").lower().strip()
         mapping = {'s': 'study', 'f': 'social', 'm': 'mind'}
         return mapping.get(sub)
 
@@ -1003,7 +1035,14 @@ def plan_week_ui(
             log(
                 f"Skipping {mandatory_action.replace('_', ' ').title()} will significantly lower Coach Trust."
             )
-            confirm = prompt_fn("Are you sure you want to skip? (y/n): ").strip().lower()
+            confirm = (_resolve_prompt(
+                "Are you sure you want to skip? (y/n): ",
+                io=io,
+                context=context,
+                session=session,
+                state=state,
+                default="n",
+            ) or "").strip().lower()
             if confirm != 'y':
                 continue
             skipped_mandatory.append(
@@ -1019,7 +1058,14 @@ def plan_week_ui(
         new_fatigue = max(0, current_fatigue + cost)
         if new_fatigue > 90:
             log(f"{Colour.FAIL}WARNING: Fatigue will reach {new_fatigue}. High injury risk!{Colour.RESET}", level="warning")
-            confirm = prompt_fn("Confirm? (y/n): ").strip().lower()
+            confirm = (_resolve_prompt(
+                "Confirm? (y/n): ",
+                io=io,
+                context=context,
+                session=session,
+                state=state,
+                default="n",
+            ) or "").strip().lower()
             if confirm != 'y':
                 continue
 
