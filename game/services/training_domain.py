@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from core.config_loader import ConfigLoader
-from core.utils import clamp
 from game.services.dtos import PlayerTrainingDTO, PitchRepertoireDTO, PlayerXPEntryDTO
 from game.services.progression_port import ProgressionPort
 
@@ -32,6 +31,12 @@ BREAKTHROUGH_BASE_CHANCE = 0.01
 BREAKTHROUGH_SCALE = 0.0004
 BREAKTHROUGH_MIN = 0.005
 BREAKTHROUGH_MAX = 0.08
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    """Bound value between low and high without importing deprecated utils."""
+
+    return max(low, min(high, value))
 
 
 @dataclass
@@ -97,7 +102,11 @@ def _maybe_trigger_breakthrough(dto: PlayerTrainingDTO, xp_gains: dict, rng: ran
     }
 
 
-def _update_pitch_mastery(dto: PlayerTrainingDTO, rng: random.Random) -> Tuple[str, Dict[str, int]]:
+def _update_pitch_mastery(
+    dto: PlayerTrainingDTO,
+    rng: random.Random,
+    *_unused,
+) -> Tuple[str, Dict[str, int]]:
     repertoire = dto.pitch_repertoire or []
     if not repertoire:
         return "No pitches recorded yet. Learn a pitch first.", {}

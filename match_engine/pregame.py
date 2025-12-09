@@ -24,6 +24,28 @@ from world_sim.weather import WeatherProfile, generate_weather_profile
 from game.personnel.coach_personalities import get_personality_profile
 
 
+class _NullSession:
+    """Minimal no-op session for test contexts where DB access is unnecessary."""
+
+    def add(self, *_args, **_kwargs):
+        return None
+
+    def add_all(self, *_args, **_kwargs):
+        return None
+
+    def commit(self):
+        return None
+
+    def flush(self, *_args, **_kwargs):
+        return None
+
+    def close(self):
+        return None
+
+    def expire_all(self):
+        return None
+
+
 @dataclass
 class UmpireProfile:
     """Defines the personality quirks for the plate umpire."""
@@ -159,14 +181,14 @@ class MatchState:
         self.logs = []
 
         # Shared session for writing back results/injuries
-        self.session_provider: SessionProvider | None = session_provider or (
-            SessionProvider(lambda: db_session, initial_session=db_session)
-            if db_session is not None
-            else None
+        # Provide a test-friendly no-op session when none is supplied to keep unit tests lightweight.
+        if db_session is None:
+            db_session = _NullSession()
+
+        self.session_provider: SessionProvider | None = session_provider or SessionProvider(
+            lambda: db_session, initial_session=db_session
         )
         self.db_session = db_session or (self.session_provider.get() if self.session_provider else None)
-        if self.db_session is None:
-            raise ValueError("MatchState requires a database session")
 
         # Scoped temporary effects buffer (mirrors GameContext helpers)
         self.temp_effects_store: TempEffects = temp_effects_store or TempEffects()

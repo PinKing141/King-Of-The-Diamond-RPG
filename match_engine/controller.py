@@ -305,7 +305,10 @@ class MatchController:
             team_id = getattr(batter, "team_id", getattr(batter, "school_id", None))
             human_team_ids = getattr(state, "human_team_ids", set()) or set()
             user_controls = team_id in human_team_ids
-            input_source = HumanBatterInput(io=self.io) if user_controls else CpuBatterInput()
+            handler = None
+            if self.io:
+                handler = getattr(self.io, "batter_handler", None) or getattr(self.io, "player_bat_turn", None)
+            input_source = HumanBatterInput(io=self.io, handler=handler) if user_controls else CpuBatterInput()
             try:
                 AtBatStateMachine(state, input_source=input_source).run()
             except TypeError:

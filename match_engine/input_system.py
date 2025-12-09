@@ -1,9 +1,7 @@
-from typing import Any, Dict, Protocol, Tuple
-
-from typing import Optional
+from typing import Any, Callable, Dict, Optional, Protocol, Tuple
 
 from core.io_interface import IOInterface
-from player_roles import batter_controls as batter_ui
+from match_engine.batter_logic import _apply_offense_orders, _auto_batters_eye_guess
 
 
 class BatterInputSource(Protocol):
@@ -15,14 +13,22 @@ class BatterInputSource(Protocol):
 class HumanBatterInput:
     """Human-controlled batter input using existing UI prompts."""
 
-    def __init__(self, io: Optional[IOInterface] = None) -> None:
+    def __init__(
+        self,
+        io: Optional[IOInterface] = None,
+        handler: Optional[Callable[[Any, Any, Any, Optional[IOInterface]], Tuple[str, Dict[str, Any]]]] = None,
+    ) -> None:
         self.io = io
+        resolved = handler or getattr(io, "batter_handler", None) or getattr(io, "player_bat_turn", None)
+        if resolved is None:
+            raise RuntimeError("HumanBatterInput requires a batting handler; provide handler or set io.batter_handler")
+        self.handler = resolved
 
     def get_batting_decision(self, context: Any) -> Tuple[str, Dict[str, Any]]:
         pitcher = context.get("pitcher")
         batter = context.get("batter")
         state = context.get("state")
-        return batter_ui.player_bat_turn(pitcher, batter, state, io=self.io)
+        return self.handler(pitcher, batter, state, io=self.io)
 
 
 class FixedBatterInput:
@@ -49,8 +55,6 @@ class CpuBatterInput:
         pitcher = context.get("pitcher")
         batter_tendencies = context.get("batter_tendencies")
         offense_order = context.get("offense_order")
-
-        from match_engine.batter_logic import _apply_offense_orders, _auto_batters_eye_guess
 
         batter_action, batter_mods = _apply_offense_orders(offense_order, state, batter_action, batter_mods)
         guess_payload = _auto_batters_eye_guess(state, batter, pitcher, batter_tendencies)

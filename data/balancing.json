@@ -36,10 +36,21 @@
   "world_sim": {
     "max_background_games": 40,
     "max_player_block_games": 6,
-    "feature_focus_games": 0
+    "feature_focus_games": 0,
+    "sample_size_floor": 120
   },
   "weekly_scheduler": {
-    "smart_sim_fatigue_cap": 92
+    "smart_sim_fatigue_cap": 92,
+    "mandatory_trust_penalties": {
+      "practice_match": 7,
+      "team_practice": 5,
+      "b_team_match": 4,
+      "train_heavy": 3
+    },
+    "default_trust_penalty": 3,
+    "min_trust_baseline": 20,
+    "morale_penalty_per_skip": 2,
+    "max_morale_penalty": 10
   },
   "xp_gains": {
     "team_practice_base": 0.2,

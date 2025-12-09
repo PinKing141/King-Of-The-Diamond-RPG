@@ -233,7 +233,10 @@ class MatchSimulation:
 
         # Human-controlled batter gets human input strategy if available
         if matchup.is_human:
-            return HumanBatterInput(io=getattr(self.state, "io", None))
+            io = getattr(self.state, "io", None)
+            handler = getattr(io, "batter_handler", None) if io else None
+            handler = handler or (getattr(io, "player_bat_turn", None) if io else None)
+            return HumanBatterInput(io=io, handler=handler)
 
         # CPU fallback
         return CpuBatterInput()

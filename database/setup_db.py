@@ -18,7 +18,7 @@ from sqlalchemy import (
     Index,
     text,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship, synonym
+from sqlalchemy.orm import close_all_sessions as sa_close_all_sessions, declarative_base, sessionmaker, relationship, synonym
 from sqlalchemy import inspect
 from contextlib import contextmanager
 
@@ -66,7 +66,7 @@ def session_scope():
 
 def close_all_sessions():
     """Ensure every live session created via SessionLocal is closed."""
-    SessionLocal.close_all()
+    sa_close_all_sessions()
 
 
 def safe_delete_db(db_path):

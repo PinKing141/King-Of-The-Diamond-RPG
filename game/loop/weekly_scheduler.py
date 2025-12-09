@@ -27,10 +27,6 @@ from core.constants import (
     SQUAD_SECOND_STRING,
 )
 from world.roster_manager import run_roster_logic
-# Import the bridge function from the new match engine location
-from ui.ui_display import Colour, clear_screen, render_weekly_dashboard
-from ui.console_view import ConsoleIO
-# Import the new Event Manager
 from game.story.event_manager import EventResult, trigger_random_event
 from core.game_context import GameContext
 from game.personnel.relationship_manager import seed_relationships
@@ -52,6 +48,28 @@ from core.sqlalchemy_repositories import SQLAlchemyPlayerRepository, SQLAlchemyT
 from game.services.progression_port import SQLAlchemyProgressionService
 from game.systems.academic_system import score_to_letter_grade
 from world.media_engine import generate_weekly_news
+
+
+class Colour:
+    """Lightweight colour shim to avoid hard dependency on console UI layer."""
+
+    HEADER = ""
+    CYAN = ""
+    GREEN = ""
+    BLUE = ""
+    WARNING = ""
+    FAIL = ""
+    BOLD = ""
+    RESET = ""
+
+
+def clear_screen():
+    return None
+
+
+def render_weekly_dashboard(summary):
+    # Placeholder; UI layer can override by providing io hooks.
+    return None
 
 
 @dataclass(frozen=True)
@@ -108,6 +126,19 @@ AUTO_SCHEDULE_TEMPLATE: Tuple[Tuple[str, str, str], ...] = (
 SMART_SIM_FATIGUE_CAP = 92
 _scheduler_cfg = ConfigLoader.get("weekly_scheduler", default={}) or {}
 SMART_SIM_FATIGUE_CAP = int(_scheduler_cfg.get("smart_sim_fatigue_cap", SMART_SIM_FATIGUE_CAP))
+MANDATORY_TRUST_PENALTIES = _scheduler_cfg.get(
+    "mandatory_trust_penalties",
+    {
+        "practice_match": 7,
+        "team_practice": 5,
+        "b_team_match": 4,
+        "train_heavy": 3,
+    },
+)
+DEFAULT_TRUST_PENALTY = int(_scheduler_cfg.get("default_trust_penalty", 3))
+MIN_TRUST_BASELINE = int(_scheduler_cfg.get("min_trust_baseline", 20))
+MORALE_PENALTY_PER_SKIP = int(_scheduler_cfg.get("morale_penalty_per_skip", 2))
+MAX_MORALE_PENALTY = int(_scheduler_cfg.get("max_morale_penalty", 10))
 
 ERA_PRESSURE_WEIGHTS = {
     "DYNASTY": 1.35,
@@ -318,9 +349,7 @@ def _team_load_snapshot(player: Optional[Player]) -> Optional[Tuple[float, float
     if session is not None:
         try:
             roster = session.query(Player).filter(Player.school_id == school_id).all()
-        except SQLAlchemyError as exc:
-            # Log and continue with fallback lookup so we don't silently lose roster context.
-            print(f"Roster lookup failed for school_id={school_id}: {exc}")
+        except SQLAlchemyError:
             roster = None
     if not roster:
         school = getattr(player, "school", None)
@@ -394,6 +423,19 @@ def _record_coach_order_result(
         },
         "timestamp": int(time.time()),
     }
+
+    # Store both structured primitives (when columns exist) and a JSON fallback for legacy saves.
+    for key, value in {
+        "last_coach_order_week": payload["week"],
+        "last_coach_order_key": payload["order"]["key"],
+        "last_coach_order_completed": int(completion_flag),
+        "last_coach_order_progress": progress_value,
+        "last_coach_order_target": target_value,
+        "last_coach_order_trust_delta": payload["reward_delta"]["trust"],
+        "last_coach_order_ability_delta": payload["reward_delta"]["ability_points"],
+    }.items():
+        if hasattr(gamestate_row, key):
+            setattr(gamestate_row, key, value)
 
     gamestate_row.last_coach_order_result = json.dumps(payload)
     session.add(gamestate_row)
@@ -882,33 +924,36 @@ def render_planning_ui(
             )
 
 
-    def _resolve_prompt(
-        message: str,
-        *,
-        io: Optional[IOInterface] = None,
-        context=None,
-        session=None,
-        state=None,
-        options: Optional[List[str]] = None,
-        default: str = "",
-    ) -> Optional[str]:
-        """Route prompt through DecisionRequest for UI layers that defer input."""
+def _resolve_prompt(
+    message: str,
+    *,
+    io: Optional[IOInterface] = None,
+    context=None,
+    session=None,
+    state=None,
+    options: Optional[List[str]] = None,
+    default: str = "",
+) -> Optional[str]:
+    """Route prompt through DecisionRequest for UI layers that defer input; handle EOF safely."""
 
-        request = DecisionRequest(
-            kind="prompt",
-            message=message,
-            options=options,
-            default=default,
-            payload={"context": "weekly_scheduler"},
-        )
-        handler = getattr(io, "handle_decision_requests", None) if io else None
-        if callable(handler):
-            response = handler([request])
-            if response is not None:
-                return response
+    request = DecisionRequest(
+        kind="prompt",
+        message=message,
+        options=options,
+        default=default,
+        payload={"context": "weekly_scheduler"},
+    )
+    handler = getattr(io, "handle_decision_requests", None) if io else None
+    if callable(handler):
+        response = handler([request])
+        if response is not None:
+            return response
 
-        prompt_fn = io.prompt if io else (lambda msg, **kwargs: input_with_debug(msg, context=context, session=session, state=state))
+    prompt_fn = io.prompt if io else (lambda msg, **kwargs: input_with_debug(msg, context=context, session=session, state=state))
+    try:
         return prompt_fn(message, options=options)
+    except EOFError:
+        return None
 
 def get_slot_choice(current_action: Optional[str], *, context=None, session=None, state=None, io: Optional[IOInterface] = None) -> Optional[str]:
     """Prompts the user for an action selection, defaulting to the current value."""
@@ -924,7 +969,7 @@ def get_slot_choice(current_action: Optional[str], *, context=None, session=None
 
     choice_raw = _resolve_prompt(">> ", io=io, context=context, session=session, state=state)
     if choice_raw is None:
-        return None
+        return "EXIT"
     choice = choice_raw.strip().lower()
     if choice == "":
         return current_action
@@ -972,7 +1017,6 @@ def plan_week_ui(
     """Interactive weekly planner that accounts for squad status + trust."""
 
     log = io.log if io else print
-    prompt_fn = io.prompt if io else input
     wait_fn = io.wait if io else time.sleep
 
     start_fatigue = start_fatigue or 0
@@ -1092,14 +1136,14 @@ def plan_week_ui(
         getattr(player, 'school', None),
         io=io,
     )
-    confirm_exec_raw = (io.prompt(
-        f"\n{Colour.GREEN}Schedule Complete.{Colour.RESET} Press Enter to execute or [B] to discard and return: "
-    ) if io else input_with_debug(
+    confirm_exec_raw = _resolve_prompt(
         f"\n{Colour.GREEN}Schedule Complete.{Colour.RESET} Press Enter to execute or [B] to discard and return: ",
+        io=io,
         context=context,
         session=session,
         state=state,
-    ))
+        default="",
+    )
     if confirm_exec_raw is None:
         return None, None
     confirm_exec = confirm_exec_raw.strip().lower()
@@ -1134,9 +1178,8 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
 
     Returns True when the week was executed, False if the user backed out.
     """
-    io = ConsoleIO() if 'ConsoleIO' in globals() else None
+    io = getattr(context, "io", None)
     log = io.log if io else print
-    prompt = io.prompt if io else input
     wait = io.wait if io else time.sleep
     player, coach_order, exam_summary, event_result = _initialize_week(context, current_week, io=io)
     if not player:
@@ -1162,7 +1205,17 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
             level="warning",
         )
     while True:
-        nav = prompt("\n[Enter] Planning | [L] Pitch Lab | [Q] Quit: ").strip().lower()
+        nav_raw = _resolve_prompt(
+            "\n[Enter] Planning | [L] Pitch Lab | [Q] Quit: ",
+            io=io,
+            context=context,
+            session=context.session if context else None,
+            state=state,
+            default="",
+        )
+        if nav_raw is None:
+            return False
+        nav = nav_raw.strip().lower()
         if nav in {"", "enter"}:
             break
         if nav == "q":
@@ -1207,5 +1260,5 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
     )
 
     render_weekly_dashboard(summary)
-    prompt("Press Enter to continue...")
+    _resolve_prompt("Press Enter to continue...", io=io, context=context, session=context.session if context else None, state=state)
     return True

@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from sqlalchemy.sql.expression import func
 
@@ -16,6 +16,7 @@ _sim_cfg = ConfigLoader.get("world_sim", default={}) or {}
 MAX_BACKGROUND_GAMES = int(_sim_cfg.get("max_background_games", 40))
 MAX_PLAYER_BLOCK_GAMES = int(_sim_cfg.get("max_player_block_games", 6))
 FEATURE_FOCUS_GAMES = int(_sim_cfg.get("feature_focus_games", 0))
+SAMPLE_SIZE_FLOOR = int(_sim_cfg.get("sample_size_floor", 120))
 
 
 def _pair_schools(schools: Sequence[School], game_count: int) -> List[Tuple[School, School]]:
@@ -36,12 +37,13 @@ def _simulate_background_matches(
     *,
     feature_games: int = FEATURE_FOCUS_GAMES,
     verbose: bool = False,
+    log: Optional[Callable[[str], None]] = None,
 ):
     feature_pairs: List[Tuple[SimpleNamespace, SimpleNamespace]] = []
     quick_heads = []
 
     # Build pairings and resolve quick sims using the caller-provided session to avoid spawning new connections.
-    sample_size = max(MAX_BACKGROUND_GAMES * 2 + MAX_PLAYER_BLOCK_GAMES * 2, 120)
+    sample_size = max(MAX_BACKGROUND_GAMES * 2 + MAX_PLAYER_BLOCK_GAMES * 2, SAMPLE_SIZE_FLOOR)
     npc_schools: List[School] = (
         session.query(School)
         .filter(School.id != user_school_id)
@@ -71,10 +73,9 @@ def _simulate_background_matches(
     quick_slots = MAX_BACKGROUND_GAMES - len(tier_one_pairs)
     quick_pairs = _pair_schools(remaining_pool, quick_slots)
 
-    if verbose:
-        print(
-            f"   > Prefecture world: {len(feature_pairs)} feature games, {len(fast_pairs) + len(quick_pairs)} instant resolves...",
-            end="",
+    if verbose and log:
+        log(
+            f"   > Prefecture world: {len(feature_pairs)} feature games, {len(fast_pairs) + len(quick_pairs)} instant resolves..."
         )
 
     # Resolve non-feature games via the fast statistical path to avoid heavy match engine costs.
@@ -92,12 +93,12 @@ def _simulate_background_matches(
             persist_results=False,
         )
 
-    if verbose:
+    if verbose and log:
         if quick_heads:
             notable = [f"{h} vs {a} ({score})" for h, a, score, upset in quick_heads if upset]
             if notable:
-                print(f" upset radar: {', '.join(notable[:3])}", end="")
-        print(" done.")
+                log(f"   upset radar: {', '.join(notable[:3])}")
+        log("   Prefecture background sims complete.")
 
 
 def simulate_background_matches(
@@ -107,6 +108,7 @@ def simulate_background_matches(
     background: bool = False,
     feature_games: int = FEATURE_FOCUS_GAMES,
     verbose: bool = False,
+    log: Optional[Callable[[str], None]] = None,
 ) -> Optional[None]:
     """Simulate NPC practice games.
 
@@ -114,5 +116,11 @@ def simulate_background_matches(
     SQLite locking; this always runs synchronously.
     """
 
-    _simulate_background_matches(session, user_school_id, feature_games=feature_games, verbose=verbose)
+    _simulate_background_matches(
+        session,
+        user_school_id,
+        feature_games=feature_games,
+        verbose=verbose,
+        log=log,
+    )
     return None
