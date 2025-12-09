@@ -2,7 +2,7 @@ import sys
 
 import pytest
 
-from match_engine import resolver
+from match_engine import controller
 
 
 class _DummySession:
@@ -27,23 +27,24 @@ def test_silent_path_avoids_stdout_hijack_and_passes_flag(monkeypatch):
         call_state["kwargs"] = kwargs
         return "winner"
 
-    monkeypatch.setattr(resolver, "engine_run_match", fake_engine_run_match)
-    monkeypatch.setattr(resolver, "session_scope", lambda: _DummySession())
-    monkeypatch.setattr(resolver, "consume_strategy_mods", lambda *args, **kwargs: _inc_call(call_state, "consume_calls"))
-    monkeypatch.setattr(resolver, "_fetch_latest_score", lambda *args, **kwargs: "1 - 0")
+    monkeypatch.setattr(controller, "run_match", fake_engine_run_match)
+    monkeypatch.setattr(controller, "consume_strategy_mods", lambda *args, **kwargs: _inc_call(call_state, "consume_calls"))
+    monkeypatch.setattr(controller, "_fetch_latest_score", lambda *args, **kwargs: "1 - 0")
 
     before_stdout = sys.stdout
 
     home = type("Team", (), {"id": 1})()
     away = type("Team", (), {"id": 2})()
+    session = _DummySession()
 
-    winner, score = resolver._simulate_match(
+    winner, score = controller._simulate_match(
         home,
         away,
         "Practice Match",
         silent=True,
         fast=False,
         persist_results=False,
+        session=session,
     )
 
     assert winner == "winner"
@@ -52,3 +53,4 @@ def test_silent_path_avoids_stdout_hijack_and_passes_flag(monkeypatch):
     assert call_state["kwargs"]["auto_play_inputs"] is True
     assert sys.stdout is before_stdout, "sys.stdout should not be reassigned in silent mode"
     assert call_state.get("consume_calls") == 2, "strategy mods should be consumed for both teams"
+    assert call_state["kwargs"].get("io") is not None, "silent path should inject a NoOp IO"

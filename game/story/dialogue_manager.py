@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import logging
 from typing import Dict, List, Optional
 
 from core.paths import data_path, load_json_resource
@@ -11,6 +12,8 @@ from game.personnel.archetypes import archetype_persona_blurb
 
 DATA_PATH = data_path("dialogues.json")
 PERSONA_DATA_PATH = data_path("coach_personality_dialogues.json")
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _load_dialogues() -> Dict[str, dict]:
@@ -171,10 +174,7 @@ def _log(message: str, *, io: Optional[IOInterface] = None, level: str = "info")
     if io:
         io.log(message, level=level)
     else:
-        if level == "warning":
-            print(f"{message}")
-        else:
-            print(message)
+        getattr(LOGGER, level, LOGGER.info)(message)
 
 
 def run_dialogue_event(event_id, player, school, *, io: Optional[IOInterface] = None):
@@ -201,7 +201,7 @@ def run_dialogue_event(event_id, player, school, *, io: Optional[IOInterface] = 
     if io and getattr(io, "log", None):
         io.log(header, level="story")
     else:
-        print(f"\n{Colour.CYAN}{header}{Colour.RESET}")
+        LOGGER.info("%s", header)
 
     coach = getattr(school, 'coach', None)
     persona_text = None

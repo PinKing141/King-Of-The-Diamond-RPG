@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import logging
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 try:
     from appdirs import user_data_dir
@@ -55,7 +58,8 @@ def load_text_resource(package: str, resource_name: str) -> Optional[str]:
     try:
         with resources.files(package).joinpath(resource_name).open("r", encoding="utf-8") as handle:
             return handle.read()
-    except Exception:
+    except (FileNotFoundError, OSError, UnicodeError) as exc:
+        logger.debug("Resource %s/%s not found or unreadable: %s", package, resource_name, exc)
         return None
 
 
@@ -66,5 +70,6 @@ def load_json_resource(package: str, resource_name: str):
         return None
     try:
         return json.loads(text)
-    except Exception:
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.debug("Resource %s/%s JSON decode failed: %s", package, resource_name, exc)
         return None

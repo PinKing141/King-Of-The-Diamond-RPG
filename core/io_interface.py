@@ -21,3 +21,19 @@ class IOInterface(Protocol):
     def wait(self, seconds: float) -> None:
         """Delay execution for pacing effects without hard-coding time.sleep."""
         ...
+
+
+class NoOpIO:
+    """Minimal IO that discards all output and returns defaults."""
+
+    def log(self, message: str, *, level: str = "info") -> None:
+        return None
+
+    def prompt(self, prompt: str, *, options: Optional[List[str]] = None) -> str:
+        return ""
+
+    def clear(self) -> None:
+        return None
+
+    def wait(self, seconds: float) -> None:
+        return None

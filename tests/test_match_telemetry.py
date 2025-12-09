@@ -10,7 +10,7 @@ from match_engine.scoreboard import Scoreboard
 from match_engine.telemetry import ensure_collector, flush_telemetry, describe_action, get_actions_metadata
 from match_engine.match_sim import PlayOutcome
 from match_engine.states import MatchState
-from match_engine.commentary import set_commentary_enabled
+from ui.match_commentary import set_commentary_enabled
 from match_engine import confidence as confidence_module
 
 

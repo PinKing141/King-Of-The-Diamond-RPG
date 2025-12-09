@@ -62,13 +62,10 @@ class SeasonManager:
 
         try:
             if any("match" in (action or "") for action in mandatory.values()):
-            if any("match" in (action or "") for action in mandatory.values()):
                 return True
-        except (AttributeError, ValueError) as exc:
+        except (AttributeError, ValueError, TypeError) as exc:
             self.view.display_warning(f"Warning: Could not check schedule: {exc}")
             return False
-        except Exception as exc:
-            raise ScheduleError(f"Unexpected scheduler failure: {exc}") from exc
 
 
     def _deliver_decision_requests(self, decision: DecisionResult, *, scouting_available: bool = False) -> Optional[str]:
@@ -251,7 +248,13 @@ class SeasonManager:
                     self.state = self._load_state()
                     continue
 
-                simulate_background_matches(self.session, user_player.school_id, log=None)
+                simulate_background_matches(
+                    self.session,
+                    user_player.school_id,
+                    log=None,
+                    io=getattr(self.view, "io", None),
+                    event_listeners=getattr(self.context, "match_event_listeners", None),
+                )
                 self._handle_weekly_events(self.state.current_week, user_player.school_id)
 
                 self.context.refresh_session()
@@ -274,7 +277,7 @@ class SeasonManager:
                 details=str(exc),
             )
             sys.exit(1)
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError) as exc:
             self.view.display_error(f"CRITICAL UNHANDLED EXCEPTION: {exc}")
             raise
         finally:
@@ -313,14 +316,31 @@ class SeasonManager:
         if event_type == "summer_qualifiers":
             self.view.display_info("!!! THE SUMMER KOSHIEN QUALIFIERS !!!")
             self.view.prompt_continue("Press Enter to begin...")
-            reps = run_season_qualifiers(user_school_id, context=self.context)
+            reps = run_season_qualifiers(
+                self.session,
+                user_school_id,
+                context=self.context,
+                io=getattr(self.view, "io", None),
+            )
             user_qualified = any(s.id == user_school_id for s in reps)
             if user_qualified:
                 self.view.display_info("YOU WON THE PREFECTURE!")
-                run_koshien_tournament(user_school_id, reps, context=self.context)
+                run_koshien_tournament(
+                    user_school_id,
+                    reps,
+                    session=self.session,
+                    context=self.context,
+                    io=getattr(self.view, "io", None),
+                )
             else:
                 self.view.display_warning("Eliminated in qualifiers.")
-                run_koshien_tournament(user_school_id, reps, context=self.context)
+                run_koshien_tournament(
+                    user_school_id,
+                    reps,
+                    session=self.session,
+                    context=self.context,
+                    io=getattr(self.view, "io", None),
+                )
 
         elif event_type == "third_year_retirement":
             self.view.display_warning("Third-years retire after summer. Time for the new team to step up.")
@@ -341,7 +361,7 @@ class SeasonManager:
             self.view.display_info("The top schools from every prefecture clash for Spring bids.")
             self.view.prompt_continue("Press Enter to begin...")
 
-            qualifiers = run_autumn_regionals(self.session, user_school_id, context=self.context)
+            qualifiers = run_autumn_regionals(self.session, user_school_id, context=self.context, io=getattr(self.view, "io", None))
             self.context.set_temp_effect("spring_qualifier_ids", qualifiers)
             try:
                 self.state.spring_qualifier_ids = json.dumps(qualifiers)
@@ -374,7 +394,13 @@ class SeasonManager:
                     qualifiers = json.loads(qualifiers)
                 except ValueError:
                     qualifiers = None
-            run_spring_koshien(user_school_id, context=self.context, qualifiers=qualifiers)
+            run_spring_koshien(
+                user_school_id,
+                session=self.session,
+                context=self.context,
+                qualifiers=qualifiers,
+                io=getattr(self.view, "io", None),
+            )
 
     def _run_weekly_menu(self, user_player: Player) -> str:
         scouting_available = self._has_game_this_week(user_player, self.state.current_week)
@@ -503,6 +529,8 @@ class SeasonManager:
                 background=True,
                 verbose=True,
                 log=lambda msg: self.view.show_progress(msg) if hasattr(self.view, "show_progress") else None,
+                io=getattr(self.view, "io", None),
+                event_listeners=getattr(self.context, "match_event_listeners", None),
             )
 
             self.context.refresh_session()

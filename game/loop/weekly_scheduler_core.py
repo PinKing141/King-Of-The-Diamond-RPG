@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import os
 import random
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from database.setup_db import Team
 from core.game_context import GameContext
@@ -12,6 +15,8 @@ from game.services.training_service import TrainingService
 from game.services.training_domain import apply_training_action_dto
 from core.repositories import PlayerRepository, TeamRepository
 from game.services.progression_port import ProgressionPort
+
+logger = logging.getLogger(__name__)
 
 
 DAYS_OF_WEEK = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']
@@ -282,6 +287,7 @@ def execute_schedule_core(
                     else:
                         slot_result.opponent_name = opponent.name
                         mode = "fast" if FAST_PRACTICE_MATCHES else "standard"
+                        listeners = getattr(context, "match_event_listeners", None) if context else None
                         winner, score = resolve_match(
                             my_team,
                             opponent,
@@ -289,6 +295,8 @@ def execute_schedule_core(
                             mode=mode,
                             silent=False,
                             rival_match_context=context.get_temp_effect("rival_match_context") if context else None,
+                            session=session,
+                            event_listeners=listeners,
                         )
                         if winner:
                             outcome = 'WON' if winner.id == my_team.id else 'LOST'
@@ -302,7 +310,7 @@ def execute_schedule_core(
                             slot_result.match_result = "UNKNOWN"
                 slot_results.append(slot_result)
                 day_dirty = True
-            except Exception as exc:  # Capture errors per-slot to continue week
+            except (SQLAlchemyError, ValueError, TypeError, RuntimeError) as exc:  # Capture expected per-slot issues
                 session.rollback()
                 warnings.append(
                     f"Error running {action} on {DAYS_OF_WEEK[d_idx]} {SLOTS[s_idx]}: {exc}"

@@ -6,11 +6,15 @@ menus, pop-ups, and cutscenes.
 """
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 from ui.ui_display import Colour, clear_screen
 
 SCREEN_WIDTH = 78
+
+
+logger = logging.getLogger(__name__)
 
 
 # Core lines and bars -------------------------------------------------
@@ -146,12 +150,25 @@ class UIPage:
     def add_block(self, lines: List[str]) -> None:
         self.blocks.append(lines)
 
-    def render(self) -> None:
+    def render(self, *, io=None) -> None:
         clear_screen()
+        emitter = getattr(io, "log", None)
         for block in self.blocks:
             for line in block:
-                print(line)
-        print("")
+                if emitter:
+                    try:
+                        emitter(line)
+                        continue
+                    except Exception:
+                        pass
+                logger.info(line)
+        if emitter:
+            try:
+                emitter("")
+                return
+            except Exception:
+                pass
+        logger.info("")
 
 
 # Helpers ------------------------------------------------------------

@@ -11,6 +11,7 @@ from database.setup_db import Player, PlayerSkill
 from core.rng import get_rng, new_rng
 from game.mechanics.trait_catalog import SKILL_DEFINITIONS
 from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 PROGRESSION_DEBUG = os.getenv("PROGRESSION_DEBUG", "").lower() in {"1", "true", "yes"}
@@ -65,7 +66,8 @@ def check_and_grant_skills(
         if probability_hook:
             try:
                 chance = float(probability_hook(player, key_lower, data))
-            except Exception:
+            except (TypeError, ValueError, AttributeError) as exc:
+                logger.debug("Probability hook failed for %s on %s: %s", getattr(player, "id", None), key, exc)
                 chance = 1.0
             chance = max(0.0, min(1.0, chance))
         if chance <= 0.0:
@@ -222,7 +224,7 @@ def apply_passive_skill_modifiers(player) -> Dict[str, float]:
             setattr(player, stat, base + delta)
         except AttributeError:
             continue
-        except Exception:
+        except (TypeError, ValueError):
             continue
     if pid is not None:
         _PASSIVE_APPLIED.add(pid)
@@ -247,8 +249,8 @@ def _evaluate_condition(name: Optional[str], player, context: Optional[Condition
         return False
     try:
         return func(player, context or {})
-    except Exception:
-        logger.exception("Condition '%s' failed during evaluation", name)
+    except (RuntimeError, ValueError, TypeError, AttributeError) as exc:
+        logger.exception("Condition '%s' failed during evaluation: %s", name, exc)
         return False
 
 
@@ -805,7 +807,8 @@ def remove_skill_by_key(session, player, skill_key: str) -> bool:
     for entry in target_entries:
         try:
             session.delete(entry)
-        except Exception:
+        except SQLAlchemyError as exc:
+            logger.warning("Failed deleting skill %s for player %s: %s", canonical, getattr(player, "id", None), exc)
             continue
         if skill_rel and entry in skill_rel:
             skill_rel.remove(entry)
@@ -848,7 +851,7 @@ def sync_player_skills(
     query = session.query(Player)
     try:
         query = query.options(selectinload(Player.skills))
-    except Exception:
+    except AttributeError:
         # Older SQLAlchemy versions without selectinload fall back to lazy loading.
         pass
 

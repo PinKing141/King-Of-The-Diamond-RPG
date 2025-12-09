@@ -6,7 +6,7 @@ from match_engine.interfaces import BatterLike, PitcherLike, PlayerLike
 
 from database.setup_db import PitchRepertoire, session_scope
 from match_engine.pitch_definitions import PITCH_TYPES, ARM_SLOT_MODIFIERS
-from match_engine.commentary import commentary_enabled
+from ui.match_commentary import commentary_enabled
 from core.rng import get_rng
 from game.mechanics.mechanics import (
     generate_unique_form,
@@ -511,7 +511,7 @@ def _maybe_flag_wild_pitch(result, state, pitcher):
         balance = getattr(profile, "balance", 0.6) or 0.6
         mechanics_risk += max(0.0, tempo - 0.7) * 0.05
         mechanics_risk += max(0.0, 0.55 - balance) * 0.08
-    except Exception:
+    except (AttributeError, TypeError):
         mechanics_risk = 0.0
 
     base = max(0.0, (60 - control) * 0.0025)
@@ -716,8 +716,6 @@ def _call_with_umpire_bias(state, location: str) -> tuple[str, bool]:
             note = f"[Framing] {catcher_name} steals the edge (delta {frame_bonus:+.2f})."
             if isinstance(logs, list):
                 logs.append(note)
-            if abs(frame_bonus) >= 0.3:
-                print(f"   >> {note}")
     _log_umpire_call(state, call, default, flipped, location)
     return call, flipped
 
@@ -771,6 +769,7 @@ def resolve_pitch(
     batter_trait_mods = batter_trait_mods or {}
     pitcher_trait_mods = pitcher_trait_mods or {}
     batter_tendencies = batter_tendencies or {}
+    io = getattr(state, "io", None)
 
     updater = getattr(state, "update_pressure_index", None)
     if callable(updater):
@@ -1381,13 +1380,16 @@ def resolve_pitch(
 
         # Always push to logs for UI consumption; optionally print if commentary is on.
         if ADV_BATTLE_FEEDBACK:
+            MAX_DEBUG_LOG = 500  # cap per-log to avoid unbounded growth in long sims
             for attr in ("at_bat_log", "play_by_play", "logs"):
                 log_ref = getattr(state, attr, None)
                 if isinstance(log_ref, list):
                     log_ref.append(line)
+                    if len(log_ref) > MAX_DEBUG_LOG:
+                        del log_ref[0 : len(log_ref) - MAX_DEBUG_LOG]
                     break
-        if commentary_enabled():
-            print(f"   >> {line}")
+        if commentary_enabled() and io and hasattr(io, "log"):
+            io.log(f"   >> {line}")
     
     resolved = None
 

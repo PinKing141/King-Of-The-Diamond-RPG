@@ -1,12 +1,15 @@
 """Simple pub/sub event bus used to decouple logic and presentation layers."""
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from enum import Enum
 from typing import Any, Callable, DefaultDict, Dict, List, Optional, Union
 
 EventKey = Union[str, Enum]
 EventHandler = Callable[[Dict[str, Any]], None]
+
+logger = logging.getLogger(__name__)
 
 
 class EventBus:
@@ -46,7 +49,7 @@ class EventBus:
             try:
                 handler(data)
             except Exception as exc:  # Defensive guard so one bad handler doesn't cascade
-                print(f"EventBus handler failed for '{key}': {exc}")
+                logger.warning("EventBus handler failed for '%s'", key, exc_info=exc)
 
     def clear(self) -> None:
         """Remove all subscribers (useful for tests)."""

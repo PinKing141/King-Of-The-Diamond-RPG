@@ -1,10 +1,14 @@
 import json
 import os
+import logging
 from typing import Optional, Tuple
 
 from database.setup_db import Player
+from world_sim.services.sim_data import get_roster
 from game.systems.health_utils import get_stamina_status, get_fatigue_status
 from game.systems.academic_system import score_to_letter_grade
+
+logger = logging.getLogger(__name__)
 
 class Colour:
     HEADER = '\033[95m'
@@ -31,40 +35,52 @@ class Colour:
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def render_screen(conn, player_data):
+
+def _emit(message: str = "", *, io=None) -> None:
+    """Route output through IOInterface when available, else logging."""
+
+    if io and hasattr(io, "log"):
+        try:
+            io.log(message)
+            return
+        except Exception:
+            pass
+    logger.info(message)
+
+def render_screen(conn, player_data, *, io=None):
     """
     Renders the main game HUD for the provided player snapshot.
     """
     clear_screen()
     
     # --- HEADER ---
-    print(f"{Colour.HEADER}{'='*60}")
-    print(f"{'KOSHIEN: ROAD TO GLORY':^60}")
-    print(f"{'='*60}{Colour.RESET}")
+    _emit(f"{Colour.HEADER}{'='*60}", io=io)
+    _emit(f"{'KOSHIEN: ROAD TO GLORY':^60}", io=io)
+    _emit(f"{'='*60}{Colour.RESET}", io=io)
     
     # --- DATE & TIME ---
     date_str = f"Year {player_data['current_year']} | Month {player_data['current_month']} | Week {player_data['current_week']}"
-    print(f"{Colour.CYAN}{date_str:^60}{Colour.RESET}")
-    print("-" * 60)
+    _emit(f"{Colour.CYAN}{date_str:^60}{Colour.RESET}", io=io)
+    _emit("-" * 60, io=io)
     
     # --- PLAYER INFO ---
     name_display = f"{player_data['last_name']} {player_data['first_name']}".strip()
     pos_display = f"{player_data['position']}"
     if player_data['jersey_number'] == 1: pos_display += " (ACE)"
     
-    print(f" Name: {Colour.BOLD}{name_display:<20}{Colour.RESET} School: {player_data.get('school_name', 'Unknown')}")
-    print(f" Role: {pos_display:<20} Grade:  Year {player_data['year']}")
-    print("-" * 60)
+    _emit(f" Name: {Colour.BOLD}{name_display:<20}{Colour.RESET} School: {player_data.get('school_name', 'Unknown')}", io=io)
+    _emit(f" Role: {pos_display:<20} Grade:  Year {player_data['year']}", io=io)
+    _emit("-" * 60, io=io)
     
     # --- ATTRIBUTES ---
     def fmt_stat(val):
         return f"{int(val):<3}" 
 
-    print(f"{Colour.BLUE}[ PITCHING ]{Colour.RESET}            {Colour.GREEN}[ BATTING / FIELDING ]{Colour.RESET}")
-    print(f" Control : {fmt_stat(player_data.get('control'))}             Power   : {fmt_stat(player_data.get('power'))}")
-    print(f" Velocity: {fmt_stat(player_data.get('velocity'))} km/h        Contact : {fmt_stat(player_data.get('contact'))}")
-    print(f" Stamina : {fmt_stat(player_data.get('stamina'))}             Speed   : {fmt_stat(player_data.get('running'))}")
-    print(f" Break   : {fmt_stat(player_data.get('breaking_ball'))}             Defense : {fmt_stat(player_data.get('fielding'))}")
+    _emit(f"{Colour.BLUE}[ PITCHING ]{Colour.RESET}            {Colour.GREEN}[ BATTING / FIELDING ]{Colour.RESET}", io=io)
+    _emit(f" Control : {fmt_stat(player_data.get('control'))}             Power   : {fmt_stat(player_data.get('power'))}", io=io)
+    _emit(f" Velocity: {fmt_stat(player_data.get('velocity'))} km/h        Contact : {fmt_stat(player_data.get('contact'))}", io=io)
+    _emit(f" Stamina : {fmt_stat(player_data.get('stamina'))}             Speed   : {fmt_stat(player_data.get('running'))}", io=io)
+    _emit(f" Break   : {fmt_stat(player_data.get('breaking_ball'))}             Defense : {fmt_stat(player_data.get('fielding'))}", io=io)
     
     # --- STATUS BARS ---
     fatigue = int(player_data.get('fatigue', 0))
@@ -81,21 +97,21 @@ def render_screen(conn, player_data):
     elif morale > 40: m_col = Colour.GREEN
     else: m_col = Colour.RED
 
-    print("-" * 60)
-    print(f" Energy : {st_col}{st_label:<10}{Colour.RESET} | Injury Risk: {f_col}{fat_label}{Colour.RESET}")
-    print(f" Morale : {m_col}{'|' * (morale // 5)}{Colour.RESET} ({morale}%)")
-    print("=" * 60)
+    _emit("-" * 60, io=io)
+    _emit(f" Energy : {st_col}{st_label:<10}{Colour.RESET} | Injury Risk: {f_col}{fat_label}{Colour.RESET}", io=io)
+    _emit(f" Morale : {m_col}{'|' * (morale // 5)}{Colour.RESET} ({morale}%)", io=io)
+    _emit("=" * 60, io=io)
     _render_team_load_widget(conn, player_data)
 
-def display_menu():
-    print("\nActions:")
-    print(" 1. Plan Week")
-    print(" 2. Scouting Report")
-    print(" 3. Character Sheet")
-    print(" 4. System / Save")
+def display_menu(*, io=None):
+    _emit("\nActions:", io=io)
+    _emit(" 1. Plan Week", io=io)
+    _emit(" 2. Scouting Report", io=io)
+    _emit(" 3. Character Sheet", io=io)
+    _emit(" 4. System / Save", io=io)
 
 
-def render_clutch_banner(*, inning: int, half: str, count: str, score_diff: int, runners_on: int, label: str = "") -> None:
+def render_clutch_banner(*, inning: int, half: str, count: str, score_diff: int, runners_on: int, label: str = "", io=None) -> None:
     """Show a dramatic banner describing the current leverage state."""
 
     inning_label = f"{half} {inning}"
@@ -103,14 +119,14 @@ def render_clutch_banner(*, inning: int, half: str, count: str, score_diff: int,
     runner_icons = ["-", "1B", "1B/2B", "Bases Loaded"]
     runners = runner_icons[min(runners_on, 3)]
     heading = label or "High-Leverage Moment"
-    print(f"\n{Colour.HEADER}{'=' * 60}{Colour.RESET}")
-    print(f"{Colour.BOLD}{heading:^60}{Colour.RESET}")
-    print(f"{Colour.CYAN}{inning_label:^60}{Colour.RESET}")
-    print(f"Count {count} | {score_label} | Runners: {runners}")
-    print(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}")
+    _emit(f"\n{Colour.HEADER}{'=' * 60}{Colour.RESET}", io=io)
+    _emit(f"{Colour.BOLD}{heading:^60}{Colour.RESET}", io=io)
+    _emit(f"{Colour.CYAN}{inning_label:^60}{Colour.RESET}", io=io)
+    _emit(f"Count {count} | {score_label} | Runners: {runners}", io=io)
+    _emit(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}", io=io)
 
 
-def render_minigame_ui(cursor_position: float | None, target_window: float, *, show_target: bool = False, quality: float | None = None) -> None:
+def render_minigame_ui(cursor_position: float | None, target_window: float, *, show_target: bool = False, quality: float | None = None, io=None) -> None:
     """Render the reflex slider bar with optional cursor and quality readout."""
 
     bar_len = 32
@@ -124,10 +140,10 @@ def render_minigame_ui(cursor_position: float | None, target_window: float, *, s
     if cursor_position is not None:
         cursor_idx = max(0, min(bar_len - 1, int(cursor_position * (bar_len - 1))))
         bar[cursor_idx] = f"{Colour.BOLD}|{Colour.RESET}"
-    print(f"[{''.join(bar)}]")
+    _emit(f"[{''.join(bar)}]", io=io)
     if quality is not None:
         color = Colour.GREEN if quality >= 0.7 else Colour.YELLOW if quality >= 0.4 else Colour.RED
-        print(f" Quality: {color}{quality:.2f}{Colour.RESET}")
+        _emit(f" Quality: {color}{quality:.2f}{Colour.RESET}", io=io)
 
 
 def _format_sync(sync: float | None) -> str:
@@ -147,6 +163,7 @@ def render_battery_call_banner(
     *,
     pitcher_name: str = "Pitcher",
     catcher_name: str = "Catcher",
+    io=None,
 ) -> None:
     """Display a short blurb describing the catcher sign that was just offered."""
 
@@ -184,11 +201,13 @@ def render_battery_call_banner(
     reason_suffix = f" — {reason}" if reason else ""
     msg = payload.get("message") or ""
     msg_suffix = f" [{msg}]" if msg else ""
-    print(
-        f" {color}{prefix}{Colour.RESET} {catcher_name} wants {pitch_name} ({location}, {intent}){reason_suffix}{msg_suffix}"
+    _emit(
+        f" {color}{prefix}{Colour.RESET} {catcher_name} wants {pitch_name} ({location}, {intent}){reason_suffix}{msg_suffix}",
+        io=io,
     )
-    print(
-        f"        Trust {trust_display} | Sync {sync_display} | Shakes left {shakes_left} | Battery with {pitcher_name}{wall_text}{chem_text}"
+    _emit(
+        f"        Trust {trust_display} | Sync {sync_display} | Shakes left {shakes_left} | Battery with {pitcher_name}{wall_text}{chem_text}",
+        io=io,
     )
 
 
@@ -197,6 +216,7 @@ def render_battery_shake_banner(
     *,
     pitcher_name: str = "Pitcher",
     catcher_name: str = "Catcher",
+    io=None,
 ) -> None:
     """Show feedback when the pitcher shakes off the catcher."""
 
@@ -206,9 +226,10 @@ def render_battery_shake_banner(
     shakes_allowed = int(payload.get("shakes_allowed", 0) or 0)
     shakes_used = int(payload.get("shakes_used", 0) or 0)
     sync_display = _format_sync(payload.get("sync"))
-    print(
+    _emit(
         f" {Colour.YELLOW}[Shake-Off]{Colour.RESET} {pitcher_name} waves off {catcher_name}. Shaking off… "
-        f"Shakes {shakes_used}/{shakes_allowed} | Sync {sync_display}"
+        f"Shakes {shakes_used}/{shakes_allowed} | Sync {sync_display}",
+        io=io,
     )
 
 
@@ -217,6 +238,7 @@ def render_battery_forced_banner(
     *,
     pitcher_name: str = "Pitcher",
     catcher_name: str = "Catcher",
+    io=None,
 ) -> None:
     """Highlight when the catcher has to force a pitch after too many shakes."""
 
@@ -224,9 +246,10 @@ def render_battery_forced_banner(
         return
 
     sync_display = _format_sync(payload.get("sync"))
-    print(
+    _emit(
         f" {Colour.RED}[Forced Call]{Colour.RESET} {catcher_name} overrules {pitcher_name}! "
-        f"This one rides despite tension (sync {sync_display})."
+        f"This one rides despite tension (sync {sync_display}).",
+        io=io,
     )
 
 
@@ -289,7 +312,7 @@ def _battle_math_lines(state, limit: int = 12) -> list[str]:
     return []
 
 
-def render_box_score_panel(scoreboard, state) -> None:
+def render_box_score_panel(scoreboard, state, *, io=None) -> None:
     """Print a condensed box-score style panel with inning totals and error tags."""
 
     if not scoreboard or not getattr(scoreboard, "innings", None):
@@ -317,30 +340,32 @@ def render_box_score_panel(scoreboard, state) -> None:
     away_errors = _format_error_list(normalized.get("away"))
     home_errors = _format_error_list(normalized.get("home"))
 
-    print(f"\n{Colour.HEADER}{'=' * 60}{Colour.RESET}")
-    print(f"{Colour.BOLD}POSTGAME BOX SCORE{Colour.RESET}")
-    print(f"      INN | {inning_header} |  R |  E")
-    print(f"      ----|-{'--' * len(innings)}-|----|----")
-    print(
-        f"{away_name[:3].upper():>5} | {' '.join(away_scores)} | {total_away:>2} | {len(normalized.get('away', [])):>2}"
+    _emit(f"\n{Colour.HEADER}{'=' * 60}{Colour.RESET}", io=io)
+    _emit(f"{Colour.BOLD}POSTGAME BOX SCORE{Colour.RESET}", io=io)
+    _emit(f"      INN | {inning_header} |  R |  E", io=io)
+    _emit(f"      ----|-{'--' * len(innings)}-|----|----", io=io)
+    _emit(
+        f"{away_name[:3].upper():>5} | {' '.join(away_scores)} | {total_away:>2} | {len(normalized.get('away', [])):>2}",
+        io=io,
     )
-    print(
-        f"{home_name[:3].upper():>5} | {' '.join(home_scores)} | {total_home:>2} | {len(normalized.get('home', [])):>2}"
+    _emit(
+        f"{home_name[:3].upper():>5} | {' '.join(home_scores)} | {total_home:>2} | {len(normalized.get('home', [])):>2}",
+        io=io,
     )
     if away_errors != "None" or home_errors != "None":
-        print(f" Errors: {away_name[:3]} {away_errors} | {home_name[:3]} {home_errors}")
+        _emit(f" Errors: {away_name[:3]} {away_errors} | {home_name[:3]} {home_errors}", io=io)
     tilt_snapshot = _tilt_counts(state)
     if tilt_snapshot:
         home_tilt, away_tilt = tilt_snapshot
-        print(f" Umpire Tilt: {away_name[:3]} {away_tilt} | {home_name[:3]} {home_tilt}")
-    print(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}")
+        _emit(f" Umpire Tilt: {away_name[:3]} {away_tilt} | {home_name[:3]} {home_tilt}", io=io)
+    _emit(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}", io=io)
 
     battle_lines = _battle_math_lines(state)
     if battle_lines:
-        print(f"\n{Colour.CYAN}[BATTLE MATH FEED]{Colour.RESET}")
+        _emit(f"\n{Colour.CYAN}[BATTLE MATH FEED]{Colour.RESET}", io=io)
         for line in battle_lines:
-            print(f"  • {line}")
-        print(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}")
+            _emit(f"  • {line}", io=io)
+        _emit(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}", io=io)
 
     rivalry_summary = getattr(state, "rival_postgame", None)
     if rivalry_summary:
@@ -359,12 +384,12 @@ def render_box_score_panel(scoreboard, state) -> None:
             "other_win": "Neutral Outcome",
         }
         result_label = result_map.get(result, result.title())
-        print(f"{Colour.GOLD}*** RIVALRY REPORT ***{Colour.RESET}")
-        print(f" {hero_name} vs {rival_name}: {wins}-{losses} | Heat {heat:.1f}")
-        print(f" Result: {result_label}")
+        _emit(f"{Colour.GOLD}*** RIVALRY REPORT ***{Colour.RESET}", io=io)
+        _emit(f" {hero_name} vs {rival_name}: {wins}-{losses} | Heat {heat:.1f}", io=io)
+        _emit(f" Result: {result_label}", io=io)
         if adaptation:
-            print(f" Next Counter: +20% recognition on {adaptation.replace('_', ' ').title()}")
-        print(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}")
+            _emit(f" Next Counter: +20% recognition on {adaptation.replace('_', ' ').title()}", io=io)
+        _emit(f"{Colour.HEADER}{'=' * 60}{Colour.RESET}", io=io)
 
 
 def _render_team_load_widget(conn, player_data) -> None:
@@ -383,14 +408,15 @@ def _render_team_load_widget(conn, player_data) -> None:
     else:
         badge = f"{Colour.GREEN}[READY]{Colour.RESET}"
         status = "Team cleared for optional reps"
-    print(f" Team Load {badge}  Fatigue {avg_fatigue:5.1f}% | Stamina {avg_stamina:5.1f}")
+    _emit(f" Team Load {badge}  Fatigue {avg_fatigue:5.1f}% | Stamina {avg_stamina:5.1f}", io=io)
     if rest_lock:
-        print("  Threshold met (>=65 fatigue & <=55 stamina). Coaches will skip optional workouts.")
+        _emit("  Threshold met (>=65 fatigue & <=55 stamina). Coaches will skip optional workouts.", io=io)
     else:
         fatigue_cushion = max(0.0, 65.0 - avg_fatigue)
         stamina_cushion = max(0.0, avg_stamina - 55.0)
-        print(
-            f"  Cushion to lock: {fatigue_cushion:4.1f} fatigue pts / {stamina_cushion:4.1f} stamina pts"
+        _emit(
+            f"  Cushion to lock: {fatigue_cushion:4.1f} fatigue pts / {stamina_cushion:4.1f} stamina pts",
+            io=io,
         )
 
 
@@ -413,9 +439,12 @@ def _team_fatigue_snapshot(conn, player_data) -> Optional[Tuple[float, float]]:
     if not school_id:
         return None
     try:
-        players = session.query(Player).filter(Player.school_id == school_id).all()
+        players = get_roster(session, school_id)
     except Exception:
-        return None
+        try:
+            players = session.query(Player).filter(Player.school_id == school_id).all()
+        except Exception:
+            return None
     if not players:
         return None
     total_fatigue = 0.0
@@ -440,53 +469,53 @@ def _format_stat_map(stat_map):
     return ", ".join(entries)
 
 
-def render_weekly_dashboard(summary, *, clear: bool = True) -> None:
+def render_weekly_dashboard(summary, *, clear: bool = True, io=None) -> None:
     """Present a compact Persona-style report card for completed weeks."""
 
     if clear:
         clear_screen()
 
-    print(f"{Colour.HEADER}=== WEEK {summary.week_number} REPORT ==={Colour.RESET}")
+    _emit(f"{Colour.HEADER}=== WEEK {summary.week_number} REPORT ==={Colour.RESET}", io=io)
 
     if summary.schedule_notes:
         for note in summary.schedule_notes:
-            print(f" {Colour.CYAN}•{Colour.RESET} {note}")
+            _emit(f" {Colour.CYAN}•{Colour.RESET} {note}", io=io)
 
     if summary.newsletter:
-        print(f"\n{Colour.GREEN}[WEEKLY NEWS]{Colour.RESET}")
+        _emit(f"\n{Colour.GREEN}[WEEKLY NEWS]{Colour.RESET}", io=io)
         for line in summary.newsletter:
-            print(f"  • {line}")
+            _emit(f"  • {line}", io=io)
 
-    print(f"\n{Colour.CYAN}[TRAINING RESULTS]{Colour.RESET}")
-    print(f"  {_format_stat_map(summary.stat_gains)}")
+    _emit(f"\n{Colour.CYAN}[TRAINING RESULTS]{Colour.RESET}", io=io)
+    _emit(f"  {_format_stat_map(summary.stat_gains)}", io=io)
     if summary.xp_gains:
-        print(f"  XP: {_format_stat_map(summary.xp_gains)}")
+        _emit(f"  XP: {_format_stat_map(summary.xp_gains)}", io=io)
 
     if summary.match_outcomes:
-        print(f"\n{Colour.YELLOW}[MATCH RESULTS]{Colour.RESET}")
+        _emit(f"\n{Colour.YELLOW}[MATCH RESULTS]{Colour.RESET}", io=io)
         for match in summary.match_outcomes:
             slot = match.get("slot", "?")
             opponent = match.get("opponent", "Opponent")
             result = match.get("result", "-")
             score = match.get("score", "-")
             color = Colour.GREEN if result == 'WON' else Colour.FAIL if result == 'LOST' else Colour.YELLOW
-            print(f"  {slot}: vs {opponent} -> {color}{result}{Colour.RESET} ({score})")
+            _emit(f"  {slot}: vs {opponent} -> {color}{result}{Colour.RESET} ({score})", io=io)
 
     if summary.events_triggered or summary.highlights:
-        print(f"\n{Colour.PURPLE}[NEWS FEED]{Colour.RESET}")
+        _emit(f"\n{Colour.PURPLE}[NEWS FEED]{Colour.RESET}", io=io)
         for event in summary.events_triggered:
-            print(f"  ! {event}")
+            _emit(f"  ! {event}", io=io)
         for highlight in summary.highlights:
-            print(f"  ★ {highlight}")
+            _emit(f"  ★ {highlight}", io=io)
 
     if summary.warnings:
-        print(f"\n{Colour.WARNING}[WARNINGS]{Colour.RESET}")
+        _emit(f"\n{Colour.WARNING}[WARNINGS]{Colour.RESET}", io=io)
         for warn in summary.warnings:
-            print(f"  ! {warn}")
+            _emit(f"  ! {warn}", io=io)
 
     if summary.stopped_by_interrupt:
-        print(f"\n{Colour.FAIL}[AUTO-SIM INTERRUPTED]{Colour.RESET}")
+        _emit(f"\n{Colour.FAIL}[AUTO-SIM INTERRUPTED]{Colour.RESET}", io=io)
         for reason in summary.interrupt_reasons:
-            print(f"  → {reason}")
+            _emit(f"  → {reason}", io=io)
 
-    print("\nPress Enter to continue...", end="")
+    _emit("\nPress Enter to continue...", io=io)

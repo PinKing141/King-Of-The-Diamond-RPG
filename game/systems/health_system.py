@@ -1,6 +1,8 @@
 import random
 from typing import Optional, Union
 
+from world_sim.services.sim_logging import log_event
+
 from sqlalchemy.orm import Session
 
 from database.setup_db import Player
@@ -86,6 +88,13 @@ def apply_injury(context_or_session: Union[GameContext, Session], severity, play
     target_player.injury_days = d
     session.add(target_player)
     session.commit()
+
+    log_event(
+        "player_injury_applied",
+        player_id=getattr(target_player, "id", None),
+        severity=severity,
+        injury_days=d,
+    )
 
     return f"(!) INJURY: {desc.get(severity, 'Unknown')} ({severity}). Out for {d} days."
 

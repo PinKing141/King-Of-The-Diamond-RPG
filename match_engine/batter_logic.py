@@ -157,14 +157,15 @@ class AtBatPhase(Enum):
 
 
 def _announce(bus, event_name: str, payload: Optional[dict] = None) -> None:
-    """Publish commentary-friendly events while preserving existing prints."""
+    """Publish commentary-friendly events; only emit via IO logger when provided."""
 
     data = payload or {}
     if bus:
         bus.publish(event_name, data)
     text = data.get("text") if isinstance(data, dict) else None
-    if text and commentary_enabled():
-        print(text)
+    io = data.get("io") if isinstance(data, dict) else None
+    if text and commentary_enabled() and io and hasattr(io, "log"):
+        io.log(text)
 
 
 def _prompt_value(state, prompt: str, default: str = "") -> str:
@@ -1265,19 +1266,21 @@ def _record_ejection(state, player, label):
         })
 
 
-def _prompt_swing_choice(state, pitcher, batter):
+def _prompt_swing_choice(state, pitcher, batter, *, io=None):
     """Lightweight swing selector for manual debug flow."""
     if getattr(state, "auto_play_inputs", False):
         return "Swing", {"contact_mod": 0, "power_mod": 0, "eye_mod": 0}
     balls = getattr(state, "balls", 0)
     strikes = getattr(state, "strikes", 0)
     outs = getattr(state, "outs", 0)
-    print("\n[Swing Choice] Pick your approach")
-    print(f" Count {balls}-{strikes} | Outs {outs}")
-    print(" 1. Normal swing (balanced)")
-    print(" 2. Contact swing (safer, less pop)")
-    print(" 3. Power swing (risk/reward)")
-    print(" 4. Take pitch (no swing)")
+    logger = getattr(io, "log", None) if io else None
+    emit = logger or (lambda *args, **kwargs: None)
+    emit("\n[Swing Choice] Pick your approach")
+    emit(f" Count {balls}-{strikes} | Outs {outs}")
+    emit(" 1. Normal swing (balanced)")
+    emit(" 2. Contact swing (safer, less pop)")
+    emit(" 3. Power swing (risk/reward)")
+    emit(" 4. Take pitch (no swing)")
 
     default_action = "Swing"
     default_mods = {"contact_mod": 0, "power_mod": 0, "eye_mod": 0}
@@ -1306,7 +1309,7 @@ def _prompt_swing_choice(state, pitcher, batter):
     return action, mods
 
 
-def _maybe_prompt_manual_pitch(state, pitcher, batter):
+def _maybe_prompt_manual_pitch(state, pitcher, batter, *, io=None):
     if getattr(state, "auto_play_inputs", False):
         return
     team_ids = getattr(state, "human_team_ids", set()) or set()
@@ -1330,9 +1333,12 @@ def _maybe_prompt_manual_pitch(state, pitcher, batter):
     if not options:
         return
 
-    print("\n[Pitch Call] Choose pitch and location")
+    logger = getattr(io, "log", None) if io else None
+    emit = logger or (lambda *args, **kwargs: None)
+
+    emit("\n[Pitch Call] Choose pitch and location")
     for idx, name, desc in options:
-        print(f"  {idx}. {name} - {desc}")
+        emit(f"  {idx}. {name} - {desc}")
     try:
         sel_raw = _prompt_value(state, " Pitch #: ", default="1").strip()
         sel_idx = int(sel_raw) if sel_raw else 1
@@ -1352,10 +1358,10 @@ def _maybe_prompt_manual_pitch(state, pitcher, batter):
         "8": "Down",
         "9": "Down-Out",
     }
-    print("  Location grid (1-9 like numpad):")
-    print("   7 8 9  (Up-In / Up / Up-Out)")
-    print("   4 5 6  (Mid-In / Zone / Mid-Out)")
-    print("   1 2 3  (Down-In / Down / Down-Out)")
+    emit("  Location grid (1-9 like numpad):")
+    emit("   7 8 9  (Up-In / Up / Up-Out)")
+    emit("   4 5 6  (Mid-In / Zone / Mid-Out)")
+    emit("   1 2 3  (Down-In / Down / Down-Out)")
     loc_choice = _prompt_value(state, " Location #: ", default="5").strip()
     location = loc_map.get(loc_choice, "Zone")
 
@@ -1525,7 +1531,7 @@ class AtBatStateMachine:
         io = getattr(state, "io", None)
 
         if getattr(state, "manual_pitch_calls", False):
-            _maybe_prompt_manual_pitch(state, self.pitcher, self.batter)
+            _maybe_prompt_manual_pitch(state, self.pitcher, self.batter, io=io)
 
         self._emit_phase(AtBatPhase.DECISION, {
             "inning": state.inning,
@@ -1535,7 +1541,7 @@ class AtBatStateMachine:
         })
 
         if user_controls and getattr(state, "manual_swing_prompts", False):
-            batter_action, batter_mods = _prompt_swing_choice(state, self.pitcher, self.batter)
+            batter_action, batter_mods = _prompt_swing_choice(state, self.pitcher, self.batter, io=io)
         elif self.input_source is not None:
             batter_action, batter_mods = self.input_source.get_batting_decision({
                 "pitcher": self.pitcher,

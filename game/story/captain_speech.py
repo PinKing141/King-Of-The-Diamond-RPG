@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import random
 from typing import Dict, List, Optional, Tuple
 
 from core.io_interface import IOInterface
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_STYLE = "ARCHITECT"
 
@@ -515,9 +518,9 @@ def run_team_huddle(
                 if pause:
                     target_io.prompt("  (press Enter)")
         else:
-            print("=== CAPTAIN HUDDLE ===")
+            LOGGER.info("=== CAPTAIN HUDDLE ===")
             for line in lines:
-                print(f" {line}")
+                LOGGER.info(" %s", line)
                 if pause:
                     input("  (press Enter)")
     return lines, buff

@@ -4,7 +4,10 @@ import os
 import random
 from typing import List, Optional, Tuple
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from game.systems.health_system import check_injury_risk, apply_injury, get_performance_modifiers
+from world_sim.services.sim_logging import log_event
 from database.setup_db import PitchRepertoire, Player, PlayerXP
 from game.systems.academic_system import resolve_study_session, clamp, is_academically_eligible
 from core.config_loader import ConfigLoader
@@ -234,6 +237,15 @@ def apply_scheduled_action(
         
         if is_injured:
             msg = apply_injury(context, severity)
+            log_event(
+                "training_injury",
+                player_id=getattr(player, "id", None),
+                severity=severity,
+                fatigue=fatigue,
+                intensity=intensity,
+                conditioning=conditioning,
+                action_type=action_type,
+            )
             return {
                 "status": "injured",
                 "message": f"INJURY! {msg}",
@@ -340,7 +352,8 @@ def apply_scheduled_action(
         if not repertoire:
             try:
                 repertoire = context.session.query(PitchRepertoire).filter_by(player_id=player.id).all()
-            except Exception:
+            except SQLAlchemyError as exc:
+                logger.warning("Failed to load pitch repertoire for bullpen session: %s", exc)
                 repertoire = []
         if not repertoire:
             return {

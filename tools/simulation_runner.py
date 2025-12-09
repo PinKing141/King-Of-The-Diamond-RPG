@@ -11,10 +11,11 @@ from __future__ import annotations
 import argparse
 import logging
 import random
-import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
+
+from sqlalchemy import func
 
 # Ensure project root is importable when running as script.
 import os
@@ -28,7 +29,6 @@ from database.setup_db import (
     School,
     Player,
     PlayerSkill,
-    get_session,
     session_scope,
 )
 from database.populate_japan import populate_world
@@ -41,7 +41,6 @@ from game.mechanics.skill_system import (
 )
 from game.mechanics.trait_catalog import SKILL_DEFINITIONS
 from match_engine.resolver import resolve_match
-from sqlalchemy import func
 
 
 @dataclass
@@ -90,10 +89,12 @@ class SimulationRunner:
         print("World generation complete.")
 
     def _random_school_pair(self, session) -> Tuple[School, School]:
-        schools: List[School] = session.query(School).all()
-        if len(schools) < 2:
+        total = session.query(func.count(School.id)).scalar() or 0
+        if total < 2:
             raise RuntimeError("Not enough schools to simulate matches.")
-        home, away = self.random.sample(schools, 2)
+        pick_a, pick_b = self.random.sample(range(total), 2)
+        home = session.query(School).offset(pick_a).limit(1).one()
+        away = session.query(School).offset(pick_b).limit(1).one()
         return home, away
 
     # ------------------------------------------------------------------
@@ -105,12 +106,18 @@ class SimulationRunner:
         for idx in range(1, games + 1):
             with session_scope() as session:
                 home, away = self._random_school_pair(session)
-            winner, score = resolve_match(
-                home,
-                away,
-                tournament_name="Ghost Game",
-                mode="fast",
-            )
+                try:
+                    winner, score = resolve_match(
+                        home,
+                        away,
+                        tournament_name="Ghost Game",
+                        mode="fast",
+                        session=session,
+                    )
+                except Exception as exc:
+                    print(f"Ghost game {idx} failed: {exc}")
+                    session.rollback()
+                    continue
             key = getattr(winner, "name", "Draw") if winner else "Draw"
             results[key] += 1
             if idx % 25 == 0:
@@ -133,24 +140,36 @@ class SimulationRunner:
         sample_ids: List[int] | None = None
         if school_sample:
             with session_scope() as session:
-                all_ids = [row.id for row in session.query(School.id).all()]
-            if not all_ids:
-                raise RuntimeError("No schools available for sampling.")
-            sample_ids = self.random.sample(all_ids, min(school_sample, len(all_ids)))
-            print(f"Restricting progression runs to {len(sample_ids)} sampled schools.")
+                total = session.query(func.count(School.id)).scalar() or 0
+                if total == 0:
+                    raise RuntimeError("No schools available for sampling.")
+                sample_n = min(school_sample, total)
+                offsets = self.random.sample(range(total), sample_n)
+                sample_ids: List[int] = []
+                base_query = session.query(School.id).order_by(School.id)
+                for off in offsets:
+                    row = base_query.offset(off).limit(1).first()
+                    if row:
+                        sample_ids.append(row.id)
+            print(f"Restricting progression runs to {len(sample_ids or [])} sampled schools.")
 
         for season_idx in range(seasons):
             label = f"season-{season_idx + 1}"
             for cycle_idx in range(cycles_per_season):
                 cycle_label = f"{label}-cycle-{cycle_idx + 1}"
                 with session_scope() as session:
-                    unlocks = run_ai_skill_progression(
-                        session,
-                        cycle_label=cycle_label,
-                        prestige_floor=0,
-                        school_ids=sample_ids,
-                    )
-                    session.commit()
+                    try:
+                        unlocks = run_ai_skill_progression(
+                            session,
+                            cycle_label=cycle_label,
+                            prestige_floor=0,
+                            school_ids=sample_ids,
+                        )
+                        session.commit()
+                    except Exception as exc:
+                        session.rollback()
+                        print(f"[{cycle_label}] progression failed: {exc}")
+                        continue
                 print(
                     f"[{label}] Cycle {cycle_idx + 1}/{cycles_per_season}: "
                     f"Granted {len(unlocks)} skills",
@@ -159,27 +178,53 @@ class SimulationRunner:
             print(f"Skill snapshot after {label}:\n{snapshot.summarize()}\n")
 
     def collect_skill_snapshot(self) -> SkillSnapshot:
+        def _median_from_counter(counter: Counter, total: int) -> float:
+            if total == 0:
+                return 0.0
+            mid1 = (total - 1) // 2
+            mid2 = total // 2
+            acc = 0
+            v1 = v2 = None
+            for value, count in sorted(counter.items()):
+                acc_next = acc + count
+                if v1 is None and mid1 < acc_next:
+                    v1 = value
+                if v2 is None and mid2 < acc_next:
+                    v2 = value
+                acc = acc_next
+                if v1 is not None and v2 is not None:
+                    break
+            return float(v1 if v2 is None else (v1 + v2) / 2)
+
         with session_scope() as session:
-            players: List[Player] = session.query(Player).all()
-            counts = defaultdict(int)
+            total_players = session.query(func.count(Player.id)).scalar() or 0
             skill_counts: Iterable[Tuple[int, int]] = (
                 session.query(PlayerSkill.player_id, func.count(PlayerSkill.id))
                 .filter(PlayerSkill.is_active.is_(True))
                 .group_by(PlayerSkill.player_id)
                 .all()
             )
-            for player_id, num in skill_counts:
-                counts[player_id] = int(num)
 
-        values = [counts.get(player.id, 0) for player in players]
-        active_players = sum(1 for value in values if value > 0)
-        max_skills = max(values) if values else 0
-        avg = statistics.mean(values) if values else 0.0
-        median = statistics.median(values) if values else 0.0
-        distribution = Counter(values)
+        distribution: Counter[int] = Counter()
+        total_skills = 0
+        max_skills = 0
+        for _, num in skill_counts:
+            val = int(num)
+            distribution[val] += 1
+            total_skills += val
+            if val > max_skills:
+                max_skills = val
+
+        zeros = max(total_players - len(skill_counts), 0)
+        if zeros:
+            distribution[0] += zeros
+
+        active_players = sum(count for value, count in distribution.items() if value > 0)
+        avg = (total_skills / total_players) if total_players else 0.0
+        median = _median_from_counter(distribution, total_players)
         return SkillSnapshot(
             player_count=active_players,
-            sample_size=len(values),
+            sample_size=total_players,
             avg=avg,
             median=median,
             max_skills=max_skills,

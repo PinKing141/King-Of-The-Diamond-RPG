@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from database.setup_db import School, Player
+from world_sim.services.sim_data import get_roster
 from game.personnel.battery_profiles import analyze_battery_chemistry
 from battery_system.battery_trust import summarize_battery_pair
 from ui.ui_core import clear_screen, colored_bar, simple_bar, panel, BAR_WIDTH
@@ -117,7 +118,8 @@ def render_team_report(session, school_id: int, knowledge_level: int = 0, theme_
         return
 
     knowledge_level = max(0, min(3, knowledge_level))
-    players = session.query(Player).filter_by(school_id=school.id).order_by(Player.jersey_number).all()
+    players = get_roster(session, school.id)
+    players.sort(key=lambda p: getattr(p, "jersey_number", 0) or 0)
 
     if knowledge_level == 0:
         return render_level_0(school, theme_name)

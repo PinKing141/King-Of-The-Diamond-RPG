@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import random
+import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from core.config_loader import ConfigLoader
 from game.services.dtos import PlayerTrainingDTO, PitchRepertoireDTO, PlayerXPEntryDTO
 from game.services.progression_port import ProgressionPort
+from world_sim.services.sim_logging import log_event
+
+LOGGER = logging.getLogger(__name__)
 
 
 FATIGUE_COSTS = ConfigLoader.get_section("fatigue_costs", {}) or {}
@@ -142,6 +146,7 @@ def apply_training_action_dto(
     rng = rng or random.Random()
 
     fatigue = player.fatigue or 0
+    starting_fatigue = fatigue
     style = player.growth_tag or player.attributes.get("growth_tag") or "Normal"
     conditioning = player.conditioning if player.conditioning is not None else 50
     injury_days = player.injury_days or 0
@@ -161,6 +166,13 @@ def apply_training_action_dto(
         return jersey is not None and jersey >= 90
 
     if injury_days > 0:
+        log_event(
+            "training_skipped_injury",
+            logger=LOGGER,
+            player_id=getattr(player, "id", None),
+            action_type=action_type,
+            injury_days=injury_days,
+        )
         return TrainingResult(
             dto=player,
             summary=f"Injured ({injury_days} days left). Cannot train.",
@@ -342,6 +354,21 @@ def apply_training_action_dto(
         cache["milestone_stats"] = stats_cache or cache.get("milestone_stats", {})
         if slump_timer > 0:
             progression_service.adjust_morale(player.id, 4)
+
+    log_event(
+        "training_result",
+        logger=LOGGER,
+        player_id=getattr(player, "id", None),
+        action_type=action_type,
+        fatigue_before=starting_fatigue,
+        fatigue_after=fatigue,
+        fatigue_change=fatigue_change,
+        stat_changes=applied_stat_changes,
+        xp_gains=xp_gains,
+        mastery_gains=mastery_gains,
+        breakthrough=breakthrough_event,
+        slump_timer=slump_timer,
+    )
 
     return TrainingResult(
         dto=player,

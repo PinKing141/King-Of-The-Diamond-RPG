@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Dict, Any
 from sqlalchemy.orm import Session
@@ -8,6 +9,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from core.services import SessionProvider, TempEffects
 from world.rivals import get_ledger, RivalMatchContext
 from game.story import StoryTracker
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -77,7 +81,7 @@ class GameContext:
             )
         except SQLAlchemyError as exc:
             # Log and continue so rivalry detection doesn't fail silently.
-            print(f"Rival lookup failed: {exc}")
+            logger.warning("Rival lookup failed", exc_info=exc)
             return None
 
     # --- Temporary Buff Helpers ---

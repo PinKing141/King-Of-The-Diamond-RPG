@@ -1,24 +1,32 @@
-"""Tournament simulation for Koshien and Senbatsu tournaments.
+"""Tournament simulation for Koshien and Senbatsu tournaments (IO-light).
 
-NOTE: This module currently uses direct print() calls with UI color codes.
-Future refactor should accept an IOInterface or logging callback to properly
-separate presentation from simulation logic. See docs/MVC_ARCHITECTURE.md
+Presentation is routed through ``IOInterface`` when provided. Callers may also
+pass an ``events`` list to collect structured snapshots for UI layers.
 """
 import json
+import logging
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import object_session
 
+from core.io_interface import IOInterface
 from core.paths import data_path, load_json_resource
-from typing import Any, Dict, List, Optional, Set, Tuple
-
+from core.rng import get_rng
 from database.setup_db import GameState, Player, PlayerRelationship, School, session_scope
 from game.mechanics.pitch_minigame import (
     PitchMinigameContext,
     PitchMinigameResult,
     trigger_pitch_minigame,
 )
-from core.rng import get_rng
 from match_engine.resolver import resolve_match
-from ui.ui_display import Colour, clear_screen
-from .sim_utils import quick_resolve_match
+from ui.ui_display import clear_screen
+from world_sim.services.sim_data import get_strength_map, get_rosters, get_roster
+from world_sim.services.sim_logging import log_event
+from world_sim.strength_cache import strength_cache_scope
+from .sim_utils import quick_resolve_match, clear_strength_cache
+
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_input(prompt: str, default: str = "") -> str:
@@ -26,6 +34,30 @@ def _safe_input(prompt: str, default: str = "") -> str:
         return input(prompt)
     except (EOFError, KeyboardInterrupt):
         return default
+
+
+def _prompt(io: IOInterface | None, prompt: str, default: str = "") -> str:
+    if io:
+        try:
+            return io.prompt(prompt)
+        except (RuntimeError, ValueError, OSError) as exc:
+            logger.warning("io prompt failed; falling back to stdin: %s", exc)
+    return _safe_input(prompt, default=default)
+
+
+def _log(io: IOInterface | None, message: str, *, level: str = "info") -> None:
+    if io:
+        io.log(message, level=level)
+    else:
+        getattr(logger, level, logger.info)(message)
+
+
+def _clear(io: IOInterface | None) -> None:
+    clear_fn = getattr(io, "clear", None) if io else None
+    if callable(clear_fn):
+        clear_fn()
+    else:
+        clear_screen()
 
 rng = get_rng()
 REGISTERED_DIALOGUE_IDS: Set[str] = set()
@@ -71,22 +103,22 @@ def _get_dialogue(dialogue_id: str) -> Optional[Dict[str, Any]]:
     return _DIALOGUE_LIBRARY.get(dialogue_id)
 
 
-def _play_dialogue(dialogue_id: str) -> None:
+def _play_dialogue(dialogue_id: str, *, io: IOInterface | None = None) -> None:
     dialogue = _get_dialogue(dialogue_id)
     if not dialogue:
         return
     speaker = dialogue.get("speaker", "Narrator")
     text = dialogue.get("text", "")
-    print(f"\n{Colour.BOLD}{speaker}:{Colour.RESET} {text}\n")
+    _log(io, f"\n{speaker}: {text}\n")
     options = dialogue.get("options") or []
     if not options:
-        _safe_input("Press Enter to continue...")
+        _prompt(io, "Press Enter to continue...")
         return
     for idx, option in enumerate(options, start=1):
-        print(f"  {idx}. {option.get('text', '...')}")
+        _log(io, f"  {idx}. {option.get('text', '...')}")
     choice = 0
     while choice < 1 or choice > len(options):
-        raw = _safe_input("Choose a response (default 1): ", default="1").strip()
+        raw = _prompt(io, "Choose a response (default 1): ", default="1").strip()
         if not raw:
             choice = 1
             break
@@ -95,71 +127,94 @@ def _play_dialogue(dialogue_id: str) -> None:
     selected = options[choice - 1]
     response = selected.get("response")
     if response:
-        print(f"\n{response}\n")
-    _safe_input("Press Enter to continue...")
+        _log(io, f"\n{response}\n")
+    _prompt(io, "Press Enter to continue...")
 
-def run_koshien_tournament(user_school_id, participants=None, context=None, session=None):
+
+def run_koshien_tournament(
+    user_school_id,
+    participants=None,
+    *,
+    session,
+    context=None,
+    io: IOInterface | None = None,
+    events: Optional[List[Dict[str, object]]] = None,
+):
+    """Summer Koshien: 49 Teams (qualifier winners).
+
+    Requires a caller-managed session to avoid spawning nested connections mid-season.
     """
-    Summer Koshien: 49 Teams (Qualifiers Winners).
-    """
+
     if session is None:
-        with session_scope() as sess:
-            _run_generic_tournament("SUMMER KOSHIEN", user_school_id, participants, sess, context=context)
+        raise ValueError("session is required when running Koshien tournaments")
+
+    return _run_generic_tournament(
+        "SUMMER KOSHIEN",
+        user_school_id,
+        participants,
+        session,
+        context=context,
+        io=io,
+        events=events,
+    )
+
+
+def run_spring_koshien(
+    user_school_id,
+    *,
+    session,
+    context=None,
+    qualifiers=None,
+    io: IOInterface | None = None,
+    events: Optional[List[Dict[str, object]]] = None,
+):
+    """Spring Koshien (Senbatsu): invitational 32-team tournament.
+
+    Requires a caller-managed session to stay aligned with the game loop's connection.
+    """
+
+    if session is None:
+        raise ValueError("session is required when running Spring Koshien")
+
+    _clear(io)
+    _log(io, "=== SPRING SENBATSU (INVITATIONAL) SELECTION ===\n")
+
+    qualifier_ids = qualifiers or []
+    if isinstance(qualifier_ids, str):
+        try:
+            qualifier_ids = json.loads(qualifier_ids)
+        except ValueError:
+            qualifier_ids = []
+    if not qualifier_ids and context:
+        qualifier_ids = context.get_temp_effect("spring_qualifier_ids", [])
+
+    participants = _load_spring_invitees(session, qualifier_ids, user_school_id)
+    user_school = session.get(School, user_school_id)
+    user_qualified = any(s.id == user_school_id for s in participants)
+
+    if qualifier_ids:
+        if user_qualified:
+            _log(io, "Invitation secured via Autumn Regionals!")
+        else:
+            _log(io, "Autumn run fell short; prestige may still earn a bid.")
     else:
-        _run_generic_tournament("SUMMER KOSHIEN", user_school_id, participants, session, context=context)
-
-def run_spring_koshien(user_school_id, context=None, qualifiers=None, session=None):
-    """
-    Spring Koshien (Senbatsu): 32 teams invited based on Autumn Regionals.
-    Falls back to prestige seeding if no qualifier list is present.
-    """
-
-    clear_screen()
-    print(f"{Colour.HEADER}=== SPRING SENBATSU (INVITATIONAL) SELECTION ==={Colour.RESET}\n")
-
-    managed_session = False
-    if session is None:
-        if context is None or not getattr(context, "session", None):
-            managed_session = True
-            session_ctx = session_scope()
-            session = session_ctx.__enter__()
+        if user_qualified:
+            _log(io, "INVITATION RECEIVED! The committee selected your school.")
         else:
-            session = context.session
+            _log(io, f"No invitation received. Prestige {getattr(user_school, 'prestige', 0)} was not enough.")
+            _log(io, "You watch the Spring tournament from home...")
 
-    try:
-        qualifier_ids = qualifiers or []
-        if isinstance(qualifier_ids, str):
-            try:
-                qualifier_ids = json.loads(qualifier_ids)
-            except ValueError:
-                qualifier_ids = []
-        if not qualifier_ids and context:
-            qualifier_ids = context.get_temp_effect("spring_qualifier_ids", [])
+    _prompt(io, "Press Enter to continue...")
 
-        participants = _load_spring_invitees(session, qualifier_ids, user_school_id)
-        user_school = session.get(School, user_school_id)
-        user_qualified = any(s.id == user_school_id for s in participants)
-
-        if qualifier_ids:
-            if user_qualified:
-                print(f"{Colour.gold}Invitation secured via Autumn Regionals!{Colour.RESET}")
-            else:
-                print(f"{Colour.dim}Your autumn run fell short; watching from home unless prestige earns a bid.{Colour.RESET}")
-        else:
-            if user_qualified:
-                print(f"{Colour.gold}INVITATION RECEIVED!{Colour.RESET}")
-                print(f"The committee has selected {user_school.name} for the Spring Tournament.")
-            else:
-                print(f"{Colour.FAIL}No invitation received.{Colour.RESET}")
-                print(f"Your prestige ({user_school.prestige}) was not high enough to impress the committee.")
-                print("You watch the Spring tournament from home...")
-
-        _safe_input("Press Enter to continue...")
-
-        _run_generic_tournament("SPRING SENBATSU", user_school_id, participants, session, context=context)
-    finally:
-        if managed_session:
-            session_ctx.__exit__(None, None, None)
+    return _run_generic_tournament(
+        "SPRING SENBATSU",
+        user_school_id,
+        participants,
+        session,
+        context=context,
+        io=io,
+        events=events,
+    )
 
 
 def _load_spring_invitees(session, qualifier_ids: Optional[List[int]], user_school_id: int) -> List[School]:
@@ -184,152 +239,243 @@ def _load_spring_invitees(session, qualifier_ids: Optional[List[int]], user_scho
 
     return qualifiers[:32]
 
-def _run_generic_tournament(title, user_school_id, participants, session, context=None):
-    """
-    Shared logic for running any bracket.
-    """
-    clear_screen()
-    print(f"{Colour.HEADER}=== {title} BEGINS ==={Colour.RESET}\n")
-    
-    user_school = session.get(School, user_school_id)
-    
-    if not participants:
-        # Fallback if None passed
-        npcs = session.query(School).filter(School.id != user_school_id).all()
-        participants = rng.sample(npcs, 15)
-        participants.append(user_school)
-        
-    current_bracket = list(participants) # Copy
-    rng.shuffle(current_bracket)
-    
-    # Trim to power of 2
-    if len(current_bracket) > 32: current_bracket = current_bracket[:32]
-    elif len(current_bracket) > 16: current_bracket = current_bracket[:16]
-        
-    round_num = 1
-    
-    while len(current_bracket) > 1:
-        next_round = []
-        print(f"\n{Colour.CYAN}--- ROUND {round_num} ({len(current_bracket)} Teams) ---{Colour.RESET}")
-        
-        matchups = []
-        for i in range(0, len(current_bracket), 2):
-            if i+1 < len(current_bracket):
-                matchups.append((current_bracket[i], current_bracket[i+1]))
-            
-        for home, away in matchups:
-            is_user_match = (home.id == user_school_id or away.id == user_school_id)
-            
-            print(f" > Match: {home.name} vs {away.name}")
+def _run_generic_tournament(
+    title,
+    user_school_id,
+    participants,
+    session,
+    context=None,
+    *,
+    io: IOInterface | None = None,
+    events: Optional[List[Dict[str, object]]] = None,
+):
+    """Shared logic for running any single-elimination bracket."""
 
-            if is_user_match:
+    with strength_cache_scope() as cache:
+        _clear(io)
+        _log(io, f"=== {title} BEGINS ===\n")
+
+        clear_strength_cache(cache)
+
+        user_school = session.get(School, user_school_id)
+        listeners: Optional[Sequence] = getattr(context, "match_event_listeners", None) if context else None
+
+        if not participants:
+            npcs = session.query(School).filter(School.id != user_school_id).all()
+            participants = rng.sample(npcs, 15)
+            participants.append(user_school)
+
+        current_bracket = list(participants)
+        rng.shuffle(current_bracket)
+
+        if len(current_bracket) > 32:
+            current_bracket = current_bracket[:32]
+        elif len(current_bracket) > 16:
+            current_bracket = current_bracket[:16]
+
+        roster_map = get_rosters(session, [sid for s in current_bracket if (sid := getattr(s, "id", None)) is not None])
+        strength_map = get_strength_map(
+            session,
+            school_ids=[sid for s in current_bracket if (sid := getattr(s, "id", None)) is not None],
+            cache=cache,
+        )
+
+        if events is not None:
+            events.append({"type": "tournament_start", "title": title, "participants": len(current_bracket)})
+
+        round_num = 1
+
+        while len(current_bracket) > 1:
+            next_round: List[School] = []
+            _log(io, f"\n--- ROUND {round_num} ({len(current_bracket)} Teams) ---")
+
+            matchups = []
+            for i in range(0, len(current_bracket), 2):
+                if i + 1 < len(current_bracket):
+                    matchups.append((current_bracket[i], current_bracket[i + 1]))
+
+            for home, away in matchups:
+                is_user_match = (home.id == user_school_id or away.id == user_school_id)
+
+                _log(io, f" > Match: {home.name} vs {away.name}")
+
                 rival_ctx = context.get_temp_effect("rival_match_context") if context else None
                 rival_presentation = context.get_temp_effect("rival_presentation") if context else None
-                _run_pre_match_story(round_num, user_school)
-                opponent = away if home.id == user_school_id else home
-                _maybe_inject_rival_dialogue(session, user_school_id, opponent)
-            
-            winner = None
-            score = ""
-            
-            leverage_result: Optional[PitchMinigameResult] = None
-            clutch_payload: Optional[Dict[str, Any]] = None
-            if is_user_match:
-                leverage_result = _maybe_trigger_pitch_minigame(
-                    home,
-                    away,
-                    user_school_id,
-                    round_num,
-                    title,
-                )
-                clutch_payload = _build_clutch_payload(leverage_result, user_school_id, home, away)
 
-            if is_user_match:
-                print(f"{Colour.GREEN}   *** YOUR MATCH ***{Colour.RESET}")
-                if leverage_result:
-                    winner, score = resolve_match(
+                if is_user_match:
+                    _run_pre_match_story(round_num, user_school, io=io)
+                    opponent = away if home.id == user_school_id else home
+                    _maybe_inject_rival_dialogue(session, user_school_id, opponent, io=io)
+
+                winner = None
+                score = ""
+
+                leverage_result: Optional[PitchMinigameResult] = None
+                clutch_payload: Optional[Dict[str, Any]] = None
+                if is_user_match:
+                    leverage_result = _maybe_trigger_pitch_minigame(
                         home,
                         away,
-                        f"{title} Round {round_num}",
-                        mode="standard",
-                        silent=False,
-                        clutch_pitch=clutch_payload,
-                        rival_match_context=rival_ctx,
-                        rival_presentation=rival_presentation,
+                        user_school_id,
+                        round_num,
+                        title,
+                        io=io,
                     )
+                    clutch_payload = _build_clutch_payload(leverage_result, user_school_id, home, away)
+
+                if is_user_match:
+                    _log(io, "   *** YOUR MATCH ***")
+                    if leverage_result:
+                        winner, score = resolve_match(
+                            home,
+                            away,
+                            f"{title} Round {round_num}",
+                            mode="standard",
+                            silent=False,
+                            clutch_pitch=clutch_payload,
+                            rival_match_context=rival_ctx,
+                            rival_presentation=rival_presentation,
+                            session=session,
+                            event_listeners=listeners,
+                        )
+                    else:
+                        winner, score = resolve_match(
+                            home,
+                            away,
+                            f"{title} Round {round_num}",
+                            mode="fast",
+                            rival_match_context=rival_ctx,
+                            rival_presentation=rival_presentation,
+                            session=session,
+                            event_listeners=listeners,
+                        )
+                        _log(io, f"   Result: {winner.name} wins! ({score})")
                 else:
-                    winner, score = resolve_match(
+                    winner, score, upset, *_ids = quick_resolve_match(
+                        session,
                         home,
                         away,
-                        f"{title} Round {round_num}",
-                        mode="fast",
-                        rival_match_context=rival_ctx,
-                        rival_presentation=rival_presentation,
+                        strength_map=strength_map,
+                        cache=cache,
                     )
-                    print(f"   Result: {winner.name} wins! ({score})")
-            else:
-                winner, score, upset = quick_resolve_match(session, home, away)
-                note = " (UPSET)" if upset else ""
-                print(f"   Result: {winner.name} wins! ({score}){note}")
-            
-            next_round.append(winner)
-            
-            if is_user_match and winner.id != user_school_id:
-                print(f"\n{Colour.FAIL}You have been eliminated.{Colour.RESET}")
-                _safe_input("Press Enter...")
-                return 
-                
-        current_bracket = next_round
-        _handle_between_round_story(session, user_school_id, current_bracket)
-        round_num += 1
-        
-    winner = current_bracket[0]
-    
-    if winner.id == user_school_id:
-        print(f"\n{Colour.gold}🏆 CONGRATULATIONS! YOU WON {title}! 🏆{Colour.RESET}")
-        user_school.prestige += 15
-        session.commit()
-    else:
-        print(f"\nWinner: {winner.name}")
+                    note = " (UPSET)" if upset else ""
+                    _log(io, f"   Result: {winner.name} wins! ({score}){note}")
+
+                log_event(
+                    "tournament_match_resolved",
+                    title=title,
+                    round=round_num,
+                    home_id=getattr(home, "id", None),
+                    away_id=getattr(away, "id", None),
+                    winner_id=getattr(winner, "id", None),
+                    score=score,
+                    user_match=is_user_match,
+                    upset=bool(locals().get("upset", False)),
+                )
+
+                next_round.append(winner)
+
+                if events is not None:
+                    events.append(
+                        {
+                            "type": "tournament_match",
+                            "title": title,
+                            "round": round_num,
+                            "home": getattr(home, "id", None),
+                            "away": getattr(away, "id", None),
+                            "winner": getattr(winner, "id", None),
+                            "score": score,
+                            "user_match": is_user_match,
+                        }
+                    )
+
+                if is_user_match and winner.id != user_school_id:
+                    _log(io, "\nYou have been eliminated.")
+                    _prompt(io, "Press Enter...")
+                    if events is not None:
+                        events.append({"type": "tournament_elimination", "title": title, "round": round_num})
+                    return winner
+
+            current_bracket = next_round
+
+            # Refresh rosters and strengths each round to reflect fatigue/injuries from resolved matches.
+            roster_map = get_rosters(
+                session,
+                [sid for s in current_bracket if (sid := getattr(s, "id", None)) is not None],
+            )
+            strength_map = get_strength_map(
+                session,
+                school_ids=[sid for s in current_bracket if (sid := getattr(s, "id", None)) is not None],
+                cache=cache,
+            )
+
+            _handle_between_round_story(session, user_school_id, current_bracket, roster_map=roster_map, io=io)
+
+            round_num += 1
+
+        winner = current_bracket[0]
+
+        if winner.id == user_school_id:
+            _log(io, f"\nCONGRATULATIONS! YOU WON {title}!")
+            user_school.prestige += 15
+            session.commit()
+        else:
+            _log(io, f"\nWinner: {winner.name}")
+
+        if events is not None:
+            events.append({"type": "tournament_complete", "title": title, "champion": getattr(winner, "id", None)})
+        log_event("tournament_complete", title=title, champion_id=getattr(winner, "id", None))
+        return winner
 
 
-def _run_pre_match_story(round_num: int, user_school: Optional[School]) -> None:
+def _run_pre_match_story(round_num: int, user_school: Optional[School], *, io: IOInterface | None = None) -> None:
     if not user_school:
         return
     if round_num <= 1:
-        _play_dialogue(DIALOGUE_COACH_MEETING)
+        _play_dialogue(DIALOGUE_COACH_MEETING, io=io)
         return
     prestige = getattr(user_school, "prestige", 0) or 0
     dialogue_id = DIALOGUE_CAPTAIN_HIGH if prestige >= 55 else DIALOGUE_CAPTAIN_LOW
-    _play_dialogue(dialogue_id)
+    _play_dialogue(dialogue_id, io=io)
 
 
-def _handle_between_round_story(session, user_school_id: int, bracket: List[School]) -> None:
+def _handle_between_round_story(
+    session,
+    user_school_id: int,
+    bracket: List[School],
+    *,
+    roster_map: Optional[Dict[int, Sequence[Player]]] = None,
+    io: IOInterface | None = None,
+) -> None:
     if not bracket or len(bracket) <= 1:
         return
     if not any(getattr(school, "id", None) == user_school_id for school in bracket):
         return
-    snapshot = _team_fatigue_snapshot(session, user_school_id)
+    snapshot = _team_fatigue_snapshot(session, user_school_id, roster_map=roster_map)
     if not snapshot:
         return
     avg_fatigue, avg_stamina = snapshot
     if avg_fatigue >= 65 and avg_stamina <= 55:
-        print(
-            f"\n{Colour.WARNING}Players are gassed after that last round. Coaches cancel optional reps to preserve arms.{Colour.RESET}"
-        )
-        print(
-            f"   Avg fatigue: {avg_fatigue:.1f}% | Avg stamina: {avg_stamina:.1f}"
-        )
-        _safe_input("Press Enter to continue...")
+        _log(io, "\nPlayers are gassed after that last round. Coaches cancel optional reps to preserve arms.")
+        _log(io, f"   Avg fatigue: {avg_fatigue:.1f}% | Avg stamina: {avg_stamina:.1f}")
+        _prompt(io, "Press Enter to continue...")
         return
-    _play_dialogue(DIALOGUE_TEAM_PRACTICE)
+    _play_dialogue(DIALOGUE_TEAM_PRACTICE, io=io)
 
 
-def _team_fatigue_snapshot(session, school_id: int) -> Optional[Tuple[float, float]]:
-    try:
-        players = session.query(Player).filter_by(school_id=school_id).all()
-    except Exception:
-        return None
+def _team_fatigue_snapshot(
+    session,
+    school_id: int,
+    *,
+    roster_map: Optional[Dict[int, Sequence[Player]]] = None,
+) -> Optional[Tuple[float, float]]:
+    players = roster_map.get(school_id) if roster_map else None
+    if players is None:
+        try:
+            players = get_roster(session, school_id)
+        except SQLAlchemyError as exc:
+            logger.warning("fatigue snapshot failed for school %s: %s", school_id, exc)
+            return None
     if not players:
         return None
     total_fatigue = sum(max(0, getattr(player, "fatigue", 0) or 0) for player in players)
@@ -344,6 +490,8 @@ def _maybe_trigger_pitch_minigame(
     user_school_id: int,
     round_num: int,
     title: str,
+    *,
+    io: IOInterface | None = None,
 ) -> Optional[PitchMinigameResult]:
     inning = rng.choice([6, 7, 8, 9])
     half = rng.choice(["Top", "Bot"])
@@ -354,9 +502,7 @@ def _maybe_trigger_pitch_minigame(
     if not _is_user_pitching(user_school_id, home, away, half):
         return None
 
-    print(
-        f"   {Colour.CYAN}High leverage moment! Coach signals for the pitch minigame.{Colour.RESET}"
-    )
+    _log(io, "   High leverage moment! Coach signals for the pitch minigame.")
 
     scenario = PitchMinigameContext(
         inning=inning,
@@ -366,7 +512,7 @@ def _maybe_trigger_pitch_minigame(
         score_diff=score_diff,
         label=f"{title} Round {round_num}",
     )
-    _maybe_play_bottom9_story(scenario)
+    _maybe_play_bottom9_story(scenario, io=io)
     school = home if home.id == user_school_id else away
     control, fatigue = _estimate_pitcher_profile(school)
     difficulty = _clamp(0.35 + (round_num - 1) * 0.08, 0.2, 1.0)
@@ -381,7 +527,7 @@ def _maybe_trigger_pitch_minigame(
         fatigue_level=fatigue,
         difficulty=difficulty,
     )
-    _announce_minigame_outcome(result)
+    _announce_minigame_outcome(result, io=io)
     return result
 
 
@@ -435,14 +581,30 @@ def _build_clutch_payload(
 
 
 def _estimate_pitcher_profile(school: School) -> tuple[int, int]:
+    candidates = []
     try:
         candidates = [
             player
             for player in getattr(school, "players", []) or []
-            if (getattr(player, "position", "") or "").lower() == "pitcher"
+            if (getattr(player, "position", "") or "").lower() in {"pitcher", "two-way", "two way"}
         ]
-    except Exception:
-        candidates = []
+    except (AttributeError, TypeError) as exc:
+        logger.warning("pitcher profile: failed to read related players for school %s: %s", getattr(school, "id", None), exc)
+
+    if not candidates:
+        try:
+            sess = object_session(school)
+            sid = getattr(school, "id", None)
+            if sess and sid is not None:
+                roster = get_roster(sess, sid)
+                candidates = [
+                    p
+                    for p in roster
+                    if (getattr(p, "position", "") or "").lower() in {"pitcher", "two-way", "two way"}
+                ]
+        except SQLAlchemyError as exc:
+            logger.warning("pitcher profile: DB fallback failed for school %s: %s", getattr(school, "id", None), exc)
+
     if not candidates:
         return 60, 20
     ace = max(
@@ -468,12 +630,8 @@ def _is_user_pitching(user_school_id: int, home: School, away: School, half: str
     return getattr(pitcher_school, "id", None) == user_school_id
 
 
-def _announce_minigame_outcome(result: PitchMinigameResult) -> None:
-    color = Colour.GREEN if result.quality >= 0.7 else Colour.YELLOW if result.quality >= 0.4 else Colour.RED
-    print(
-        f"   Pitch Quality: {color}{result.quality:.2f}{Colour.RESET} | "
-        f"{result.feedback} (cursor delta {result.deviation:.2f})"
-    )
+def _announce_minigame_outcome(result: PitchMinigameResult, *, io: IOInterface | None = None) -> None:
+    _log(io, f"   Pitch Quality: {result.quality:.2f} | {result.feedback} (cursor delta {result.deviation:.2f})")
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -491,18 +649,18 @@ def _determine_rival_school_id(session) -> Optional[int]:
     return getattr(rival, "school_id", None)
 
 
-def _maybe_inject_rival_dialogue(session, user_school_id: int, opponent: School) -> None:
+def _maybe_inject_rival_dialogue(session, user_school_id: int, opponent: School, *, io: IOInterface | None = None) -> None:
     rival_school_id = _determine_rival_school_id(session)
     if not rival_school_id or opponent.id != rival_school_id:
         return
     dialogue_id = rng.choice(RIVAL_DIALOGUE_POOL)
-    _play_dialogue(dialogue_id)
+    _play_dialogue(dialogue_id, io=io)
 
 
-def _maybe_play_bottom9_story(context: PitchMinigameContext) -> None:
+def _maybe_play_bottom9_story(context: PitchMinigameContext, *, io: IOInterface | None = None) -> None:
     if context.inning < 9 or (context.half or "").lower() != "bot":
         return
     if context.score_diff <= 0:
-        _play_dialogue(DIALOGUE_CROWD_CHANTING)
+        _play_dialogue(DIALOGUE_CROWD_CHANTING, io=io)
     else:
-        _play_dialogue(DIALOGUE_CROWD_SILENT)
+        _play_dialogue(DIALOGUE_CROWD_SILENT, io=io)

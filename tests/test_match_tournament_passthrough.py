@@ -10,9 +10,7 @@ def test_run_match_forwards_tournament_name_to_prepare_match():
     fake_session = SimpleNamespace(close=lambda: None)
 
     with (
-        patch("match_engine.controller.get_session", return_value=fake_session),
         patch("match_engine.controller.prepare_match") as prepare_mock,
-        patch("match_engine.controller.CommentaryListener"),
         patch("match_engine.persistence.MatchPersistenceService.save_game_results"),
         patch("match_engine.controller.Scoreboard") as ScoreboardMock,
         patch("match_engine.controller.MatchController") as ControllerMock,
@@ -27,6 +25,6 @@ def test_run_match_forwards_tournament_name_to_prepare_match():
         controller_instance = ControllerMock.return_value
         controller_instance.start_game.return_value = None
 
-        run_match(1, 2, tournament_name="Summer Koshien", fast=True)
+        run_match(1, 2, tournament_name="Summer Koshien", fast=True, session=fake_session)
 
     assert captured.get("tournament_name") == "Summer Koshien"

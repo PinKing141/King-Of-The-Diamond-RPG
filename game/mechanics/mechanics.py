@@ -3,11 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import logging
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Sequence, Tuple
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from core.paths import data_path
 from core.rng import get_rng
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -332,7 +337,7 @@ def _hydrate_profile(payload: dict, pitcher_id: Optional[int]) -> Optional[Pitch
             },
             notes=tuple(payload.get("notes", ())),
         )
-    except Exception:
+    except (KeyError, TypeError, ValueError):
         return None
 
 
@@ -341,7 +346,7 @@ def _load_profile_from_json(raw: Optional[str], pitcher_id: Optional[int]) -> Op
         return None
     try:
         payload = json.loads(raw)
-    except Exception:
+    except (TypeError, ValueError):
         return None
     return _hydrate_profile(payload, pitcher_id)
 
@@ -353,19 +358,19 @@ def _persist_profile(state, pitcher, profile: PitchingMechanicsProfile, *, pitch
     if hasattr(pitcher, "mechanics_json"):
         try:
             pitcher.mechanics_json = mechanics_json
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            return
     session = getattr(state, "db_session", None)
     if session is None:
         return
     try:
         session.add(pitcher)
         session.flush()
-    except Exception:
-        # If the flush fails (closed session/rollback), keep runtime cache intact.
+    except SQLAlchemyError as exc:
+        logger.debug("Persisting mechanics profile failed for %s: %s", pitcher_id, exc)
         try:
             session.rollback()
-        except Exception:
+        except SQLAlchemyError:
             pass
 
 

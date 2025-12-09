@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -22,6 +23,10 @@ from game.mechanics.lineup_logic import optimize_lineup, select_starting_nine
 from world.rivals import get_ledger
 from world_sim.weather import WeatherProfile, generate_weather_profile
 from game.personnel.coach_personalities import get_personality_profile
+from world_sim.services.sim_data import get_rosters
+
+
+logger = logging.getLogger(__name__)
 
 
 class _NullSession:
@@ -642,12 +647,12 @@ def prepare_match(
     away_team = db_session.get(School, away_id)
     
     if not home_team or not away_team:
-        print("Error: One of the teams could not be found.")
+        logger.error("prepare_match failed: missing team (home=%s, away=%s)", home_team, away_team)
         return None
 
-    # Corrected filtering: Use school_id instead of team_id
-    home_players = db_session.query(Player).filter_by(school_id=home_id).order_by(Player.jersey_number).all()
-    away_players = db_session.query(Player).filter_by(school_id=away_id).order_by(Player.jersey_number).all()
+    roster_map = get_rosters(db_session, [home_id, away_id])
+    home_players = sorted(roster_map.get(home_id, []), key=lambda p: getattr(p, "jersey_number", 999))
+    away_players = sorted(roster_map.get(away_id, []), key=lambda p: getattr(p, "jersey_number", 999))
     
     # Build starters with positional coverage, then order by philosophy
     home_starters = select_starting_nine(home_players, getattr(home_team, "philosophy", None))

@@ -1,5 +1,5 @@
 from core.event_bus import EventBus
-from match_engine.commentary import CommentaryListener, set_commentary_enabled
+from ui.match_commentary import CommentaryListener, set_commentary_enabled
 from match_engine.states import EventType
 
 
@@ -54,3 +54,23 @@ def test_battery_forced_event_outputs_alert(capsys):
     out = capsys.readouterr().out
     assert "Forced Call" in out
     assert "-1.50" in out
+
+
+def test_minigame_events_emit_plain_text(capsys):
+    set_commentary_enabled(True)
+    bus = EventBus()
+    CommentaryListener(bus)  # no IO provided
+
+    trigger_payload = {
+        "team_name": "Home",
+        "team_side": "home",
+        "context": {"inning": 9, "half": "Top", "count": "3-2", "score_diff": 0, "runners_on": 2},
+    }
+    resolve_payload = {"quality": 0.87, "target_window": 0.18, "feedback": "Painted"}
+
+    bus.publish(EventType.PITCH_MINIGAME_TRIGGER.value, trigger_payload)
+    bus.publish(EventType.PITCH_MINIGAME_RESOLVE.value, resolve_payload)
+
+    out = capsys.readouterr().out
+    assert "Showtime alert" in out
+    assert "Showtime pitch quality" in out

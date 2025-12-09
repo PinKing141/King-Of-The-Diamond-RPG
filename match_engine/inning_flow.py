@@ -13,10 +13,8 @@ def rotate_lineup(lineup):
 def _log(message: str, *, io: Optional[IOInterface] = None) -> None:
     if not commentary_enabled():
         return
-    if io:
+    if io and hasattr(io, "log"):
         io.log(message)
-    else:
-        print(message)
 
 
 def play_inning(state, scoreboard, *, io: Optional[IOInterface] = None):

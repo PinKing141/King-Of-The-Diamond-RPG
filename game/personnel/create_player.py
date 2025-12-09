@@ -2,10 +2,12 @@ import sys
 import os
 import random
 import time
+import logging
 from typing import Optional, List, Tuple, Dict, Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from core.io_interface import IOInterface
 
@@ -22,6 +24,8 @@ from game.personnel.player_generation import maybe_assign_bad_trait
 from game.mechanics.trait_logic import grant_user_creation_trait_rolls
 from game.mechanics.pitch_mastery import mastery_level_for_xp
 from match_engine.pitch_definitions import PITCH_TYPES
+
+LOGGER = logging.getLogger(__name__)
 
 # --- GROWTH STYLE DEFINITIONS ---
 GROWTH_STYLE_INFO = {
@@ -139,8 +143,8 @@ def get_prefecture_catalog(session: Session) -> List[str]:
             .all()
         )
         _PREFECTURE_CACHE = [row[0] for row in rows if row[0]]
-    except Exception as exc:
-        print(f"Prefecture lookup failed: {exc}")
+    except SQLAlchemyError as exc:
+        LOGGER.warning("Prefecture lookup failed: %s", exc)
         _PREFECTURE_CACHE = []
     return _PREFECTURE_CACHE
 
@@ -175,8 +179,8 @@ def _load_cities_for_prefecture(session: Session, prefecture: str) -> List[Dict[
                 "school_count": row[1],
                 "ordinal": idx,
             })
-    except Exception as exc:
-        print(f"City lookup failed for {prefecture}: {exc}")
+    except SQLAlchemyError as exc:
+        LOGGER.warning("City lookup failed for %s: %s", prefecture, exc)
         city_rows = []
 
     _CITY_CACHE[prefecture] = city_rows

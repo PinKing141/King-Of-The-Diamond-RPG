@@ -122,7 +122,7 @@ def _quick_exhibition(session, user_school_id: int, opponent_id: int):
 
     home = SimpleNamespace(id=home_school.id, name=home_school.name)
     away = SimpleNamespace(id=away_school.id, name=away_school.name)
-    _, score, upset = quick_resolve_match(session, home, away)
+    _, score, upset, *_ids = quick_resolve_match(session, home, away)
     print(f"Result: {home.name} vs {away.name} => {score} (upset={bool(upset)})")
     time.sleep(2)
 
@@ -299,6 +299,7 @@ def open_debug_menu(*, context=None, session=None, state=None):
                     manual_pitch_calls=True,
                     manual_swing_prompts=True,
                     manual_fielding_prompts=manual_fielding,
+                    session=session,
                 )
                 input("Match finished. Press Enter to return to debug menu...")
             except Exception as exc:

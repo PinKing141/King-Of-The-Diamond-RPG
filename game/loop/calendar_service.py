@@ -1,8 +1,11 @@
 import json
 import os
+import logging
 from typing import Dict, Iterable, List, Set
 
 from config import DATA_FOLDER
+
+logger = logging.getLogger(__name__)
 
 SEASON_CALENDAR_PATH = os.path.join(DATA_FOLDER, "season_calendar.json")
 
@@ -35,7 +38,8 @@ def _load_calendar_file() -> Dict:
             return raw if isinstance(raw, dict) else {}
     except FileNotFoundError:
         return {}
-    except Exception:
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Season calendar load failed; using defaults: %s", exc)
         return {}
 
 

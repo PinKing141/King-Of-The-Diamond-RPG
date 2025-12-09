@@ -11,6 +11,7 @@ from database.setup_db import (
     PlayerGameStats,
     School,
 )
+from world_sim.services.sim_data import get_rosters, get_roster
 from game.loop.offseason_engine import (
     apply_physical_growth,
     graduate_third_years,
@@ -47,7 +48,8 @@ from game.loop.offseason_engine import (
             )
 
             _emit_event(event_bus, events, "SEASON_LOG", {"text": "Offseason physical growth occurring...", "level": "info"})
-            players: Iterable[Player] = session.query(Player).all()
+            roster_map = get_rosters(session, [s.id for s in session.query(School.id).all()])
+            players: Iterable[Player] = [p for roster in roster_map.values() for p in roster]
             apply_physical_growth(players)
             session.commit()
 
@@ -85,7 +87,7 @@ from game.loop.offseason_engine import (
     event = {"type": event_type, "payload": payload}
     user_graduated = False
     if user_player_id:
-        user = session.query(Player).get(user_player_id)
+        user = session.get(Player, user_player_id)
         if user and user.year == 3:
             user_graduated = True
             school = user.school or session.query(School).get(user.school_id)
@@ -113,7 +115,8 @@ from game.loop.offseason_engine import (
     )
 
     _emit_event(event_bus, events, "SEASON_LOG", {"text": "Offseason physical growth occurring...", "level": "info"})
-    players: Iterable[Player] = session.query(Player).all()
+    roster_map = get_rosters(session, [s.id for s in session.query(School.id).all()])
+    players: Iterable[Player] = [p for roster in roster_map.values() for p in roster]
     apply_physical_growth(players)
     session.commit()
 
@@ -402,7 +405,7 @@ def run_end_of_season_logic(
     try:
         user_graduated = False
         if user_player_id:
-            user = session.query(Player).get(user_player_id)
+            user = session.get(Player, user_player_id)
             if user and user.year == 3:
                 user_graduated = True
                 school = user.school or session.query(School).get(user.school_id)
@@ -430,7 +433,8 @@ def run_end_of_season_logic(
         )
 
         _emit_event(event_bus, events, "SEASON_LOG", {"text": "Offseason physical growth occurring...", "level": "info"})
-        players: Iterable[Player] = session.query(Player).all()
+        roster_map = get_rosters(session, [s.id for s in session.query(School.id).all()])
+        players: Iterable[Player] = [p for roster in roster_map.values() for p in roster]
         apply_physical_growth(players)
         session.commit()
 
@@ -464,7 +468,7 @@ def run_end_of_season_logic(
     finally:
         user_graduated = False
         if user_player_id:
-            user = session.query(Player).get(user_player_id)
+            user = session.get(Player, user_player_id)
             if user and user.year == 3:
                 user_graduated = True
                 school = user.school or session.query(School).get(user.school_id)

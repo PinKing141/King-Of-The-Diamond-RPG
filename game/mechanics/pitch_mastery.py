@@ -5,11 +5,16 @@ curves or per-pitch tuning while keeping this API stable.
 """
 from __future__ import annotations
 
+import logging
 from typing import Dict, Optional, Tuple
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from database.setup_db import PitchRepertoire
 from core.io_interface import IOInterface
 from ui.ui_core import BAR_WIDTH as UI_BAR_WIDTH, colored_bar as ui_colored_bar, simple_bar as ui_simple_bar
+
+logger = logging.getLogger(__name__)
 
 # XP required to reach each level (levels now start at 0 for unlearned pitches).
 # Tuning: bump caps to slow early climbs and make higher tiers feel earned.
@@ -92,7 +97,7 @@ _SIGNATURE_LIBRARY = {
 def _pick_signature_tag(pitch_name: str) -> str:
     try:
         from match_engine.pitch_definitions import PITCH_TYPES
-    except Exception:
+    except ImportError:
         PITCH_TYPES = {}
     key = pitch_name or ""
     family = (PITCH_TYPES.get(key) or {}).get("family", "").lower()
@@ -247,7 +252,8 @@ def apply_mastery_decay(session, player, *, maintained: bool = False, log: Optio
     if repertoire is None:
         try:
             repertoire = session.query(PitchRepertoire).filter_by(player_id=player.id).all()
-        except Exception:
+        except SQLAlchemyError as exc:
+            logger.warning("Pitch mastery decay skipped for %s: %s", getattr(player, "id", None), exc)
             repertoire = []
     if not repertoire:
         return 0
@@ -279,8 +285,8 @@ def open_pitch_lab(session, player, *, io: Optional[IOInterface] = None) -> None
         return
     try:
         session.refresh(player)
-    except Exception:
-        pass
+    except SQLAlchemyError as exc:
+        logger.debug("Pitch lab refresh failed for %s: %s", getattr(player, "id", None), exc)
     repertoire = session.query(PitchRepertoire).filter_by(player_id=player.id).all()
     if not repertoire:
         _log("No recorded pitches yet.", io=io)

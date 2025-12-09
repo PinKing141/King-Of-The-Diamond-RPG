@@ -47,7 +47,8 @@ class TestMatchSimulationStress(unittest.TestCase):
              patch('player_roles.pitcher_controls.prompt_runner_threat_controls', return_value=None), \
              patch('battery_system.battery_negotiation.run_battery_negotiation', side_effect=fake_negotiation):
             try:
-                winner, score = resolve_match(home, away, "AutoTest", mode="fast", silent=True)
+                with session_scope() as session:
+                    winner, score = resolve_match(home, away, "AutoTest", mode="fast", silent=True, session=session)
             except Exception as e:
                 self.fail(f"Match simulation crashed: {e}")
             self.assertIsNotNone(score)

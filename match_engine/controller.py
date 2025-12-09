@@ -7,16 +7,15 @@ import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from core.event_bus import EventBus
-from core.io_interface import IOInterface
+from core.io_interface import IOInterface, NoOpIO
 
 from .pregame import prepare_match
 from .match_sim import MatchSimulation, MatchupContext, PlayOutcome
-from .commentary import CommentaryListener, commentary_enabled, set_commentary_enabled
 from .scoreboard import Scoreboard
 from .manager_ai import manage_team_between_innings
 
 from .telemetry import ensure_collector, flush_telemetry
-from database.setup_db import Game, get_session, session_scope
+from database.setup_db import Game
 
 from game.personnel.relationship_manager import seed_relationships
 from core.services import SessionProvider, TempEffects
@@ -26,7 +25,6 @@ from .batter_logic import AtBatStateMachine
 from .input_system import HumanBatterInput, CpuBatterInput
 from .momentum import MomentumSystem
 from .states import PlayMode
-from .brass_band import BrassBand
 
 from battery_system.battery_trust import apply_trust_buffer
 from game.mechanics.pitch_mastery import summarize_mastery_report, flush_pitch_xp
@@ -127,8 +125,6 @@ class MatchController:
                 getattr(state.away_team, "id", None),
                 bus=self.bus,
             )
-        if not getattr(state, "brass_band", None):
-            state.brass_band = BrassBand(state, rng=self.rng)
         self._install_fielding_trust_map(state)
         self.simulation = MatchSimulation(
             state,
@@ -921,17 +917,17 @@ def run_match(
     temp_effects_store: TempEffects | None = None,
     session=None,
     io: Optional[IOInterface] = None,
+    event_listeners: Optional[Sequence[Callable[[EventBus, Optional[IOInterface]], None]]] = None,
 ):
     """Main entry point. Call this to play a full game."""
 
+    if session is None and session_provider is None:
+        raise ValueError("session or session_provider is required for match simulation")
+
     external_session = session is not None
-    provider = session_provider or SessionProvider(get_session, initial_session=session)
+    provider = session_provider or SessionProvider(lambda: session, initial_session=session)
     owns_provider = session_provider is None and not external_session
     db_session = provider.get()
-    previous_commentary = commentary_enabled()
-    if fast or silent:
-        set_commentary_enabled(False)
-
     try:
         prepare_kwargs: Dict[str, Any] = {
             "clutch_pitch": clutch_pitch,
@@ -975,12 +971,16 @@ def run_match(
         if manual_fielding_prompts:
             state.manual_fielding_prompts = True
 
-        if not fast:
-            bus = getattr(state, "event_bus", None)
-            if bus:
-                bus.publish("MATCH_INTRO", {"home_team_id": home_id, "away_team_id": away_id})
+        bus = getattr(state, "event_bus", None)
+        if bus:
+            bus.publish("MATCH_INTRO", {"home_team_id": home_id, "away_team_id": away_id})
 
-        CommentaryListener(getattr(state, "event_bus", None), io=io)
+        if event_listeners:
+            for listener in event_listeners:
+                try:
+                    listener(bus, io=io)
+                except TypeError:
+                    listener(bus)
         if not hasattr(state, "telemetry_store_in_db"):
             state.telemetry_store_in_db = True
 
@@ -1011,7 +1011,6 @@ def run_match(
                 pass
         return winner
     finally:
-        set_commentary_enabled(previous_commentary)
         if owns_provider:
             provider.close()
 
@@ -1024,19 +1023,15 @@ _RESOLVE_MODE_PRESETS: Dict[str, Dict[str, bool]] = {
 }
 
 
-def _fetch_latest_score(home_id: int, away_id: int, tournament_name: str, *, session=None) -> str:
+def _fetch_latest_score(home_id: int, away_id: int, tournament_name: str, *, session) -> str:
     """Read the latest game for the two teams and optionally tag the tournament."""
-    score_str = "0 - 0"
-    managed_session = False
-    db_session = session
-    if db_session is None:
-        managed_session = True
-        ctx = session_scope()
-        db_session = ctx.__enter__()
+    if session is None:
+        raise ValueError("session is required to fetch latest score")
 
+    score_str = "0 - 0"
     try:
         game = (
-            db_session.query(Game)
+            session.query(Game)
             .filter(
                 Game.home_school_id == home_id,
                 Game.away_school_id == away_id,
@@ -1050,13 +1045,10 @@ def _fetch_latest_score(home_id: int, away_id: int, tournament_name: str, *, ses
         score_str = f"{game.away_score} - {game.home_score}"
         if tournament_name != "Practice Match" and game.tournament != tournament_name:
             game.tournament = tournament_name
-            db_session.commit()
+            session.commit()
     except Exception as exc:
         logger.exception("Failed to fetch latest score from database")
         raise RuntimeError("Failed to fetch latest score from database") from exc
-    finally:
-        if managed_session:
-            ctx.__exit__(*sys.exc_info())
 
     return score_str
 
@@ -1072,69 +1064,71 @@ def _simulate_match(
     rival_match_context=None,
     rival_presentation=None,
     persist_results: bool = True,
-    session=None,
+    session,
+    event_listeners: Optional[Sequence[Callable[[EventBus, Optional[IOInterface]], None]]] = None,
+    io: Optional[IOInterface] = None,
 ):
     auto_play_inputs = fast or silent
     human_team_ids = [] if auto_play_inputs else None
-
-    managed_session = False
+    if session is None:
+        raise ValueError("session is required for match simulation")
     db_session = session
-    if db_session is None:
-        managed_session = True
-        ctx = session_scope()
-        db_session = ctx.__enter__()
 
-    try:
-        if fast:
-            winner = run_match(
-                home_team.id,
-                away_team.id,
-                fast=True,
-                silent=silent,
-                auto_play_inputs=auto_play_inputs,
-                persist_results=persist_results,
-                clutch_pitch=clutch_pitch,
-                tournament_name=tournament_name,
-                human_team_ids=human_team_ids,
-                rival_match_context=rival_match_context,
-                rival_presentation=rival_presentation,
-                session=db_session,
-            )
-        elif silent:
-            winner = run_match(
-                home_team.id,
-                away_team.id,
-                silent=True,
-                auto_play_inputs=auto_play_inputs,
-                clutch_pitch=clutch_pitch,
-                tournament_name=tournament_name,
-                persist_results=persist_results,
-                human_team_ids=human_team_ids,
-                rival_match_context=rival_match_context,
-                rival_presentation=rival_presentation,
-                session=db_session,
-            )
-        else:
-            winner = run_match(
-                home_team.id,
-                away_team.id,
-                auto_play_inputs=auto_play_inputs,
-                clutch_pitch=clutch_pitch,
-                tournament_name=tournament_name,
-                persist_results=persist_results,
-                human_team_ids=human_team_ids,
-                rival_match_context=rival_match_context,
-                rival_presentation=rival_presentation,
-                session=db_session,
-            )
+    effective_io = io or (NoOpIO() if silent or fast else None)
 
-        score_str = _fetch_latest_score(home_team.id, away_team.id, tournament_name, session=db_session)
-        consume_strategy_mods(db_session, home_team.id)
-        consume_strategy_mods(db_session, away_team.id)
-        return winner, score_str
-    finally:
-        if managed_session:
-            ctx.__exit__(*sys.exc_info())
+    if fast:
+        winner = run_match(
+            home_team.id,
+            away_team.id,
+            fast=True,
+            silent=silent,
+            auto_play_inputs=auto_play_inputs,
+            persist_results=persist_results,
+            clutch_pitch=clutch_pitch,
+            tournament_name=tournament_name,
+            human_team_ids=human_team_ids,
+            rival_match_context=rival_match_context,
+            rival_presentation=rival_presentation,
+            session=db_session,
+            io=effective_io,
+            event_listeners=event_listeners,
+        )
+    elif silent:
+        winner = run_match(
+            home_team.id,
+            away_team.id,
+            silent=True,
+            auto_play_inputs=auto_play_inputs,
+            clutch_pitch=clutch_pitch,
+            tournament_name=tournament_name,
+            persist_results=persist_results,
+            human_team_ids=human_team_ids,
+            rival_match_context=rival_match_context,
+            rival_presentation=rival_presentation,
+            session=db_session,
+            io=effective_io,
+            event_listeners=event_listeners,
+        )
+    else:
+        winner = run_match(
+            home_team.id,
+            away_team.id,
+            auto_play_inputs=auto_play_inputs,
+            clutch_pitch=clutch_pitch,
+            tournament_name=tournament_name,
+            persist_results=persist_results,
+            human_team_ids=human_team_ids,
+            rival_match_context=rival_match_context,
+            rival_presentation=rival_presentation,
+            session=db_session,
+            io=effective_io,
+            event_listeners=event_listeners,
+        )
+
+    score_str = _fetch_latest_score(home_team.id, away_team.id, tournament_name, session=db_session)
+    consume_strategy_mods(db_session, home_team.id)
+    consume_strategy_mods(db_session, away_team.id)
+    return winner, score_str
 
 
 def resolve_match(
@@ -1148,6 +1142,8 @@ def resolve_match(
     rival_match_context=None,
     rival_presentation=None,
     persist_results: bool = True,
+    session,
+    event_listeners: Optional[Sequence[Callable[[EventBus, Optional[IOInterface]], None]]] = None,
 ):
     """Unified entry point for orchestrating a simulated match.
 
@@ -1169,5 +1165,7 @@ def resolve_match(
         rival_match_context=rival_match_context,
         rival_presentation=rival_presentation,
         persist_results=persist_results,
+        session=session,
+        event_listeners=event_listeners,
     )
     return winner

@@ -271,7 +271,7 @@ def _persist_to_gamestate(session, events: List[TelemetryEvent]) -> None:
         return
     try:
         from database.setup_db import GameState
-    except Exception:
+    except ImportError:
         return
 
     row = session.query(GameState).first()

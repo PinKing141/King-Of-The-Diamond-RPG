@@ -2,9 +2,11 @@ import json
 import os
 import glob
 import sqlite3
+import logging
 from datetime import datetime
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 
 from config import USER_DATA_DIR, DB_PATH
 from ui.ui_display import Colour, clear_screen
@@ -16,6 +18,9 @@ from database.setup_db import (
 )
 from core.exceptions import SaveCorruptError, SaveError, SaveNotFoundError
 from core.io_interface import IOInterface
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _backup_database(source_path, target_path):
@@ -39,8 +44,8 @@ def _rebind_db_engine():
 
     try:
         setup_db.engine.dispose()
-    except Exception as exc:
-        print(f"Warning: engine dispose failed during rebind: {exc}")
+    except SQLAlchemyError as exc:
+        LOGGER.warning("Engine dispose failed during rebind: %s", exc)
 
     setup_db.engine = create_engine(f"sqlite:///{DB_PATH}")
     setup_db.SessionLocal.configure(bind=setup_db.engine)

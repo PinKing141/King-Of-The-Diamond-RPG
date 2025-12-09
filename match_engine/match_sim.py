@@ -382,12 +382,4 @@ MatchSimulation._CHOICE_LIBRARY = {
 }
 
 
-__all__ = ["MatchSimulation", "MatchupContext", "PlayOutcome", "InputStrategy", "resolve_match"]
-
-
-def resolve_match(*args, **kwargs):
-    """Compatibility shim forwarding to the controller's resolve_match."""
-
-    from match_engine.controller import resolve_match as _resolve_match
-
-    return _resolve_match(*args, **kwargs)
+__all__ = ["MatchSimulation", "MatchupContext", "PlayOutcome", "InputStrategy"]

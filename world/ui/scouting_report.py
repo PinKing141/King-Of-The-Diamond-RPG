@@ -5,6 +5,7 @@ import random
 # Fix Imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.setup_db import School, Player
+from world_sim.services.sim_data import get_roster
 from ui.ui_display import Colour, clear_screen
 from game.systems.scouting_system import (
     get_scouting_info,
@@ -292,7 +293,8 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
         # Sort reserves by position then name
         display_players.sort(key=lambda p: (p.position, p.name))
 
-    if not display_players:
+        all_players = get_roster(session, school.id)
+        all_players.sort(key=lambda p: getattr(p, "jersey_number", 0) or 0)
         print(f"   (No players found in {view_mode} list)")
     else:
         header = (

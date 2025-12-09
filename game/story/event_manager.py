@@ -18,6 +18,8 @@ from game.coach_strategy import set_strategy_modifier, has_modifier
 from game.personnel.personality_effects import adjust_player_morale, adjust_team_morale
 from game.personnel.archetypes import get_player_archetype, get_archetype_profile
 from sqlalchemy import func
+from world_sim.services.sim_data import get_rosters
+from world_sim.services.sim_logging import log_event
 
 
 @dataclass
@@ -385,12 +387,10 @@ def event_training_conflict(
     if volatility < 65 or random.random() > trigger:
         return None
 
-    teammate = (
-        context.session.query(Player)
-        .filter(Player.school_id == school.id, Player.id != player.id)
-        .order_by(func.random())
-        .first()
-    )
+    roster_map = get_rosters(context.session, [school.id]) if context else {}
+    roster = roster_map.get(school.id, []) if roster_map else []
+    teammates = [p for p in roster if getattr(p, "id", None) != getattr(player, "id", None)]
+    teammate = random.choice(teammates) if teammates else None
     if not teammate:
         return None
 
@@ -400,6 +400,15 @@ def event_training_conflict(
     apply_conflict_penalty(context.session, [player, teammate], severity="minor")
     context.session.add_all([player, teammate])
     context.session.commit()
+
+    log_event(
+        "training_conflict",
+        school_id=getattr(school, "id", None),
+        player_id=getattr(player, "id", None),
+        teammate_id=getattr(teammate, "id", None),
+        volatility=volatility,
+        trigger=trigger,
+    )
 
     return (
         f"Practice derails when {player.name}—a {_archetype_label(player)}—and {teammate.name} start shouting matches. "
@@ -416,28 +425,24 @@ def event_volatility_fight(
 ):
     if context is None or school is None:
         return None
-
-    hotheads = context.session.query(Player).filter(
-        Player.school_id == school.id,
-        Player.volatility >= 70,
-    ).all()
+    roster_map = get_rosters(context.session, [school.id]) if context else {}
+    hotheads = [p for p in roster_map.get(school.id, []) if (p.volatility or 0) >= 70]
     if len(hotheads) < 2 or random.random() > 0.18:
         return None
 
     instigator, target = random.sample(hotheads, 2)
-    adjust_player_morale(instigator, -8)
-    adjust_player_morale(target, -8)
-    adjust_team_morale(context.session, school.id, -4, exclude_ids=[instigator.id, target.id])
-
     mediator = None
+
     hero = context.session.get(Player, context.player_id) if context.player_id else None
     if hero and (hero.loyalty or 50) >= 65:
         mediator = hero
     else:
-        captain = context.session.query(Player).filter(
-            Player.school_id == school.id,
-            Player.is_captain == True,
-        ).first()
+        captain = next((p for p in hotheads if getattr(p, "is_captain", False)), None)
+        if not captain:
+            captain = context.session.query(Player).filter(
+                Player.school_id == school.id,
+                Player.is_captain == True,
+            ).first()
         if captain and (captain.loyalty or 50) >= 65:
             mediator = captain
 
@@ -458,10 +463,22 @@ def event_volatility_fight(
         adjust_player_morale(mediator, 3)
         summary += f" {mediator.name} steps in to cool everyone down, preventing suspensions."
     else:
+        adjust_team_morale(context.session, school.id, -3)
         summary += " No one intervenes, and the feud simmers heading into the next game."
 
     context.session.add_all([instigator, target, rel_inst, rel_target])
     context.session.commit()
+
+    log_event(
+        "volatility_fight",
+        school_id=getattr(school, "id", None),
+        instigator_id=getattr(instigator, "id", None),
+        target_id=getattr(target, "id", None),
+        mediator_id=getattr(mediator, "id", None) if mediator else None,
+        hero_id=getattr(hero, "id", None) if hero else None,
+        hothead_count=len(hotheads),
+    )
+
     return summary
 
 

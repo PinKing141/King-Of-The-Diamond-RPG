@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from database.setup_db import Player
+from world_sim.services.sim_data import get_roster
 from .commentary import commentary_enabled
 from .fatigue_injury import check_pitcher_injury_risk
 from core.io_interface import IOInterface
@@ -13,10 +14,8 @@ def _log(message: str, *, io: Optional[IOInterface] = None) -> None:
     """Emit manager commentary through IO or print when commentary is enabled."""
     if not commentary_enabled():
         return
-    if io:
+    if io and hasattr(io, "log"):
         io.log(message)
-    else:
-        print(message)
 
 
 def _player_has_milestone(state, player_id, milestone_key: str) -> bool:
@@ -64,7 +63,7 @@ def _pop_shutdown_specialist(state, team_id) -> Optional[Player]:
 def find_relief_pitcher(state, team_id, current_pitcher_id):
     """Find a fresh pitcher for the given team."""
     db_session: Session = state.db_session
-    pitchers = db_session.query(Player).filter_by(school_id=team_id, position='Pitcher').all()
+    pitchers = [p for p in get_roster(db_session, team_id) if getattr(p, "position", "") == "Pitcher"]
     available = [p for p in pitchers if p.id != current_pitcher_id and p.injury_days == 0]
     if not available:
         return None

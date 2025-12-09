@@ -96,6 +96,7 @@ def render_match_intro(
     huddle_trigger: str = "auto",
     skip_huddle: bool = False,
     allow_identity_pack: bool = False,
+    io=None,
 ) -> List[str]:
     """Render a pre-game scouting card style intro and return lines.
 
@@ -155,10 +156,17 @@ def render_match_intro(
 
     if echo:
         clear_screen()
-        print(f"{Colour.HEADER}=== MATCH INTRO ==={Colour.RESET}")
-        for line in lines:
-            print(f" {Colour.CYAN}•{Colour.RESET} {line}")
-        print("")
+        emitter = getattr(io, "log", None)
+        header_line = f"{Colour.HEADER}=== MATCH INTRO ==={Colour.RESET}"
+        bullet_lines = [f" {Colour.CYAN}•{Colour.RESET} {line}" for line in lines]
+        for line in [header_line, *bullet_lines, ""]:
+            if emitter:
+                try:
+                    emitter(line)
+                    continue
+                except Exception:
+                    pass
+            print(line)
 
     return lines
 

@@ -1,5 +1,8 @@
 # battery_system/battery_negotiation.py
+import logging
 from dataclasses import dataclass
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from match_engine.pitch_logic import describe_batter_tells
 from match_engine.states import EventType
@@ -14,6 +17,8 @@ from .battery_trust import (
 )
 from .pitcher_personality import does_pitcher_accept
 from game.personnel.relationship_manager import seed_relationships
+
+logger = logging.getLogger(__name__)
 
 
 def _log_state(state, message: str) -> None:
@@ -49,8 +54,9 @@ def _maybe_flag_synchronized_pitch(state, pitcher, catcher, trust_snapshot: int)
                 rel = seed_relationships(session, pitcher)
                 partner_id = getattr(rel, "battery_partner_id", None)
                 bond_high = bool(partner_id == catcher_id and (getattr(rel, "battery_rel", 0) or 0) >= 95)
-            except Exception as exc:
+            except SQLAlchemyError as exc:
                 bond_high = False
+                logger.debug("Battery trust lookup failed for pitcher %s: %s", pitcher_id, exc)
                 _log_state(state, f"Battery trust lookup failed: {exc}")
     if not bond_high:
         return False
@@ -95,9 +101,10 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
         memory = get_or_create_catcher_memory(state)
         pitch_call = generate_catcher_sign(catcher, pitcher, batter, state, memory=memory)
         suggestion, location, intent = pitch_call.pitch, pitch_call.location, pitch_call.intent
-    except Exception as exc:
+    except (ImportError, AttributeError, RuntimeError, SQLAlchemyError) as exc:
         pitch = type("_P", (), {"pitch_name": "Auto", "break_level": 50})()
         suggestion, location, intent = pitch, "Zone", "Normal"
+        logger.warning("Catcher sign generation failed, defaulting: %s", exc)
         _log_state(state, f"Battery negotiation defaulted: catcher sign generation failed ({exc})")
 
     # 1. Identify Roles

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Iterable
+import logging
 
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from database.populate_japan import (
     get_random_english_name,
 )
 from database.setup_db import Player, School
+from world_sim.services.sim_data import get_rosters
 from core.rng import get_rng
 from world.school_philosophy import get_philosophy
 from game.personnel.personality import roll_player_personality
@@ -18,6 +20,7 @@ from game.personnel.player_generation import seed_negative_traits
 from game.mechanics.trait_logic import seed_initial_traits
 
 rng = get_rng()
+logger = logging.getLogger(__name__)
 BASE_ATTRIBUTES = [
     "velocity",
     "control",
@@ -52,11 +55,12 @@ def apply_physical_growth(players: Iterable[Player]) -> None:
 def recruit_freshmen(session: Session, target_roster: int = 18) -> int:
     """Generate enough first-years per school to reach the target roster size."""
     schools = session.query(School).all()
+    roster_map = get_rosters(session, [s.id for s in schools]) if schools else {}
     total_new_players = 0
 
     new_recruits: list[Player] = []
     for school in schools:
-        current_roster = len(school.players)
+        current_roster = len(roster_map.get(getattr(school, "id", None), school.players)) if roster_map else len(school.players)
         needed = max(5, target_roster - current_roster)
 
         phil_name, phil_data = get_philosophy(school.philosophy)
@@ -104,8 +108,8 @@ def recruit_freshmen(session: Session, target_roster: int = 18) -> int:
                     player.pitch_repertoire = generate_pitch_arsenal(
                         PseudoPlayer(stats), focus, stats.get('arm_slot', 'Three-Quarters')
                     )
-                except Exception:
-                    pass
+                except (ValueError, TypeError, AttributeError) as exc:
+                    logger.warning("Failed to generate pitch arsenal for %s: %s", display_name, exc)
 
                 session.add(player)
                 new_recruits.append(player)
@@ -240,7 +244,7 @@ def _grow_height(player: Player) -> int:
         height_gain = min(gain, remaining)
         setattr(player, 'height_cm', current + height_gain)
         return height_gain
-    except Exception:
+    except (TypeError, AttributeError, ValueError):
         return 0
 
 
@@ -299,7 +303,7 @@ def _grow_attributes(player: Player) -> None:
 
         try:
             setattr(player, attr, min(99, current + max(0, gain)))
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             continue
 
 
@@ -311,5 +315,5 @@ def _grow_pitcher_velocity(player: Player) -> None:
         if getattr(player, 'potential_grade', '') == 'S':
             gain += 1
         player.velocity = min(170, (player.velocity or 0) + gain)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         pass

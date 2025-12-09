@@ -12,6 +12,7 @@ from game.loop.season_manager import SeasonManager
 from game.interfaces import SeasonView
 from ui.console_view import ConsoleView
 from config import DB_PATH
+from ui.match_commentary import attach_commentary_listener
 
 
 MAIN_MENU_THEME = DEFAULT_THEME
@@ -128,6 +129,7 @@ def launch_game_engine(view: SeasonView, *, session=None, session_provider: Sess
     owns_provider = session_provider is None
     session = session or provider.get()
     context = GameContext(session_factory=provider.get, session_provider=provider)
+    context.match_event_listeners = (lambda bus, io=view.io: attach_commentary_listener(bus, io=io),)
     session.expire_all()
 
     try:

@@ -7,6 +7,7 @@ from game.systems.health_system import apply_injury
 from core.rng import get_rng
 from game.mechanics.skill_system import gather_roll_modifiers
 from match_engine.context_manager import get_at_bat_context
+from world_sim.services.sim_logging import log_event
 
 rng = get_rng()
 
@@ -44,10 +45,10 @@ def check_pitcher_injury_risk(pitcher, state, db_session: Session):
 
     injury_scale = max(0.1, 1.0 + float(roll_mods.get("injury", 0.0))) if roll_mods else 1.0
     base_risk *= injury_scale
+    roll = rng.random()
         
-    if rng.random() < base_risk:
+    if roll < base_risk:
         # INJURY OCCURRED
-        roll = rng.random()
         severity = "Minor"
         if roll > 0.90: severity = "Severe"
         elif roll > 0.70: severity = "Moderate"
@@ -57,9 +58,27 @@ def check_pitcher_injury_risk(pitcher, state, db_session: Session):
         
         # Log it in the match state
         state.log(f"INJURY: {pitcher.last_name} injured! ({severity})")
+        log_event(
+            "pitcher_injury",
+            pitcher_id=getattr(pitcher, "id", None),
+            severity=severity,
+            pitch_count=p_count,
+            base_risk=base_risk,
+            roll=roll,
+            fatigue_scale=float(roll_mods.get("fatigue", 0.0)) if roll_mods else 0.0,
+            injury_scale=injury_scale,
+        )
         
         return True, severity
         
+    log_event(
+        "pitcher_injury_check",
+        pitcher_id=getattr(pitcher, "id", None),
+        pitch_count=p_count,
+        base_risk=base_risk,
+        roll=roll,
+        injury_scale=injury_scale,
+    )
     return False, None
 
 def get_fatigue_status(pitcher, state):
@@ -123,7 +142,7 @@ def _is_pressure_cooker(state) -> bool:
 def _build_roll_context(state, pitcher) -> Dict[str, object]:
     try:
         return get_at_bat_context(state, getattr(state, "current_batter", None), pitcher)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return {
             "inning": getattr(state, "inning", 1),
             "pressure_state": "high" if _is_pressure_cooker(state) else "normal",

@@ -6,6 +6,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from sqlalchemy.orm import Session
 
 from database.setup_db import Player, PlayerRelationship
+from world_sim.services.sim_data import get_rosters
 from game.personnel.archetypes import get_player_archetype
 
 REL_MIN = 0
@@ -36,6 +37,10 @@ def _choose_best_player(candidates, default=None, *, key=None):
 
 
 def _candidate_players(session: Session, school_id: int, exclude_id: int):
+    roster_map = get_rosters(session, [school_id]) if session is not None else {}
+    roster = roster_map.get(school_id, []) if roster_map else []
+    if roster:
+        return [p for p in roster if getattr(p, "id", None) != exclude_id]
     return session.query(Player).filter(Player.school_id == school_id, Player.id != exclude_id).all()
 
 
