@@ -19,7 +19,6 @@ from game.personnel.relationship_manager import register_morale_rebound
 from game.mechanics.skill_system import check_and_grant_skills, list_player_skill_keys
 from game.mechanics.trait_logic import get_progression_speed_multiplier
 from game.mechanics.pitch_mastery import MASTERY_THRESHOLDS, mastery_level_for_xp, mastery_progress
-from ui.ui_display import Colour
 
 logger = logging.getLogger(__name__)
 PROGRESSION_DEBUG = os.getenv("PROGRESSION_DEBUG", "").lower() in {"1", "true", "yes"}
@@ -515,7 +514,6 @@ def apply_scheduled_action(
     )
     if milestone_unlocks:
         unlocked_skills.extend(entry.skill_name for entry in milestone_unlocks)
-        _announce_milestones(milestone_unlocks)
         if PROGRESSION_DEBUG:
             logger.info(
                 "Training action %s for player %s triggered milestones %s",
@@ -558,13 +556,3 @@ def run_training_camp_event(context: GameContext):
     # This is a stub or full function depending on if you want it in this file
     # Ideally, keep the implementation I gave in the previous turn here if you want it.
     pass
-
-
-def _announce_milestones(milestones: List[MilestoneUnlockResult]) -> None:
-    if not milestones:
-        return
-    for entry in milestones:
-        label = entry.milestone_label or entry.milestone_key
-        print(
-            f"{Colour.gold}[MILESTONE]{Colour.RESET} {label}: {entry.description} -> {entry.skill_name}"
-        )
