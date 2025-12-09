@@ -1,4 +1,9 @@
-"""Autumn regional (8-block) simulator feeding Spring Senbatsu invites."""
+"""Autumn regional (8-block) simulator feeding Spring Senbatsu invites.
+
+NOTE: This module currently uses direct print() calls with UI color codes.
+Future refactor should accept an IOInterface or logging callback to properly
+separate presentation from simulation logic. See docs/MVC_ARCHITECTURE.md
+"""
 from __future__ import annotations
 
 from collections import defaultdict

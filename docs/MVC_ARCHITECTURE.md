@@ -137,15 +137,19 @@ for entry in milestones:
 - IOInterface abstraction
 - Many controller functions already use protocols
 
-### 🚧 Partially Separated
-- `game/loop/weekly_scheduler.py` - Uses IOInterface but still embeds color codes
-- `match_engine/commentary.py` - Mixed rendering and logic
-- `game/mechanics/pitch_minigame.py` - Interactive minigame needs IOInterface
+### 🚧 Partially Separated (Need Further Refactoring)
+- `game/loop/weekly_scheduler.py` - Uses IOInterface but still embeds color codes directly
+- `match_engine/commentary.py` - View component misplaced in model layer, extensive rendering logic
+- `game/mechanics/pitch_minigame.py` - Interactive minigame needs IOInterface parameter
+- `world_sim/qualifiers.py` - Simulation logic with direct print statements (documented for refactor)
+- `world_sim/regional_sim.py` - Simulation logic with direct print statements (documented for refactor)  
+- `world_sim/tournament_sim.py` - Simulation logic with direct print statements (documented for refactor)
 
-### 🔄 Recently Improved
-- `game/training_logic.py` - Removed direct UI imports
-- `game/fielding_system.py` - Uses IOInterface with semantic levels
-- `ui/player_profile_renderer.py` - Moved from `game/personnel/` to `ui/`
+### 🔄 Recently Improved (Clean MVC Separation)
+- `game/training_logic.py` - ✅ Removed direct UI imports, returns structured data
+- `game/fielding_system.py` - ✅ Uses IOInterface with semantic levels
+- `battery_system/battery_negotiation.py` - ✅ Uses state.io (IOInterface) for interactions
+- `ui/player_profile_renderer.py` - ✅ Moved from `game/personnel/` to `ui/` layer
 
 ## Guidelines for New Code
 

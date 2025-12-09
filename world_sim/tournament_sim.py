@@ -1,4 +1,9 @@
-# world_sim/tournament_sim.py
+"""Tournament simulation for Koshien and Senbatsu tournaments.
+
+NOTE: This module currently uses direct print() calls with UI color codes.
+Future refactor should accept an IOInterface or logging callback to properly
+separate presentation from simulation logic. See docs/MVC_ARCHITECTURE.md
+"""
 import json
 
 from core.paths import data_path, load_json_resource
