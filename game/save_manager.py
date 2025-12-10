@@ -3,7 +3,14 @@ import os
 import glob
 import sqlite3
 import logging
+import sys
 from datetime import datetime
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import tty
+    import termios
 
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -273,80 +280,192 @@ def delete_autosave():
 
 def show_save_menu(mode="SAVE", *, io: Optional[IOInterface] = None):
     """
-    Interactive menu for Saving/Loading.
+    Interactive menu for Saving/Loading using pointer navigation (no numeric entry).
     mode: "SAVE" or "LOAD"
     """
     log = io.log if io else print
-    prompt_fn = io.prompt if io else input
     clear_fn = io.clear if io else clear_screen
     wait_fn = io.wait if io else (lambda s: __import__("time").sleep(s))
 
-    while True:
+    def render(options, idx):
         clear_fn()
-        log(f"{Colour.HEADER}=== {mode} GAME ==={Colour.RESET}")
-        
+        title = f"=== {mode} GAME ==="
+        log(f"{Colour.HEADER}{title}{Colour.RESET}")
+        for i, opt in enumerate(options):
+            pointer = ">" if i == idx else " "
+            log(f" {pointer} {opt['label']}")
+            for line in opt.get("details", []):
+                log(f"    {line}")
+        log("Use arrows + Enter. Esc to go back.")
+
+    def confirm(prompt: str) -> bool:
+        opts = ["YES", "NO"]
+        idx = 0
+        def render_confirm():
+            clear_fn()
+            log(prompt)
+            line = "    ".join([f"> {o}" if i == idx else f"  {o}" for i, o in enumerate(opts)])
+            log(line)
+            log("Use arrows + Enter. Esc to cancel.")
+
+        render_confirm()
+        while True:
+            if os.name == "nt" and 'msvcrt' in sys.modules:
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    return idx == 0
+                if ch == "\x1b":
+                    return False
+                if ch in ("\xe0", "\x00"):
+                    nxt = msvcrt.getwch()
+                    if nxt in ("H", "K"):
+                        idx = (idx - 1) % len(opts)
+                        render_confirm()
+                    elif nxt in ("P", "M"):
+                        idx = (idx + 1) % len(opts)
+                        render_confirm()
+                    continue
+            else:
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
+                try:
+                    tty.setraw(fd)
+                    ch = sys.stdin.read(1)
+                    if ch in ("\r", "\n"):
+                        return idx == 0
+                    if ch == "\x1b":
+                        seq = sys.stdin.read(2)
+                        if seq in ("[A", "[D"):
+                            idx = (idx - 1) % len(opts)
+                            render_confirm()
+                        elif seq in ("[B", "[C"):
+                            idx = (idx + 1) % len(opts)
+                            render_confirm()
+                        else:
+                            return False
+                        continue
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    def do_save(slot: int, exists: bool) -> bool:
+        if exists:
+            if not confirm(f"Overwrite Slot {slot}?"):
+                return False
+        try:
+            success, msg = save_game(slot)
+            log(f"{Colour.GREEN}{msg}{Colour.RESET}")
+        except SaveError as exc:
+            log(f"{Colour.FAIL}Save Failed: {exc}{Colour.RESET}", level="error")
+            return False
+        wait_fn(1)
+        return True
+
+    def do_load(slot: int, exists: bool) -> bool:
+        if not exists:
+            log("Slot is empty.")
+            wait_fn(1)
+            return False
+        if not confirm(f"Load Slot {slot}? Unsaved progress will be lost."):
+            return False
+        try:
+            success, msg = load_game(slot)
+            log(f"{Colour.GREEN}{msg}{Colour.RESET}")
+        except SaveCorruptError as exc:
+            log(f"{Colour.FAIL}CORRUPT SAVE: {exc}{Colour.RESET}", level="error")
+            return False
+        except SaveNotFoundError as exc:
+            log(f"{Colour.WARNING}{exc}{Colour.RESET}", level="warning")
+            return False
+        except SaveError as exc:
+            log(f"{Colour.FAIL}Load Error: {exc}{Colour.RESET}", level="error")
+            return False
+        wait_fn(1)
+        return True
+
+    while True:
         slots = get_save_slots()
         existing_slots = {s['slot']: s for s in slots}
-        
-        # Display Slots 1-5 (or more)
+        options = []
         for i in range(1, 6):
             if i in existing_slots:
                 info = existing_slots[i]
-                log(f" {i}. Slot {i}  [{info['date']}]")
                 preview = info.get("preview") or _format_slot_preview(info.get("metadata"))
-                if preview:
-                    log(f"    {preview}")
+                options.append({
+                    "kind": "slot",
+                    "slot": i,
+                    "label": f"Slot {i} [{info['date']}]",
+                    "details": [preview] if preview else [],
+                })
             else:
-                log(f" {i}. Slot {i}  [Empty]")
-                
-        log(" 0. Back")
-        log(" 9. Clear Autosave")
-        
-        choice = prompt_fn("\nSelect Slot: ")
-        if choice == '0':
-            return False
+                options.append({
+                    "kind": "slot",
+                    "slot": i,
+                    "label": f"Slot {i} [Empty]",
+                    "details": [],
+                })
 
-        if choice == '9':
-            if delete_autosave():
+        options.append({"kind": "autosave", "label": "Clear Autosave", "details": []})
+        options.append({"kind": "back", "label": "Back", "details": []})
+
+        idx = 0
+        render(options, idx)
+
+        def move(idx: int, delta: int) -> int:
+            return (idx + delta) % len(options)
+
+        while True:
+            if os.name == "nt" and 'msvcrt' in sys.modules:
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    break
+                if ch == "\x1b":
+                    return False
+                if ch in ("\xe0", "\x00"):
+                    nxt = msvcrt.getwch()
+                    if nxt == "H":
+                        idx = move(idx, -1)
+                    elif nxt == "P":
+                        idx = move(idx, 1)
+                    render(options, idx)
+                    continue
+            else:
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
+                try:
+                    tty.setraw(fd)
+                    ch = sys.stdin.read(1)
+                    if ch in ("\r", "\n"):
+                        break
+                    if ch == "\x1b":
+                        seq = sys.stdin.read(2)
+                        if seq == "[A":
+                            idx = move(idx, -1)
+                        elif seq == "[B":
+                            idx = move(idx, 1)
+                        else:
+                            return False
+                        render(options, idx)
+                        continue
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+        choice = options[idx]
+        if choice["kind"] == "back":
+            return False
+        if choice["kind"] == "autosave":
+            cleared = delete_autosave()
+            if cleared:
                 log(f"{Colour.GREEN}Autosave cleared.{Colour.RESET}")
             else:
                 log("No autosave found.")
             wait_fn(1)
             continue
-        
-        try:
-            slot = int(choice)
-            if 1 <= slot <= 5:
-                if mode == "SAVE":
-                    confirm = prompt_fn(f"Overwrite Slot {slot}? (y/n): ") if slot in existing_slots else 'y'
-                    if confirm.lower() == 'y':
-                        try:
-                            success, msg = save_game(slot)
-                            log(f"{Colour.GREEN}{msg}{Colour.RESET}")
-                        except SaveError as exc:
-                            log(f"{Colour.FAIL}Save Failed: {exc}{Colour.RESET}", level="error")
-                        wait_fn(1)
-                        return True
-                
-                elif mode == "LOAD":
-                    if slot not in existing_slots:
-                        log("Slot is empty.")
-                        wait_fn(1)
-                    else:
-                        confirm = prompt_fn(f"Load Slot {slot}? Unsaved progress will be lost. (y/n): ")
-                        if confirm.lower() == 'y':
-                            try:
-                                success, msg = load_game(slot)
-                                log(f"{Colour.GREEN}{msg}{Colour.RESET}")
-                            except SaveCorruptError as exc:
-                                log(f"{Colour.FAIL}CORRUPT SAVE: {exc}{Colour.RESET}", level="error")
-                            except SaveNotFoundError as exc:
-                                log(f"{Colour.WARNING}{exc}{Colour.RESET}", level="warning")
-                            except SaveError as exc:
-                                log(f"{Colour.FAIL}Load Error: {exc}{Colour.RESET}", level="error")
-                            wait_fn(1)
-                            return True
+        if choice["kind"] == "slot":
+            slot = choice["slot"]
+            exists = slot in existing_slots
+            if mode == "SAVE":
+                if do_save(slot, exists):
+                    return True
             else:
-                log("Invalid slot.", level="warning")
-        except ValueError:
-            pass
+                if do_load(slot, exists):
+                    return True

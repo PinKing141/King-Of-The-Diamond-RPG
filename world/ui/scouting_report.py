@@ -5,7 +5,6 @@ import random
 # Fix Imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.setup_db import School, Player
-from world_sim.services.sim_data import get_roster
 from ui.ui_display import Colour, clear_screen
 from game.systems.scouting_system import (
     get_scouting_info,
@@ -293,50 +292,53 @@ def print_team_roster(session, school, active_player_id, title_prefix="SCOUTING"
         # Sort reserves by position then name
         display_players.sort(key=lambda p: (p.position, p.name))
 
-        all_players = get_roster(session, school.id)
-        all_players.sort(key=lambda p: getattr(p, "jersey_number", 0) or 0)
+    if not display_players:
         print(f"   (No players found in {view_mode} list)")
-    else:
-        header = (
-            f" {'NO':<3} | {'POS':<4} | {'NAME':<22} | {'STS':<8} | "
-            f"{'KEY ATTRIBUTES':<36} | {'SYNERGY LEAN':<{SYNERGY_COLUMN_WIDTH}} | {'MILESTONES':<18}"
-        )
-        print(header)
-        print("-" * len(header))
+        return
 
-        for p in display_players:
-            # Name Masking
-            name_display = p.name if knowledge >= 1 else "Unknown Player"
-            if len(name_display) > 22: name_display = name_display[:20] + '.'
-            
-            # Stats Masking
-            status = "OK"
-            if knowledge >= 2:
-                if p.injury_days > 0: status = f"{Colour.RED}INJ{Colour.RESET}"
-                elif p.fatigue > 50: status = f"{Colour.YELLOW}TRD{Colour.RESET}"
+    header = (
+        f" {'NO':<3} | {'POS':<4} | {'NAME':<22} | {'STS':<8} | "
+        f"{'KEY ATTRIBUTES':<36} | {'SYNERGY LEAN':<{SYNERGY_COLUMN_WIDTH}} | {'MILESTONES':<18}"
+    )
+    print(header)
+    print("-" * len(header))
 
-            stats_str = ""
-            if p.position == "Pitcher":
-                role = p.role[:3].upper() if (p.role and knowledge >=2) else "P"
-                stats_str = (
-                    f"VEL:{fmt_stat(p.velocity, knowledge)} "
-                    f"CTR:{fmt_stat(p.control, knowledge)} "
-                    f"STA:{fmt_stat(p.stamina, knowledge)}"
-                )
-            else:
-                role = p.position[:2].upper()
-                stats_str = (
-                    f"CON:{fmt_stat(p.contact, knowledge)} "
-                    f"PWR:{fmt_stat(p.power, knowledge)} "
-                    f"SPD:{fmt_stat(p.speed, knowledge)}"
-                )
+    for p in display_players:
+        # Name Masking
+        name_display = p.name if knowledge >= 1 else "Unknown Player"
+        if len(name_display) > 22:
+            name_display = name_display[:20] + '.'
+        
+        # Stats Masking
+        status = "OK"
+        if knowledge >= 2:
+            if p.injury_days > 0:
+                status = f"{Colour.RED}INJ{Colour.RESET}"
+            elif p.fatigue > 50:
+                status = f"{Colour.YELLOW}TRD{Colour.RESET}"
 
-            num_str = f"#{p.jersey_number}" if (p.jersey_number and p.jersey_number < 99) else "--"
-            if show_milestones:
-                tags = [str(entry.get('label') or entry.get('key')) for entry in milestone_map.get(p.id, [])]
-                milestone_str = ', '.join(tags) if tags else '--'
-            else:
-                milestone_str = '--'
+        stats_str = ""
+        if p.position == "Pitcher":
+            role = p.role[:3].upper() if (p.role and knowledge >=2) else "P"
+            stats_str = (
+                f"VEL:{fmt_stat(p.velocity, knowledge)} "
+                f"CTR:{fmt_stat(p.control, knowledge)} "
+                f"STA:{fmt_stat(p.stamina, knowledge)}"
+            )
+        else:
+            role = p.position[:2].upper()
+            stats_str = (
+                f"CON:{fmt_stat(p.contact, knowledge)} "
+                f"PWR:{fmt_stat(p.power, knowledge)} "
+                f"SPD:{fmt_stat(p.speed, knowledge)}"
+            )
+
+        num_str = f"#{p.jersey_number}" if (p.jersey_number and p.jersey_number < 99) else "--"
+        if show_milestones:
+            tags = [str(entry.get('label') or entry.get('key')) for entry in milestone_map.get(p.id, [])]
+            milestone_str = ', '.join(tags) if tags else '--'
+        else:
+            milestone_str = '--'
 
             synergy_str = _format_synergy_blurb(p, knowledge, SYNERGY_COLUMN_WIDTH)
             row_str = (

@@ -842,6 +842,11 @@ def create_database():
 
     # Apply lightweight column backfills for existing saves.
     ensure_gamestate_schema()
+    ensure_coach_schema()
+    ensure_player_schema()
+    ensure_player_skill_schema()
+    ensure_player_milestone_schema()
+    ensure_game_stats_schema()
 
     # Ensure tables exist for the currently bound engine (useful in tests that
     # monkeypatch the engine/session to an isolated SQLite file).

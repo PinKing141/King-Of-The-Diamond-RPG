@@ -1,145 +1,116 @@
+"""End-of-season processing: graduations, growth, recruiting, and epilogues."""
+from __future__ import annotations
+
 import json
-import os
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from database.setup_db import (
-    GameState,
-    Player,
-    PlayerGameStats,
-    School,
-)
-from world_sim.services.sim_data import get_rosters, get_roster
-from game.loop.offseason_engine import (
-    apply_physical_growth,
-    graduate_third_years,
-    recruit_freshmen,
-        owns_session = session is None
-        session = session or get_session()
-        try:
-            user_graduated = False
-            if user_player_id:
-                user = session.get(Player, user_player_id)
-                if user and user.year == 3:
-                    user_graduated = True
-                    school = user.school or session.get(School, user.school_id)
-                    title, desc, color, story = determine_career_outcome(user, school, session)
-                    play_ending_sequence(title, desc, color, story, event_bus=event_bus, events=events)
+from core.event_bus import EventBus
+from database.setup_db import GameState, Player, PlayerGameStats, School, get_session
+from game.loop.offseason_engine import apply_physical_growth, graduate_third_years, recruit_freshmen
+from ui.ui_display import Colour
+from world_sim.services.sim_data import get_rosters
 
-            if user_graduated:
-                return SeasonEndResult(True, events)
+logger = logging.getLogger(__name__)
 
-            _emit_event(
-                event_bus,
-                events,
-                "SEASON_LOG",
-                {"text": "=== END OF SEASON PROCESSING ===", "level": "header"},
-            )
 
-            _emit_event(event_bus, events, "SEASON_LOG", {"text": "3rd Years are graduating...", "level": "info"})
-            graduates = graduate_third_years(session)
-            session.commit()
-            _emit_event(
-                event_bus,
-                events,
-                {"text": f"{graduates} players tossed their caps.", "level": "detail"},
-            )
+@dataclass
+class SeasonEndResult:
+    user_graduated: bool
+    events: List[Dict[str, Any]]
 
-            _emit_event(event_bus, events, "SEASON_LOG", {"text": "Offseason physical growth occurring...", "level": "info"})
-            roster_map = get_rosters(session, [s.id for s in session.query(School.id).all()])
-            players: Iterable[Player] = [p for roster in roster_map.values() for p in roster]
-            apply_physical_growth(players)
-            session.commit()
+    def __bool__(self) -> bool:  # Allows "if result:" style checks
+        return self.user_graduated
 
-            _emit_event(
-                event_bus,
-                events,
-                {"text": "Scouting new freshmen for 4000 schools (simulated)...", "level": "info"},
-            )
-            new_player_count = recruit_freshmen(session)
-            _emit_event(
-                event_bus,
-                events,
-                {"text": f"Welcome to {new_player_count} new freshmen.", "level": "detail"},
-            )
 
-            state = _ensure_game_state(session)
-            state.current_year = (state.current_year or 2024) + 1
-            state.current_month = 4
-            state.current_week = 1
-            session.commit()
+@dataclass
+class PlayerProfile:
+    player: Player
+    school: Optional[School]
+    positions: Set[str]
+    is_two_way: bool
+    is_injured: bool
+    growth_tag: Optional[str]
+    prestige: int
+    titles: int
+    velocity: int
+    control: int
+    command: int
+    movement: int
+    stamina: int
+    power: int
+    contact: int
+    fielding: int
+    speed: int
+    throwing: int
+    catcher_leadership: int
+    mental: int
+    overall: int
+    clutch: int
+    innings_pitched: float
+    runs_allowed: int
+    home_runs: int
+    at_bats: int
+    hits: int
+    era: Optional[float]
+    batting_average: float
 
-            _emit_event(
-                event_bus,
-                events,
-                {"text": f"=== SEASON {state.current_year} START ===", "level": "success"},
-            )
-            return SeasonEndResult(False, events)
-        finally:
-            if owns_session:
-                session.close()
+
+ATTRIBUTE_DEFAULTS: Dict[str, int] = {
+    "velocity": 120,
+    "control": 50,
+    "command": 50,
+    "movement": 50,
+    "stamina": 50,
+    "power": 50,
+    "contact": 50,
+    "fielding": 50,
+    "speed": 50,
+    "throwing": 50,
+    "catcher_leadership": 50,
+    "mental": 50,
+    "overall": 50,
+    "clutch": 50,
+}
+
+
+def _emit_event(
+    event_bus: Optional[EventBus],
     events: List[Dict[str, Any]],
-    event_type: str,
+    event_name: str,
     payload: Dict[str, Any],
 ) -> None:
-    event = {"type": event_type, "payload": payload}
-    user_graduated = False
-    if user_player_id:
-        user = session.get(Player, user_player_id)
-        if user and user.year == 3:
-            user_graduated = True
-            school = user.school or session.query(School).get(user.school_id)
-            title, desc, color, story = determine_career_outcome(user, school, session)
-            play_ending_sequence(title, desc, color, story, event_bus=event_bus, events=events)
+    enriched = {"event": event_name, **payload}
+    events.append(enriched)
+    try:
+        if event_bus:
+            event_bus.publish(event_name, enriched)
+    except Exception:  # Analytics/logging should not block progression
+        logger.warning("Event bus publish failed for %s", event_name, exc_info=True)
 
-    if user_graduated:
-        return SeasonEndResult(True, events)
 
-    _emit_event(
-        event_bus,
-        events,
-        "SEASON_LOG",
-        {"text": "=== END OF SEASON PROCESSING ===", "level": "header"},
-    )
+def _safe_attr_value(obj: Any, attr: str, default: int) -> int:
+    value = getattr(obj, attr, None)
+    return default if value is None else int(value)
 
-    _emit_event(event_bus, events, "SEASON_LOG", {"text": "3rd Years are graduating...", "level": "info"})
-    graduates = graduate_third_years(session)
-    session.commit()
-    _emit_event(
-        event_bus,
-        events,
-        "SEASON_LOG",
-        {"text": f"{graduates} players tossed their caps.", "level": "detail"},
-    )
 
-    _emit_event(event_bus, events, "SEASON_LOG", {"text": "Offseason physical growth occurring...", "level": "info"})
-    roster_map = get_rosters(session, [s.id for s in session.query(School.id).all()])
-    players: Iterable[Player] = [p for roster in roster_map.values() for p in roster]
-    apply_physical_growth(players)
-    session.commit()
-
-    _emit_event(
-        event_bus,
-        events,
-        "SEASON_LOG",
-        {"text": "Off-season begins.", "level": "header"},
-    )
-    offseason_result = run_offseason_sequence(session, event_bus=event_bus)
-    events.extend(offseason_result.events)
-
-    return SeasonEndResult(False, events)
-    hits = sum(row.hits_batted or 0 for row in rows)
+def _compute_totals(stats: Sequence[PlayerGameStats]) -> Dict[str, Any]:
+    innings_pitched = sum(float(s.innings_pitched or 0) for s in stats)
+    runs_allowed = sum(int(s.runs_allowed or 0) for s in stats)
+    home_runs = sum(int(s.homeruns or 0) for s in stats)
+    at_bats = sum(int(s.at_bats or 0) for s in stats)
+    hits = sum(int(s.hits_batted or 0) for s in stats)
 
     era = None
-    if innings > 0:
-        era = (runs_allowed * 9.0) / innings
-
-    batting_average = (hits / at_bats) if at_bats > 0 else 0.0
+    if innings_pitched > 0:
+        era = (runs_allowed * 9.0) / innings_pitched
+    batting_average = hits / at_bats if at_bats else 0.0
 
     return {
-        "innings_pitched": innings,
+        "innings_pitched": innings_pitched,
         "runs_allowed": runs_allowed,
         "home_runs": home_runs,
         "at_bats": at_bats,
@@ -149,30 +120,42 @@ from game.loop.offseason_engine import (
     }
 
 
+def _estimate_titles(school: Optional[School]) -> int:
+    if not school:
+        return 0
+    try:
+        # Use prestige as a loose proxy for historical success.
+        return max(0, int(getattr(school, "prestige", 0)) // 20)
+    except Exception:
+        return 0
+
+
 def _build_player_profile(player: Player, school: Optional[School], session) -> PlayerProfile:
-    stats = _aggregate_player_stats(session, player)
-    total_score = _estimate_total_score(player)
-    prestige = int(school.prestige or 0) if school else 0
-    growth_tag = getattr(player, "growth_tag", "Normal")
+    stats: Sequence[PlayerGameStats] = (
+        session.query(PlayerGameStats).filter_by(player_id=player.id).all()
+        if session is not None and getattr(player, "id", None) is not None
+        else []
+    )
+    totals = _compute_totals(stats)
 
-    is_two_way = bool(getattr(player, "is_two_way", False))
-    secondary = getattr(player, "secondary_position", None)
-    if secondary and secondary != player.position:
-        is_two_way = True
-
-    positions = {pos for pos in (player.position, secondary) if pos}
+    positions = set()
+    try:
+        raw_positions = getattr(player, "position", None) or getattr(player, "positions", "")
+        if isinstance(raw_positions, str):
+            positions = {p.strip() for p in raw_positions.split(",") if p.strip()}
+        elif isinstance(raw_positions, Iterable):
+            positions = {str(p) for p in raw_positions if p}
+    except Exception:
+        positions = set()
 
     return PlayerProfile(
         player=player,
         school=school,
-        position=player.position,
-        secondary_position=secondary,
         positions=positions,
-        is_two_way=is_two_way,
-        is_injured=(player.injury_status or "").lower() not in ("", "healthy"),
-        growth_tag=growth_tag,
-        total_score=total_score,
-        prestige=prestige,
+        is_two_way=bool(getattr(player, "is_two_way", False)),
+        is_injured=bool(getattr(player, "is_injured", False)),
+        growth_tag=getattr(player, "growth_tag", None),
+        prestige=int(getattr(school, "prestige", 0)) if school else 0,
         titles=_estimate_titles(school),
         velocity=_safe_attr_value(player, "velocity", ATTRIBUTE_DEFAULTS["velocity"]),
         control=_safe_attr_value(player, "control", ATTRIBUTE_DEFAULTS["control"]),
@@ -188,21 +171,35 @@ def _build_player_profile(player: Player, school: Optional[School], session) -> 
         mental=_safe_attr_value(player, "mental", ATTRIBUTE_DEFAULTS["mental"]),
         overall=_safe_attr_value(player, "overall", ATTRIBUTE_DEFAULTS["overall"]),
         clutch=_safe_attr_value(player, "clutch", ATTRIBUTE_DEFAULTS["clutch"]),
-        innings_pitched=float(stats["innings_pitched"]),
-        runs_allowed=stats["runs_allowed"],
-        home_runs=stats["home_runs"],
-        at_bats=stats["at_bats"],
-        hits=stats["hits"],
-        era=stats["era"],
-        batting_average=stats["batting_average"],
+        innings_pitched=float(totals["innings_pitched"]),
+        runs_allowed=int(totals["runs_allowed"]),
+        home_runs=int(totals["home_runs"]),
+        at_bats=int(totals["at_bats"]),
+        hits=int(totals["hits"]),
+        era=totals["era"],
+        batting_average=float(totals["batting_average"]),
     )
+
+
+@lru_cache(maxsize=1)
+def _load_epilogue_templates() -> List[Dict[str, Any]]:
+    data_path = Path(__file__).resolve().parents[2] / "data" / "epilogues.json"
+    if not data_path.exists():
+        logger.warning("Epilogue template file missing at %s", data_path)
+        return []
+    try:
+        with data_path.open("r", encoding="utf-8") as handle:
+            return json.load(handle) or []
+    except Exception:
+        logger.exception("Failed to load epilogue templates")
+        return []
 
 
 def _build_story_context(profile: PlayerProfile) -> Dict[str, Any]:
     player = profile.player
     school = profile.school
-    first = player.first_name or (player.name.split(" ")[0] if player.name else "")
-    last = player.last_name or (player.name.split(" ")[-1] if player.name else "Player")
+    first = getattr(player, "first_name", None) or (player.name.split(" ")[0] if player.name else "")
+    last = getattr(player, "last_name", None) or (player.name.split(" ")[-1] if player.name else "Player")
     school_name = school.name if school else "his school"
 
     innings = profile.innings_pitched
@@ -218,7 +215,7 @@ def _build_story_context(profile: PlayerProfile) -> Dict[str, Any]:
     else:
         titles_text = str(titles)
 
-    context = {
+    return {
         "player_first": first or last,
         "player_last": last,
         "player_full": player.name or f"{first} {last}".strip(),
@@ -228,23 +225,22 @@ def _build_story_context(profile: PlayerProfile) -> Dict[str, Any]:
         "innings_text": f"{innings:.1f}" if innings else "0.0",
         "hr_text": str(profile.home_runs),
         "avg_text": f"{batting_average:.3f}" if at_bats else ".000",
-        "color_gold": Colour.gold,
+        "color_gold": getattr(Colour, "gold", Colour.GOLD if hasattr(Colour, "GOLD") else Colour.YELLOW),
         "color_reset": Colour.RESET,
     }
-    return context
 
 
 def _resolve_colour(code: Optional[str]) -> str:
     mapping = {
-        "gold": Colour.gold,
+        "gold": getattr(Colour, "gold", getattr(Colour, "GOLD", Colour.YELLOW)),
         "cyan": Colour.CYAN,
         "green": Colour.GREEN,
         "blue": Colour.BLUE,
         "yellow": Colour.YELLOW,
         "red": Colour.RED,
         "reset": Colour.RESET,
-        "fail": Colour.FAIL,
-        "magenta": Colour.HEADER,
+        "fail": getattr(Colour, "FAIL", Colour.RED),
+        "magenta": getattr(Colour, "HEADER", Colour.MAG if hasattr(Colour, "MAG") else Colour.RESET),
     }
     if not code:
         return Colour.RESET
@@ -252,7 +248,7 @@ def _resolve_colour(code: Optional[str]) -> str:
 
 
 FIELD_MAP = {
-    "total_score": "total_score",
+    "total_score": "overall",
     "prestige": "prestige",
     "titles": "titles",
     "hr": "home_runs",
@@ -330,7 +326,7 @@ def _format_story(template: Dict[str, Any], context: Dict[str, Any]) -> str:
 
 
 def _fallback_story(player: Player, school: Optional[School]) -> Tuple[str, str, str, str]:
-    last_name = player.last_name or player.name or "Player"
+    last_name = getattr(player, "last_name", None) or player.name or "Player"
     school_name = school.name if school else "his school"
     story = (
         f"With the final out of summer, {last_name} left his glove on the field.\n"
@@ -342,7 +338,7 @@ def _fallback_story(player: Player, school: Optional[School]) -> Tuple[str, str,
 
 
 def determine_career_outcome(player: Player, school: Optional[School], session) -> Tuple[str, str, str, str]:
-    if not school and player.school_id:
+    if not school and getattr(player, "school_id", None):
         school = session.query(School).get(player.school_id)
 
     profile = _build_player_profile(player, school, session)
@@ -395,18 +391,20 @@ def _ensure_game_state(session) -> GameState:
 
 
 def run_end_of_season_logic(
-    session,
+    session: Optional[Any] = None,
     user_player_id: Optional[int] = None,
     *,
     event_bus: Optional[EventBus] = None,
 ) -> SeasonEndResult:
     events: List[Dict[str, Any]] = []
-    session = get_session()
+    owns_session = session is None
+    session = session or get_session()
+
     try:
         user_graduated = False
         if user_player_id:
             user = session.get(Player, user_player_id)
-            if user and user.year == 3:
+            if user and getattr(user, "year", None) == 3:
                 user_graduated = True
                 school = user.school or session.query(School).get(user.school_id)
                 title, desc, color, story = determine_career_outcome(user, school, session)
@@ -432,8 +430,13 @@ def run_end_of_season_logic(
             {"text": f"{graduates} players tossed their caps.", "level": "detail"},
         )
 
-        _emit_event(event_bus, events, "SEASON_LOG", {"text": "Offseason physical growth occurring...", "level": "info"})
-        roster_map = get_rosters(session, [s.id for s in session.query(School.id).all()])
+        _emit_event(
+            event_bus,
+            events,
+            "SEASON_LOG",
+            {"text": "Offseason physical growth occurring...", "level": "info"},
+        )
+        roster_map = get_rosters(session, [sid for (sid,) in session.query(School.id).all()])
         players: Iterable[Player] = [p for roster in roster_map.values() for p in roster]
         apply_physical_growth(players)
         session.commit()
@@ -466,37 +469,5 @@ def run_end_of_season_logic(
         )
         return SeasonEndResult(False, events)
     finally:
-        user_graduated = False
-        if user_player_id:
-            user = session.get(Player, user_player_id)
-            if user and user.year == 3:
-                user_graduated = True
-                school = user.school or session.query(School).get(user.school_id)
-                title, desc, color, story = determine_career_outcome(user, school, session)
-                play_ending_sequence(title, desc, color, story, event_bus=event_bus, events=events)
-
-        if user_graduated:
-            return SeasonEndResult(True, events)
-
-        _emit_event(
-            event_bus,
-            events,
-            "SEASON_LOG",
-            {"text": "=== END OF SEASON PROCESSING ===", "level": "header"},
-        )
-
-        _emit_event(event_bus, events, "SEASON_LOG", {"text": "3rd Years are graduating...", "level": "info"})
-        graduates = graduate_third_years(session)
-        session.commit()
-        _emit_event(
-            event_bus,
-            events,
-            "SEASON_LOG",
-            {"text": f"{graduates} players tossed their caps.", "level": "detail"},
-        )
-
-        _emit_event(event_bus, events, "SEASON_LOG", {"text": "Off-season begins.", "level": "header"})
-        offseason_result = run_offseason_sequence(session, event_bus=event_bus)
-        events.extend(offseason_result.events)
-
-        return SeasonEndResult(False, events)
+        if owns_session:
+            session.close()

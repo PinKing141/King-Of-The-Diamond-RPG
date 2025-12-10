@@ -14,6 +14,8 @@ from .commentary import (
     commentary_enabled,
 )
 from match_engine.pitch_definitions import PITCH_TYPES
+from game.battery_mechanics import calculate_catch_difficulty, resolve_pass_ball_check
+from game.mechanics.mechanics import get_or_create_profile
 from game.mechanics.strike_zone_renderer import build_pitch_snapshot_lines
 from core.rng import get_rng
 try:
@@ -29,7 +31,7 @@ from game.mechanics.skill_system import (
     gather_passive_skill_modifiers,
     player_has_skill,
 )
-from battery_system.battery_trust import adjust_battery_sync
+from battery_system.battery_trust import adjust_battery_sync, trust_scaled_wall
 from player_roles.fielder_controls import prompt_defensive_shift, SHIFT_LABELS
 from match_engine.confidence import (
     adjust_confidence,
@@ -1923,13 +1925,65 @@ class AtBatStateMachine:
             if state.strikes < 2 or pitch_res.description != "Foul":
                 state.strikes += 1
             if state.strikes == 3:
+                # Physics check for uncaught third strike (passed ball / wild pitch)
+                catcher = get_current_catcher(state)
+                call_ctx = getattr(state, "last_battery_call", {}) or {}
+                trust_snapshot = call_ctx.get("trust")
+                catcher_wall = trust_scaled_wall(catcher, trust_snapshot) if catcher else getattr(catcher, "catcher_ability", 50) or 50
+                try:
+                    mech = get_or_create_profile(state, self.pitcher)
+                    pitch_name = getattr(pitch_res, "pitch_name", "Fastball") or "Fastball"
+                    pitch_loc = getattr(pitch_res, "location", "Zone") or "Zone"
+                    volatility = calculate_catch_difficulty(mech, pitch_type=pitch_name, pitch_location=pitch_loc)
+                except Exception:
+                    volatility = 50.0
+                catcher_traits = tuple(getattr(catcher, "traits", []) or [])
+                catch_outcome = resolve_pass_ball_check(volatility, catcher_wall, catcher_traits) if catcher else "Clean"
+
                 _announce(self.bus, "MATCH_COMMENTARY", {
                     "text": "   >> STRIKEOUT!",
                     "context": "strikeout",
                 })
-                state.outs += 1
                 self.batter_stats["strikeouts"] += 1
                 self.pitcher_stats["strikeouts_pitched"] += 1
+                batter_reaches = False
+                outs_delta = 1
+
+                if catch_outcome in {"Pass", "Wild"}:
+                    runners = getattr(state, "runners", [None, None, None]) or [None, None, None]
+                    first_open = runners[0] is None
+                    can_run = first_open or state.outs == 2
+                    if can_run:
+                        outs_delta = 0
+                        batter_reaches = True
+                        runs_scored = 0
+                        if not first_open:
+                            runs_scored = _advance_on_wild_pitch(state)
+                        else:
+                            state.runners = runners
+                        # After any forced advances, place batter on first
+                        state.runners[0] = self.batter
+                        if runs_scored:
+                            announce_score_change(runs_scored, getattr(self.batting_team, 'name', 'Unknown School'))
+                            if state.top_bottom == "Top":
+                                state.away_score += runs_scored
+                            else:
+                                state.home_score += runs_scored
+                            self.pitcher_stats["runs_allowed"] += runs_scored
+                        _announce(self.bus, "MATCH_COMMENTARY", {
+                            "text": "   >> Strike three gets away! Batter sprints for first.",
+                            "context": "strikeout_uncaught",
+                        })
+                        adjust_battery_sync(state, self.pitcher_id, getattr(catcher, 'id', None), -0.25)
+                        if catcher:
+                            adjust_confidence(state, getattr(catcher, 'id', None), -2, reason="strikeout_uncaught", contagious=False)
+                    else:
+                        _announce(self.bus, "MATCH_COMMENTARY", {
+                            "text": "   >> Dropped third strike but batter is out (first occupied).",
+                            "context": "strikeout_uncaught_forced_out",
+                        })
+
+                state.outs += outs_delta
                 if self.last_pitch_res and getattr(self.last_pitch_res, "full_count", False):
                     _trigger_presence(state, self.pitcher, "strikeout_full_count", "Full Count K")
                 if bases_loaded_snapshot and outs_snapshot == 2:
@@ -1946,6 +2000,7 @@ class AtBatStateMachine:
                 record_pitcher_stress(state, self.pitcher_id, spike=False)
                 reset_rally_tracker(state, self.offense_team_id)
                 _note_rivalry_strikeout(state, self.batter_id, self.pitcher_id, self.last_pitch_res)
+                # Plate appearance ends even if batter reaches on uncaught third strike.
                 return "end"
             return "continue"
 

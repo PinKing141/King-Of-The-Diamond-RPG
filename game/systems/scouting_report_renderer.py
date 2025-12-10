@@ -8,9 +8,11 @@ from typing import Dict, List, Optional
 
 from database.setup_db import School, Player
 from world_sim.services.sim_data import get_roster
-from game.personnel.battery_profiles import analyze_battery_chemistry
+from game.battery_profiles import analyze_battery_chemistry
+from battery_system.battery_profiles import get_battery_identity
 from battery_system.battery_trust import summarize_battery_pair
 from ui.ui_core import clear_screen, colored_bar, simple_bar, panel, BAR_WIDTH
+from ui.ui_display import Colour
 
 
 def _team_overview_lines(name: str, prefecture: str, style: str, rank_text: str) -> List[str]:
@@ -90,18 +92,24 @@ def render_level_3(school: School, full_ratings: Dict[str, int], roster: List[Di
             setattr(p_stub, key, val)
         for key, val in catcher.items():
             setattr(c_stub, key, val)
-        title, desc = analyze_battery_chemistry(p_stub, c_stub, trust_score=50)
         state_stub = _Stub()
         state_stub.fast_sim = True  # avoid DB lookups during scouting render
         chemistry = summarize_battery_pair(state_stub, p_stub, c_stub)
+        trust_val = chemistry.get("trust", 50) if chemistry else 50
+        title, desc, color = analyze_battery_chemistry(p_stub, c_stub, trust_score=trust_val, mech_profile=None)
+        identity_title, identity_color = get_battery_identity(p_stub, c_stub, trust_val, None)
         print("\nBATTERY CHEMISTRY")
         print(f"  {title}")
         print(f"  {desc}")
+        if identity_title:
+            col = identity_color or Colour.RESET
+            print(f"  Archetype: {col}{identity_title}{Colour.RESET}")
         if chemistry:
             label = chemistry.get("label", "Unfamiliar")
             trust = chemistry.get("trust", 50)
             wall = chemistry.get("wall", 0)
-            print(f"  Archetype: {label} | Trust {int(trust)} | Wall {int(wall)}")
+            sync = chemistry.get("sync", 0.0)
+            print(f"  Sync: {label} | Trust {int(trust)} | Wall {int(wall)} | Sync {sync:+.2f}")
     print("\nMATCHUP STRENGTHS")
     for s in tendencies.get("strengths", []):
         print(f"  • {s}")

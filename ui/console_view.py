@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 import time
+import sys
+import os
 from typing import Any, List, Optional
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import tty
+    import termios
 
 from core.io_interface import IOInterface
 from core.renderer import ConsoleRenderer
@@ -129,7 +137,85 @@ class ConsoleView(SeasonView):
     def prompt_yes_no(self, prompt: str) -> bool:
         return self.ui.confirm(prompt)
 
-    # ---------- menus ----------
+    def _prompt_yes_no_menu(self, question: str) -> bool:
+        """Arrow-based yes/no prompt with inline pointer."""
+        options = ["YES", "NO"]
+
+        def render(idx: int) -> None:
+            self.ui.clear()
+            self.show_banner()
+            line = "    ".join([f"> {opt}" if i == idx else f"  {opt}" for i, opt in enumerate(options)])
+            panel("Confirm", [question, "", line, "Use arrows + Enter. Esc = No"], theme=self.theme, width=70)
+
+        idx = 0
+        render(idx)
+
+        if os.name == "nt":
+            while True:
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    return idx == 0
+                if ch == "\x1b":
+                    self.ui.clear()
+                    return False
+                if ch in ("\xe0", "\x00"):
+                    nxt = msvcrt.getwch()
+                    if nxt in ("H", "K"):
+                        idx = (idx - 1) % len(options)
+                        render(idx)
+                    elif nxt in ("P", "M"):
+                        idx = (idx + 1) % len(options)
+                        render(idx)
+                    continue
+        else:
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while True:
+                    ch = sys.stdin.read(1)
+                    if ch in ("\r", "\n"):
+                        return idx == 0
+                    if ch == "\x1b":
+                        seq = sys.stdin.read(2)
+                        if seq == "[A":  # up
+                            idx = (idx - 1) % len(options)
+                            render(idx)
+                            continue
+                        if seq == "[B":  # down
+                            idx = (idx + 1) % len(options)
+                            render(idx)
+                            continue
+                        if seq == "[D":  # left
+                            idx = (idx - 1) % len(options)
+                            render(idx)
+                            continue
+                        if seq == "[C":  # right
+                            idx = (idx + 1) % len(options)
+                            render(idx)
+                            continue
+                        self.ui.clear()
+                        return False
+                    if ch == "q":
+                        self.ui.clear()
+                        return False
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        self.ui.clear()
+        return idx == 0
+
+    def prompt_new_career(self) -> bool:
+        """Confirm starting a new career while keeping the current world."""
+        question = (
+            "Start a new career? Your current lead will remain in the world as an AI teammate."
+        )
+        return self._prompt_yes_no_menu(question)
+
+    def prompt_rebuild_world(self) -> bool:
+        """Confirm rebuilding the world database (destructive)."""
+        question = "Rebuild the world database? This will delete existing saves."
+        return self._prompt_yes_no_menu(question)
+
     def prompt_weekly_menu(self, *, scouting_available: bool, context: Any, session: Any, state: Any) -> str:
         while True:
             self.show_banner()
@@ -245,64 +331,91 @@ class ConsoleView(SeasonView):
 
     # ---------- main menu helpers ----------
     def prompt_main_menu(self, *, player_info: str, has_save: bool) -> str:
-        self.show_banner()
         theme = choose_theme(self.theme)
-        menu_lines = [
-            f"{theme['muted']}Current Active Game: {Colour.CYAN}{player_info}{Colour.RESET}",
-            "",
-            f"{theme['accent']}[1]{Colour.RESET} Continue Active Game",
-            f"{theme['accent']}[2]{Colour.RESET} Load Game (Select Slot)",
-            f"{theme['accent']}[3]{Colour.RESET} New Career (Reuse Current World)",
-            f"{theme['accent']}[4]{Colour.RESET} Rebuild World (Fresh Generation)",
-            f"{theme['accent']}[5]{Colour.RESET} Exit",
+
+        options = [
+            "Continue Active Game",
+            "Load Game (Select Slot)",
+            "New Career (Reuse Current World)",
+            "Rebuild World (Fresh Generation)",
+            "Exit",
         ]
-        panel("Main Menu", menu_lines, theme=self.theme, width=70)
-        return _safe_input("\nSelect: ", ui=self.ui).strip()
 
-    def prompt_rebuild_world(self) -> bool:
-        return self.prompt_yes_no(f"{Colour.RED}Rebuild entire world? This deletes all progress. (y/n): {Colour.RESET}")
+        def render(idx: int, *, first: bool, block_height: int = 0) -> int:
+            lines = [f"{theme['muted']}Current Active Game: {Colour.CYAN}{player_info}{Colour.RESET}", ""]
+            for i, label in enumerate(options):
+                pointer = ">" if i == idx else " "
+                lines.append(f" {pointer} {label}")
 
-    def prompt_new_career(self) -> bool:
-        return self.prompt_yes_no("Create a new first-year in the existing world? (y/n): ")
+            if first:
+                self.ui.clear()
+                self.show_banner()
+            else:
+                if block_height > 0:
+                    sys.stdout.write(f"\033[{block_height}F")
 
-    def announce_world_gen(self) -> None:
-        self.ui.log(f"{Colour.WARNING}World not populated. Running World Generator...{Colour.RESET}", level="warning")
+            panel("Main Menu", lines, theme=self.theme, width=70)
+            self.ui.log("Use arrows + Enter. Esc to exit.")
+            return len(lines) + 5  # panel lines + instruction
 
-    def announce_world_gen_complete(self) -> None:
-        self.ui.log(f"{Colour.GREEN}World Generation Complete.{Colour.RESET}")
-        self.ui.wait(1)
+        def select_option() -> int:
+            idx = 0
+            block_height = render(idx, first=True)
+            if os.name == "nt":
+                while True:
+                    ch = msvcrt.getwch()
+                    if ch.isdigit():
+                        num = int(ch)
+                        if 1 <= num <= len(options):
+                            return num - 1
+                    if ch in ("\r", "\n"):
+                        return idx
+                    if ch == "\x1b":
+                        self.ui.clear()
+                        return len(options) - 1
+                    if ch in ("\xe0", "\x00"):
+                        nxt = msvcrt.getwch()
+                        if nxt == "H":  # up
+                            idx = (idx - 1) % len(options)
+                        elif nxt == "P":  # down
+                            idx = (idx + 1) % len(options)
+                        block_height = render(idx, first=False, block_height=block_height)
+                        continue
+            else:
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
+                try:
+                    tty.setraw(fd)
+                    while True:
+                        ch = sys.stdin.read(1)
+                        if ch.isdigit():
+                            num = int(ch)
+                            if 1 <= num <= len(options):
+                                return num - 1
+                        if ch in ("\r", "\n"):
+                            return idx
+                        if ch == "\x1b":
+                            seq = sys.stdin.read(2)
+                            if seq == "[A":  # up
+                                idx = (idx - 1) % len(options)
+                            elif seq == "[B":  # down
+                                idx = (idx + 1) % len(options)
+                            else:
+                                self.ui.clear()
+                                return len(options) - 1
+                            block_height = render(idx, first=False, block_height=block_height)
+                            continue
+                        if ch == "q":
+                            self.ui.clear()
+                            return len(options) - 1
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            return idx
 
-    def announce_new_career_ready(self) -> None:
-        self.ui.log(f"{Colour.GREEN}New career ready. Jumping into the season...{Colour.RESET}")
-
-    # ---------- decision request bridge ----------
-    def handle_decision_requests(self, requests: list) -> Optional[str]:
-        """Bridge DecisionRequest flow back to existing console prompts."""
-
-        for req in requests:
-            if not isinstance(req, DecisionRequest):
-                continue
-            if req.kind == "prompt" and req.message == "weekly_menu":
-                payload = req.payload or {}
-                scouting_available = bool(payload.get("scouting_available"))
-                return self.prompt_weekly_menu(
-                    scouting_available=scouting_available,
-                    context=payload.get("context"),
-                    session=payload.get("session"),
-                    state=payload.get("state"),
-                )
-            if req.kind == "prompt" and req.message == "command_menu":
-                payload = req.payload or {}
-                return self.prompt_command_menu(
-                    context=payload.get("context"),
-                    session=payload.get("session"),
-                    state=payload.get("state"),
-                )
-        return None
-
-    def announce_player_created(self) -> None:
-        self.ui.log(f"{Colour.GREEN}Player Created. Welcome to High School Baseball.{Colour.RESET}")
-        self.ui.wait(1)
+        choice_idx = select_option()
+        if choice_idx == len(options) - 1:
+            self.ui.clear()
+        return str(choice_idx + 1)
 
     def announce_character_creation(self) -> None:
         self.ui.log(f"\n{Colour.CYAN}No player data found. Starting Character Creation...{Colour.RESET}")

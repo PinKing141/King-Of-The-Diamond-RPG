@@ -5,11 +5,20 @@ import time
 import logging
 from typing import Optional, List, Tuple, Dict, Any
 
+if os.name == "nt":
+    import msvcrt  # Windows-only single-key input
+else:
+    import tty
+    import termios
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
 from core.io_interface import IOInterface
+
+# Simple ANSI clear screen to reduce clutter between prompts
+CLEAR_SCREEN = "\033[2J\033[H"
 
 # Add root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,27 +38,77 @@ LOGGER = logging.getLogger(__name__)
 
 # --- GROWTH STYLE DEFINITIONS ---
 GROWTH_STYLE_INFO = {
-    "Power Pitcher": {"desc": "Overwhelm batters with raw heat.", "pros": "+Vel, +Sta", "cons": "-Ctrl"},
-    "Technical Pitcher": {"desc": "Precision over power.", "pros": "+Ctrl, +Brk", "cons": "-Vel"},
-    "Fierce Pitcher": {"desc": "Thrives under pressure.", "pros": "+Guts, +Vel(Clutch)", "cons": "-Stability"},
-    "Marathon Pitcher": {"desc": "Built to throw 150 pitches.", "pros": "+Stamina, +Stability", "cons": "-Vel cap"},
-    "Offensive Catcher": {"desc": "Big bat behind the plate.", "pros": "+Pwr, +Con", "cons": "-Def"},
-    "Defensive General": {"desc": "Field commander.", "pros": "+Def, +Trust", "cons": "-Batting"},
-    "Power Hitter": {"desc": "Swing for the fences.", "pros": "+Pwr, +Intimidation", "cons": "-Con, -Spd"},
-    "Speedster": {"desc": "Chaos on the basepaths.", "pros": "+Spd, +Fld", "cons": "-Pwr"},
-    "Defensive Specialist": {"desc": "Vacuum cleaner in the field.", "pros": "+Fld, +Reaction", "cons": "-Batting"},
-    "Balanced": {"desc": "Jack of all trades.", "pros": "No weakness", "cons": "No specialty"}
+    "Power Pitcher": {
+        "desc": "Overwhelm batters with raw heat and late life.",
+        "pros": "+Velocity scaling, +Stamina headroom, intimidating fastball",
+        "cons": "-Fine control early, needs reps to locate secondary pitches",
+        "detail": "Fastball velocity grows faster per year. Break and control develop slower, so early outings may be wild until reps catch up.",
+    },
+    "Technical Pitcher": {
+        "desc": "Precision first: dot corners, mix speeds, steal strikes.",
+        "pros": "+Control growth, +Break shaping, efficient pitch counts",
+        "cons": "-Top-end velocity ceiling, punished if command slips",
+        "detail": "Command upgrades cost less training. Offspeed and breaking pitches mature quickly, letting you craft a deep repertoire early.",
+    },
+    "Fierce Pitcher": {
+        "desc": "Big-moment specialist who spikes performance under pressure.",
+        "pros": "+Guts, late-inning velocity bump, rallies momentum",
+        "cons": "-Stability between outings, streaky control",
+        "detail": "Clutch situations grant a small velocity surge and composure bonus. Off days can dip command, so routine and confidence matter.",
+    },
+    "Marathon Pitcher": {
+        "desc": "Built to throw 140+ pitches and still finish innings.",
+        "pros": "+Stamina curve, +Stability, slower fatigue gain",
+        "cons": "-Lower peak velocity cap, needs defense behind",
+        "detail": "Fatigue drains slower per pitch. Recovery between starts is faster, but pure mph gains plateau earlier than other archetypes.",
+    },
+    "Offensive Catcher": {
+        "desc": "Middle-of-the-order catcher with leadership at the plate.",
+        "pros": "+Power and Contact growth, boosts lineup morale",
+        "cons": "-Defensive ceiling lags, framing/throw-outs take longer",
+        "detail": "Bat-first path that can anchor cleanup spots. Defensive tools improve, but not as quickly as offensive gains unless you invest reps there.",
+    },
+    "Defensive General": {
+        "desc": "Field commander who controls the run game and staff.",
+        "pros": "+Defense, +Trust with pitchers, blocks and framing shine",
+        "cons": "-Bat lags behind, power growth is modest",
+        "detail": "Pitch-calling and framing bonuses scale quicker. Offensive gains are steadier but muted, so expect to hit lower in the order early on.",
+    },
+    "Power Hitter": {
+        "desc": "Launch balls into the seats with leverage and lift.",
+        "pros": "+Raw Power, +Intimidation, rewards perfect swings",
+        "cons": "-Contact consistency, -Speed, vulnerable to offspeed",
+        "detail": "Power grades climb faster per training point. Whiff risk is higher until contact skills catch up; conditioning helps offset slow-footedness.",
+    },
+    "Speedster": {
+        "desc": "Table-setter and chaos agent on the basepaths.",
+        "pros": "+Speed ceiling, +Fielding range, elite steal potential",
+        "cons": "-Power ceiling, needs on-base skills to shine",
+        "detail": "Acceleration and steal success scale quickly. Gap power can grow, but true home-run pop lags—focus on contact and reads to maximize value.",
+    },
+    "Defensive Specialist": {
+        "desc": "Vacuum cleaner with gold-glove ambitions.",
+        "pros": "+Fielding instincts, +Reaction, steady throwing gains",
+        "cons": "-Batting impact early, slower slugging growth",
+        "detail": "Glove skills level fast, shrinking error rates and improving range. Bat develops, but expect to hit toward the bottom until reps pile up.",
+    },
+    "Balanced": {
+        "desc": "Jack of all trades who stays flexible.",
+        "pros": "No glaring weakness, adapts to team needs, steady gains",
+        "cons": "No extreme specialty, peak skills arrive later",
+        "detail": "Growth is even across tools, letting you pivot roles. Doesn’t spike a single stat, but avoids major holes and plays well in any lineup slot.",
+    },
 }
 
 STEP_TITLES = {
     0: "Name Entry",
     1: "Select Position",
-    2: "Starter Trait Gacha",
-    3: "Roll Base Attributes",
-    4: "Choose Growth Style",
-    5: "Pick Hometown",
-    6: "Select School",
-    7: "Configure Pitch Arsenal",
+    2: "Roll Base Attributes",
+    3: "Choose Growth Style",
+    4: "Pick Hometown",
+    5: "Select School",
+    6: "Configure Pitch Arsenal",
+    7: "Traits Gacha",
     8: "Confirm Profile",
 }
 TOTAL_STEPS = max(STEP_TITLES.keys()) + 1
@@ -194,13 +253,119 @@ def _render_city_directory(prefecture: str, cities: List[Dict[str, Any]], column
 
     col_width = 84 // max(columns, 1)
     for idx, entry in enumerate(cities, start=1):
-        label = f"{idx:>2}. {entry['name']} ({entry['school_count']})"
+        label = f"{entry['name']} ({entry['school_count']})"
         print(label.ljust(col_width), end="")
         if idx % columns == 0:
             print()
     if len(cities) % columns != 0:
         print()
     print(f"Cities with active programs: {len(cities)}")
+
+
+def _prefecture_grid(prefectures: List[str], cols: int = 3, col_width: int = 24, *, highlight: Optional[int] = None) -> List[str]:
+    lines: List[str] = []
+    border = "+" + "+".join(["-" * col_width] * cols) + "+"
+    lines.append(border)
+    for i in range(0, len(prefectures), cols):
+        cells = []
+        for j in range(cols):
+            idx = i + j
+            if idx < len(prefectures):
+                pointer = ">" if highlight == idx else " "
+                label = f" {pointer} {prefectures[idx]}"
+            else:
+                label = ""
+            cells.append(label.ljust(col_width))
+        lines.append("|" + "|".join(cells) + "|")
+        lines.append(border)
+    return lines
+
+
+def _city_grid(cities: List[Dict[str, Any]], cols: int = 2, col_width: int = 30, *, highlight: Optional[int] = None) -> List[str]:
+    lines: List[str] = []
+    border = "+" + "+".join(["-" * col_width] * cols) + "+"
+    lines.append(border)
+    for i in range(0, len(cities), cols):
+        cells = []
+        for j in range(cols):
+            idx = i + j
+            if idx < len(cities):
+                name = cities[idx].get("name", "--")
+                count = cities[idx].get("school_count", "")
+                pointer = ">" if highlight == idx else " "
+                label = f" {pointer} {name} ({count})" if count else f" {pointer} {name}"
+            else:
+                label = ""
+            cells.append(label.ljust(col_width))
+        lines.append("|" + "|".join(cells) + "|")
+        lines.append(border)
+    return lines
+
+
+def _options_grid(
+    options: List[str],
+    cols: int = 2,
+    col_width: int = 32,
+    *,
+    start_index: int = 1,
+    highlight: Optional[int] = None,
+) -> List[str]:
+    lines: List[str] = []
+    border = "+" + "+".join(["-" * col_width] * cols) + "+"
+    lines.append(border)
+    for i in range(0, len(options), cols):
+        cells = []
+        for j in range(cols):
+            idx = i + j
+            if idx < len(options):
+                pointer = ">" if highlight == idx else " "
+                label = f" {pointer} {options[idx]}"
+            else:
+                label = ""
+            cells.append(label.ljust(col_width))
+        lines.append("|" + "|".join(cells) + "|")
+        lines.append(border)
+    return lines
+
+
+def _pitch_grid(
+    pitches: List[str],
+    selected: List[str],
+    cols: int = 2,
+    col_width: int = 36,
+    highlight: Optional[int] = None,
+) -> List[str]:
+    selected_set = {p.lower() for p in selected}
+    lines: List[str] = []
+    border = "+" + "+".join(["-" * col_width] * cols) + "+"
+    lines.append(border)
+    for i in range(0, len(pitches), cols):
+        cells = []
+        for j in range(cols):
+            idx = i + j
+            if idx < len(pitches):
+                name = pitches[idx]
+                mark = "[x]" if name.lower() in selected_set else "[ ]"
+                pointer = ">" if highlight == idx else " "
+                label = f"{pointer} {mark} {name}"
+            else:
+                label = ""
+            cells.append(label.ljust(col_width))
+        lines.append("|" + "|".join(cells) + "|")
+        lines.append(border)
+    return lines
+
+
+def _growth_detail_lines(style: str) -> List[str]:
+    info = GROWTH_STYLE_INFO.get(style, {})
+    desc = info.get("desc") or "No description available."
+    pros = info.get("pros") or "--"
+    cons = info.get("cons") or "--"
+    detail = info.get("detail") or ""
+    lines = [f"{style} Overview:", f"Summary: {desc}", f"Upside: {pros}", f"Tradeoffs: {cons}"]
+    if detail:
+        lines.extend(["", detail])
+    return lines
 
 
 def get_city_matches(session: Session, prefecture: str, search_term: str = "") -> List[Dict[str, Any]]:
@@ -221,26 +386,124 @@ def _bar(value: Optional[int], width: int = 20) -> str:
     return ("█" * filled) + ("░" * (width - filled))
 
 
+def _stat_lines(position: str, stats: dict) -> List[str]:
+    """Render a quick ASCII stat block for the current roll."""
+    lines: List[str] = []
+    if not stats:
+        return lines
+
+    general_fields = [
+        ("Contact", stats.get("contact")),
+        ("Power", stats.get("power")),
+        ("Speed", stats.get("speed")),
+        ("Fielding", stats.get("fielding")),
+        ("Throwing", stats.get("throwing")),
+    ]
+
+    lines.append("-- GENERAL --")
+    for label, value in general_fields:
+        bar = _bar(value)
+        val_txt = f"{int(value):>3}" if value is not None else "--"
+        lines.append(f" {label:<10} {bar}  {val_txt}")
+
+    if position == "Pitcher":
+        lines.append("")
+        lines.append("-- PITCHING --")
+        pitch_fields = [
+            ("Velocity", stats.get("velocity")),
+            ("Control", stats.get("control")),
+            ("Movement", stats.get("movement")),
+            ("Stamina", stats.get("stamina")),
+        ]
+        for label, value in pitch_fields:
+            bar = _bar(value)
+            val_txt = f"{int(value):>3}" if value is not None else "--"
+            lines.append(f" {label:<10} {bar}  {val_txt}")
+        if stats.get("arm_slot"):
+            lines.append(f" Arm Slot   {stats['arm_slot']}")
+
+    return lines
+
+
 def _render_creation_banner(step: int, data: dict, subtitle: str) -> None:
     # Deprecated direct rendering retained for legacy CLI usage.
+    lines = _banner_lines(step, data, subtitle, preview=None)
+    for line in lines:
+        print(line)
+
+
+def _banner_lines(step: int, data: dict, subtitle: str, preview: Optional[List[str]] = None) -> List[str]:
     stage_index = min(step, TOTAL_STEPS - 1)
     stage = stage_index + 1
-    print(f"{'═' * 84}")
+    border = "═" * 84
     title = f"CHARACTER CREATION  |  STEP {stage}/{TOTAL_STEPS}"
-    print(title.center(84))
-    print(subtitle.center(84))
-    print(f"{'═' * 84}")
 
-    full_name = " ".join(part for part in [data['last_name'], data['first_name']] if part).strip()
+    full_name = " ".join(part for part in [data.get('last_name'), data.get('first_name')] if part).strip()
+    focus = data.get('specific_pos') or '--'
+    pos = data.get('position') or '--'
+    hometown = data.get('hometown') or '--'
+    school_obj = data.get('school')
+    school_name = getattr(school_obj, 'name', None) if school_obj else None
+
     summary = [
         f"Name: {full_name or '--'}",
-        f"Focus: {data.get('specific_pos') or '--'} ({data.get('position') or '--'})",
-        f"Hometown: {data.get('hometown') or '--'}",
-        f"School: {(data.get('school').name if data.get('school') else '--')}"
+        f"Focus: {focus} ({pos})",
+        f"Hometown: {hometown}",
+        f"School: {school_name or '--'}",
     ]
-    for line in summary:
-        print(line.ljust(84))
-    print("─" * 84)
+
+    lines = [
+        border,
+        title.center(84),
+        subtitle.center(84),
+        border,
+        *[line.ljust(84) for line in summary],
+    ]
+    if preview:
+        lines.extend(line.ljust(84) for line in preview)
+    lines.append("─" * 84)
+    return lines
+
+
+def _preview_lines(state: "CreatePlayerState") -> List[str]:
+    """Compact player preview always shown at the top of the flow."""
+
+    lines: List[str] = []
+    name = f"{state.last_name} {state.first_name}".strip() or "--"
+    role = state.specific_pos or state.position or "--"
+    growth = state.growth_style or "--"
+    hometown = state.hometown or "--"
+    school = getattr(state.school, "name", "--") if state.school else "--"
+
+    lines.append(f"PREVIEW :: {name} | {role} | {growth}")
+    lines.append(f"Home: {hometown} | School: {school}")
+
+    stats = state.stats or {}
+    if stats:
+        if state.position == "Pitcher":
+            core = [
+                f"V{stats.get('velocity','--')}",
+                f"C{stats.get('control','--')}",
+                f"M{stats.get('movement','--')}",
+                f"St{stats.get('stamina','--')}",
+            ]
+            slot = stats.get("arm_slot")
+            if slot:
+                core.append(slot)
+        else:
+            core = [
+                f"Con{stats.get('contact','--')}",
+                f"Pow{stats.get('power','--')}",
+                f"Spd{stats.get('speed','--')}",
+                f"Fld{stats.get('fielding','--')}",
+                f"Arm{stats.get('throwing','--')}",
+            ]
+        lines.append("Stats: " + " | ".join(str(c) for c in core))
+
+    if state.position == "Pitcher" and state.pitch_arsenal:
+        lines.append("Pitches: " + ", ".join(_dedupe_preserve_order(state.pitch_arsenal)))
+    lines.append("")  # spacer
+    return lines
 
 
 def _render_stat_overview(position: str, stats: dict) -> None:
@@ -340,21 +603,60 @@ def roll_stats(position, is_monster=False):
     # ---------------------------
     #  Player Skill Stats
     # ---------------------------
-    stats['stamina'] = get_val()
-
-    stats['control'] = get_val() if position == "Pitcher" else 10
-    stats['movement'] = get_val() if position == "Pitcher" else 0
-
-    stats['power'] = get_val()
-    stats['contact'] = get_val()
-    stats['speed'] = get_val()
-    stats['fielding'] = get_val()
-    stats['throwing'] = get_val()
-
+    # Core attributes tuned per position
     if position == "Pitcher":
         stats['velocity'] = random.randint(125, 138) + (10 if is_monster else 0)
+        stats['control'] = get_val(10)
+        stats['movement'] = get_val(10)
+        stats['stamina'] = get_val(10)
+        stats['power'] = get_val(-5)
+        stats['contact'] = get_val(-5)
+        stats['speed'] = get_val(-5)
+        stats['fielding'] = get_val()
+        stats['throwing'] = get_val(5)
         stats['arm_slot'] = roll_arm_slot("pitching")
-    else:
+    elif position == "Catcher":
+        stats['stamina'] = get_val(5)
+        stats['control'] = get_val(-5)
+        stats['movement'] = get_val(-5)
+        stats['power'] = get_val(-5)
+        stats['contact'] = get_val(5)
+        stats['speed'] = get_val(-10)
+        stats['fielding'] = get_val(10)
+        stats['throwing'] = get_val(15)
+        stats['velocity'] = 0
+        stats['arm_slot'] = "Three-Quarters"
+    elif position in {"First Base", "Third Base"}:
+        stats['stamina'] = get_val()
+        stats['control'] = get_val(-10)
+        stats['movement'] = get_val(-10)
+        stats['power'] = get_val(15)
+        stats['contact'] = get_val(5)
+        stats['speed'] = get_val(-10)
+        stats['fielding'] = get_val()
+        stats['throwing'] = get_val()
+        stats['velocity'] = 0
+        stats['arm_slot'] = "Three-Quarters"
+    elif position in {"Second Base", "Shortstop"}:
+        stats['stamina'] = get_val()
+        stats['control'] = get_val(-5)
+        stats['movement'] = get_val(-5)
+        stats['power'] = get_val(-5)
+        stats['contact'] = get_val(5)
+        stats['speed'] = get_val(10)
+        stats['fielding'] = get_val(15)
+        stats['throwing'] = get_val(5)
+        stats['velocity'] = 0
+        stats['arm_slot'] = "Three-Quarters"
+    else:  # Outfield
+        stats['stamina'] = get_val()
+        stats['control'] = get_val(-5)
+        stats['movement'] = get_val(-5)
+        stats['power'] = get_val(10)
+        stats['contact'] = get_val()
+        stats['speed'] = get_val(15)
+        stats['fielding'] = get_val(5)
+        stats['throwing'] = get_val(10)
         stats['velocity'] = 0
         stats['arm_slot'] = "Three-Quarters"
 
@@ -441,6 +743,27 @@ def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Option
 
     picks = _dedupe_preserve_order([p for p in (pitch_names or []) if p in PITCH_SELECTION_POOL])
     if not picks:
+        picks = list(DEFAULT_PITCH_ARSENAL)
+
+    # Clamp to allowed limits
+    arsenal = picks[:MAX_PITCHES] if picks else list(DEFAULT_PITCH_ARSENAL)
+    quality_seed = int((stats.get("control", 50) + stats.get("velocity", 50)) / 2)
+    break_seed = int(stats.get("movement", 50) / 2)
+
+    for name in arsenal:
+        repertoire_row = PitchRepertoire(
+            player_id=getattr(player, "id", None),
+            pitch_name=name,
+            quality=max(30, min(95, quality_seed)),
+            break_level=max(0, min(90, break_seed)),
+            mastery_xp=0,
+            mastery_level=0,
+            signature_ready=False,
+            signature_unlocked=False,
+        )
+        session.add(repertoire_row)
+    session.flush()
+
 # ------------------------------------------------------
 # DECISION-BASED CHARACTER CREATION ENGINE
 # ------------------------------------------------------
@@ -481,9 +804,16 @@ class CreatePlayerEngine:
         return DecisionResult(summary=None, requests=[request], done=False, data=self._serialize_state())
 
     def _log_and_prompt(self, lines: List[str], prompt: DecisionRequest) -> DecisionResult:
-        requests = [DecisionRequest(kind="log", message=line) for line in lines]
+        # Clear screen first to avoid clutter, then emit lines and prompt.
+        requests = [DecisionRequest(kind="log", message=CLEAR_SCREEN)]
+        requests.extend(DecisionRequest(kind="log", message=line) for line in lines)
         requests.append(prompt)
         return DecisionResult(summary=None, requests=requests, done=False, data=self._serialize_state())
+
+    def _with_banner(self, subtitle: str, body: List[str]) -> List[str]:
+        preview = _preview_lines(self.state)
+        header = _banner_lines(self.step, self.state.__dict__, subtitle, preview=preview)
+        return header + body
 
     def _serialize_state(self) -> Dict[str, Any]:
         return {
@@ -495,6 +825,9 @@ class CreatePlayerEngine:
     def advance(self, response: Optional[str] = None) -> DecisionResult:
         # Handle response to previous prompt
         if self._awaiting:
+            # Map ESC token to the common back value "0" so handlers do not need to change.
+            if response == "__ESC__":
+                response = "0"
             handler = getattr(self, f"_handle_{self._awaiting}")
             handler(response or "")
             self._awaiting = None
@@ -513,17 +846,17 @@ class CreatePlayerEngine:
             if self.step == 1:
                 return self._step_position()
             if self.step == 2:
-                return self._step_starter_trait()
-            if self.step == 3:
                 return self._step_stats()
-            if self.step == 4:
+            if self.step == 3:
                 return self._step_growth_style()
-            if self.step == 5:
+            if self.step == 4:
                 return self._step_hometown()
-            if self.step == 6:
+            if self.step == 5:
                 return self._step_school()
-            if self.step == 7:
+            if self.step == 6:
                 return self._step_pitch_arsenal()
+            if self.step == 7:
+                return self._step_trait_roll()
             if self.step == 8:
                 return self._step_finalize()
             return DecisionResult(summary="Invalid step", requests=[], done=True, data=self._serialize_state())
@@ -536,17 +869,36 @@ class CreatePlayerEngine:
 
         if phase == "first":
             self._awaiting = "name_first"
-            return self._prompt("First Name: ")
+            err = self._scratch.pop("name_error", None)
+            body = ["Enter first name to populate the preview."]
+            if err:
+                body.append(f"Error: {err}")
+            lines = self._with_banner(STEP_TITLES.get(0, "Name Entry"), body)
+            return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="First Name: "))
         if phase == "last":
             self._awaiting = "name_last"
-            return self._prompt("Last Name: ")
+            body = ["Enter last name to complete the preview."]
+            lines = self._with_banner(STEP_TITLES.get(0, "Name Entry"), body)
+            return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Last Name: "))
         if phase == "confirm":
             self._awaiting = "name_confirm"
             full = f"{self.state.last_name} {self.state.first_name}".strip()
-            return self._log_and_prompt(
-                [f"Name: {full or '--'}"],
-                DecisionRequest(kind="prompt", message="Continue with this name? (y/n)", options=["y", "n"], default="n"),
+            prefix = self._with_banner(
+                STEP_TITLES.get(0, "Name Entry"), [f"Name: {full or '--'}", "Confirm this name?"]
             )
+            suffix = ["Use arrows + Enter; Esc to go back."]
+            requests = [DecisionRequest(kind="log", message=CLEAR_SCREEN)]
+            requests.append(
+                DecisionRequest(
+                    kind="prompt",
+                    message="",
+                    options=["YES", "NO"],
+                    default="1",
+                    input_mode="binary_yes_no",
+                    payload={"prefix": prefix, "suffix": suffix},
+                )
+            )
+            return DecisionResult(summary=None, requests=requests, done=False, data=self._serialize_state())
         # done
         self._scratch.pop("name_phase", None)
         self.step += 1
@@ -568,7 +920,7 @@ class CreatePlayerEngine:
             self._scratch["name_phase"] = "first"
             self._scratch["name_error"] = msg
             return
-        if (value or "").lower().startswith("y"):
+        if value in {"1", "yes", "YES"} or (value or "").lower().startswith("y"):
             self._scratch.pop("name_phase", None)
             self.step += 1
         else:
@@ -576,6 +928,8 @@ class CreatePlayerEngine:
 
     # --- Step 1: position ---
     def _step_position(self) -> DecisionResult:
+        phase = self._scratch.get("position_phase", "choose")
+        candidate = self._scratch.get("position_candidate")
         positions = [
             "Pitcher",
             "Catcher",
@@ -587,12 +941,50 @@ class CreatePlayerEngine:
             "Center Field",
             "Right Field",
         ]
-        lines = ["Select Player Position"] + [f"{idx}. {label}" for idx, label in enumerate(positions, start=1)] + ["0. Back"]
-        self._awaiting = "position_pick"
-        return self._log_and_prompt(
-            lines,
-            DecisionRequest(kind="prompt", message="Choice: ", default="0"),
+        if phase == "confirm" and candidate:
+            lines = [f"Confirm Position: {candidate}"]
+            prefix = self._with_banner(STEP_TITLES.get(1, "Select Position"), lines)
+            suffix = ["Use arrows + Enter to confirm or change."]
+            self._awaiting = "position_confirm"
+            return DecisionResult(
+                summary=None,
+                requests=[
+                    DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                    DecisionRequest(
+                        kind="prompt",
+                        message="",
+                        options=["Confirm", "Change"],
+                        default="1",
+                        input_mode="menu_grid",
+                        payload={"prefix": prefix, "suffix": suffix, "cols": 2, "col_width": 22},
+                    ),
+                ],
+                done=False,
+                data=self._serialize_state(),
+            )
+
+        prefix = self._with_banner(
+            STEP_TITLES.get(1, "Select Position"), ["Select Player Position (Esc to go back)"]
         )
+        suffix = ["Use arrows + Enter to select. Esc disabled to prevent reroll hopping."]
+        self._awaiting = "position_pick"
+        requests = [DecisionRequest(kind="log", message=CLEAR_SCREEN)]
+        requests.append(
+            DecisionRequest(
+                kind="prompt",
+                message="",
+                options=positions,
+                default="1",
+                input_mode="menu_grid",
+                payload={
+                    "prefix": prefix,
+                    "suffix": suffix,
+                    "cols": 3,
+                    "col_width": 26,
+                },
+            )
+        )
+        return DecisionResult(summary=None, requests=requests, done=False, data=self._serialize_state())
 
     def _handle_position_pick(self, value: str) -> None:
         if value == "0":
@@ -614,24 +1006,39 @@ class CreatePlayerEngine:
         pick = int(value) - 1
         if 0 <= pick < len(positions):
             specific = positions[pick]
-            self.state.specific_pos = specific
-            if specific == "Pitcher":
-                self.state.position = "Pitcher"
-            elif specific == "Catcher":
-                self.state.position = "Catcher"
-            elif specific in {"First Base", "Second Base", "Third Base", "Shortstop"}:
-                self.state.position = "Infielder"
-            else:
-                self.state.position = "Outfielder"
-            if self.state.position != "Pitcher":
-                self.state.pitch_arsenal = []
-                self.state.starter_trait = None
-            else:
-                self.state.starter_trait = None
-            self.step += 1
+            self._scratch["position_candidate"] = specific
+            self._scratch["position_phase"] = "confirm"
 
-    # --- Step 2: starter trait ---
-    def _step_starter_trait(self) -> DecisionResult:
+    def _handle_position_confirm(self, value: str) -> None:
+        if value == "2":
+            self._scratch["position_phase"] = "choose"
+            return
+        if value not in {"1", "Confirm", "confirm"}:
+            return
+        specific = self._scratch.get("position_candidate")
+        if not specific:
+            self._scratch["position_phase"] = "choose"
+            return
+        self.state.specific_pos = specific
+        if specific == "Pitcher":
+            self.state.position = "Pitcher"
+        elif specific == "Catcher":
+            self.state.position = "Catcher"
+        elif specific in {"First Base", "Second Base", "Third Base", "Shortstop"}:
+            self.state.position = "Infielder"
+        else:
+            self.state.position = "Outfielder"
+        if self.state.position != "Pitcher":
+            self.state.pitch_arsenal = []
+            self.state.starter_trait = None
+        else:
+            self.state.starter_trait = None
+        self._scratch.pop("position_phase", None)
+        self._scratch.pop("position_candidate", None)
+        self.step += 1
+
+    # --- Step 7: trait roll (moved near end) ---
+    def _step_trait_roll(self) -> DecisionResult:
         if not self.state.position:
             self.step = 0
             return self.advance()
@@ -639,30 +1046,74 @@ class CreatePlayerEngine:
             self.state.starter_trait = None
             self.step += 1
             return self.advance()
+
         status = self.state.starter_trait
         if status is None:
             self._awaiting = "starter_roll"
-            lines = [
-                "Starter Trait Gacha",
-                "One roll decides if the coaches tag you with the Starter trait.",
-                "Odds: 35% chance. No rerolls.",
-                "1. Roll Gacha",
-                "0. Back",
-            ]
-            return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Choice: ", default="0"))
+            stats_block = _stat_lines(self.state.position or "", self.state.stats or {})
+            header = self._with_banner(
+                STEP_TITLES.get(7, "Traits Gacha"),
+                [
+                    "Traits Gacha",
+                    "One pull decides if you walk away with the Starter tag.",
+                    "Odds: 35% chance. No rerolls.",
+                    "",
+                    *stats_block,
+                    "",
+                ],
+            )
+            return DecisionResult(
+                summary=None,
+                requests=[
+                    DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                    DecisionRequest(
+                        kind="prompt",
+                        message="",
+                        options=["Spin"],
+                        default="1",
+                        input_mode="starter_spin",
+                        payload={
+                            "header": header,
+                            "odds": 0.35,
+                            "label": "Starter Trait",
+                        },
+                    ),
+                ],
+                done=False,
+                data=self._serialize_state(),
+            )
+
         lines = [
             "Starter Trait secured." if status else "No Starter Trait. Earn it through performance.",
-            "1. Continue",
-            "0. Back",
+            "",
         ]
+        suffix = ["Use arrows + Enter to continue; Esc to go back."]
         self._awaiting = "starter_ack"
-        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Choice: ", default="1"))
+        prefix = self._with_banner(STEP_TITLES.get(7, "Traits Gacha"), lines)
+        return DecisionResult(
+            summary=None,
+            requests=[
+                DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                DecisionRequest(
+                    kind="prompt",
+                    message="",
+                    options=["Continue"],
+                    default="1",
+                    input_mode="menu_grid",
+                    payload={"prefix": prefix, "suffix": suffix, "cols": 1, "col_width": 32},
+                ),
+            ],
+            done=False,
+            data=self._serialize_state(),
+        )
 
     def _handle_starter_roll(self, value: str) -> None:
         if value == "0":
             self.step = max(0, self.step - 1)
             return
-        if value == "1":
+        if value in {"WIN", "LOSE"}:
+            self.state.starter_trait = value == "WIN"
+        elif value == "1":
             self.state.starter_trait = random.random() < 0.35
         # stay on step to acknowledge result
 
@@ -683,19 +1134,35 @@ class CreatePlayerEngine:
             f"HEIGHT: {s['height_cm']} cm",
             f"WEIGHT: {s['weight_kg']} kg",
         ]
+        lines.extend(_stat_lines(self.state.position or "", s))
         if s.get('is_two_way') and s.get('secondary_position'):
             primary = self.state.position or 'Primary'
             lines.append(f"TWO-WAY POTENTIAL: {primary} / {s['secondary_position']}")
-        lines.append("1. Accept Stats")
-        lines.append("2. Reroll" + (" (LOCKED)" if self.state.rerolls_left <= 0 else ""))
-        lines.append("0. Back")
+        options = [
+            "Accept stats",
+            "Reroll" + (" (LOCKED)" if self.state.rerolls_left <= 0 else ""),
+        ]
         self._awaiting = "stats_choice"
-        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Choice: ", default="1"))
+        prefix = self._with_banner(STEP_TITLES.get(3, "Roll Base Attributes"), lines)
+        suffix = ["Use arrows + Enter to select; Esc to go back."]
+        return DecisionResult(
+            summary=None,
+            requests=[
+                DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                DecisionRequest(
+                    kind="prompt",
+                    message="",
+                    options=options,
+                    default="1",
+                    input_mode="menu_grid",
+                    payload={"prefix": prefix, "suffix": suffix, "cols": 1, "col_width": 48},
+                ),
+            ],
+            done=False,
+            data=self._serialize_state(),
+        )
 
     def _handle_stats_choice(self, value: str) -> None:
-        if value == "0":
-            self.step = max(0, self.step - 1)
-            return
         if value == "1":
             self.step += 1
             return
@@ -704,21 +1171,73 @@ class CreatePlayerEngine:
                 self.state.rerolls_left -= 1
                 self.state.stats = roll_stats(self.state.position)
             return
+        # Ignore other inputs (including Esc) to keep players from backing out post-roll.
 
     # --- Step 4: growth style ---
     def _step_growth_style(self) -> DecisionResult:
+        if "growth_phase" not in self._scratch:
+            self._scratch["growth_phase"] = "choose"
+        phase = self._scratch["growth_phase"]
+
         if self.state.position == "Pitcher":
             styles = ["Power Pitcher", "Technical Pitcher", "Fierce Pitcher", "Marathon Pitcher", "Balanced"]
         elif self.state.position == "Catcher":
             styles = ["Offensive Catcher", "Defensive General", "Balanced"]
         else:
-            styles = ["Power Hitter", "Speedster", "Balanced"]
-        lines = [f"Select Growth Style for {self.state.specific_pos}"]
-        lines.extend([f"{i+1}. {s}" for i, s in enumerate(styles)])
-        lines.append("0. Back")
+            styles = ["Power Hitter", "Speedster", "Balanced", "Defensive Specialist"]
         self._scratch["growth_styles"] = styles
-        self._awaiting = "growth_pick"
-        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Choice: ", default="1"))
+
+        if phase == "choose":
+            lines = [f"Select Growth Style for {self.state.specific_pos} (Esc to go back)"]
+            self._awaiting = "growth_pick"
+            prefix = self._with_banner(STEP_TITLES.get(4, "Choose Growth Style"), lines)
+            suffix = ["Use arrows + Enter to preview; Esc to go back."]
+            return DecisionResult(
+                summary=None,
+                requests=[
+                    DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                    DecisionRequest(
+                        kind="prompt",
+                        message="",
+                        options=styles,
+                        default="1",
+                        input_mode="menu_grid",
+                        payload={"prefix": prefix, "suffix": suffix, "cols": 2, "col_width": 38},
+                    ),
+                ],
+                done=False,
+                data=self._serialize_state(),
+            )
+
+        if phase == "confirm":
+            style = self.state.growth_style or ""
+            detail_lines = _growth_detail_lines(style)
+            lines = [f"Selected Growth Style: {style}", ""] + detail_lines
+            lines.append("")
+            self._awaiting = "growth_confirm"
+            prefix = self._with_banner(STEP_TITLES.get(4, "Choose Growth Style"), lines)
+            suffix = ["Use arrows + Enter to confirm; Esc to go back."]
+            return DecisionResult(
+                summary=None,
+                requests=[
+                    DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                    DecisionRequest(
+                        kind="prompt",
+                        message="",
+                        options=["Confirm and continue"],
+                        default="1",
+                        input_mode="menu_grid",
+                        payload={"prefix": prefix, "suffix": suffix, "cols": 1, "col_width": 42},
+                    ),
+                ],
+                done=False,
+                data=self._serialize_state(),
+            )
+
+        # done
+        self._scratch.pop("growth_phase", None)
+        self.step += 1
+        return self.advance()
 
     def _handle_growth_pick(self, value: str) -> None:
         styles = self._scratch.get("growth_styles", [])
@@ -730,12 +1249,21 @@ class CreatePlayerEngine:
         idx = int(value) - 1
         if 0 <= idx < len(styles):
             self.state.growth_style = styles[idx]
+            self._scratch["growth_phase"] = "confirm"
+
+    def _handle_growth_confirm(self, value: str) -> None:
+        if value == "0":
+            self._scratch["growth_phase"] = "choose"
+            return
+        if value == "1":
+            self._scratch.pop("growth_phase", None)
             self.step += 1
 
     # --- Step 5: hometown ---
     def _step_hometown(self) -> DecisionResult:
         # simplified: pick prefecture and optional city by free text search
         prefectures = get_prefecture_catalog(self.session)
+        self._scratch["prefectures"] = prefectures
         if not prefectures:
             self.state.hometown = "Tokyo"
             self.state.prefecture_choice = "Tokyo"
@@ -745,19 +1273,55 @@ class CreatePlayerEngine:
             self._scratch["hometown_phase"] = "pref"
         phase = self._scratch["hometown_phase"]
         if phase == "pref":
-            lines = ["Select Prefecture (type name, 0 to Back)"]
-            lines.extend([", ".join(prefectures[i:i+5]) for i in range(0, len(prefectures), 5)])
             self._awaiting = "hometown_pref"
-            return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Prefecture: ", default="Tokyo"))
+            prefix = self._with_banner(
+                STEP_TITLES.get(5, "Pick Hometown"), ["Select Prefecture (Esc to go back)"]
+            )
+            suffix = ["Use arrows + Enter to select; Esc to go back."]
+            return DecisionResult(
+                summary=None,
+                requests=[
+                    DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                    DecisionRequest(
+                        kind="prompt",
+                        message="",
+                        options=prefectures,
+                        default="1",
+                        input_mode="menu_grid",
+                        payload={"prefix": prefix, "suffix": suffix, "cols": 3, "col_width": 24},
+                    ),
+                ],
+                done=False,
+                data=self._serialize_state(),
+            )
         if phase == "city":
             pref = self.state.prefecture_choice or ""
             cities = _load_cities_for_prefecture(self.session, pref)
-            names = [c['name'] for c in cities][:15]
-            lines = [f"Prefecture: {pref}", "Enter city keyword or leave blank to use prefecture only."]
-            if names:
-                lines.append("Examples: " + ", ".join(names))
+            city_labels = [
+                f"{c.get('name', '--')} ({c.get('school_count', '')})" if c.get("school_count") else c.get("name", "--")
+                for c in cities
+            ]
             self._awaiting = "hometown_city"
-            return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="City (blank to skip): ", default=""))
+            prefix = self._with_banner(
+                STEP_TITLES.get(5, "Pick Hometown"), [f"Prefecture: {pref}", "Select a city or skip (Esc to go back)"]
+            )
+            suffix = ["Use arrows + Enter to select; Esc to skip."]
+            return DecisionResult(
+                summary=None,
+                requests=[
+                    DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                    DecisionRequest(
+                        kind="prompt",
+                        message="",
+                        options=city_labels if city_labels else ["Skip"],
+                        default="1",
+                        input_mode="menu_grid",
+                        payload={"prefix": prefix, "suffix": suffix, "cols": 3, "col_width": 26},
+                    ),
+                ],
+                done=False,
+                data=self._serialize_state(),
+            )
         # done
         self._scratch.pop("hometown_phase", None)
         self.step += 1
@@ -765,23 +1329,41 @@ class CreatePlayerEngine:
 
     def _handle_hometown_pref(self, value: str) -> None:
         val = value.strip()
-        if val == "0":
+        prefectures = self._scratch.get("prefectures") or get_prefecture_catalog(self.session)
+        if value == "0":
             self.step = max(0, self.step - 1)
             return
-        prefectures = get_prefecture_catalog(self.session)
+
+        if val.isdigit():
+            idx = int(val) - 1
+            if 0 <= idx < len(prefectures):
+                self.state.prefecture_choice = prefectures[idx]
+                self._scratch["hometown_phase"] = "city"
+            return
+
         matches = [p for p in prefectures if val.lower() in p.lower()] if val else prefectures
         if not matches:
             return
-        pick = matches[0]
-        self.state.prefecture_choice = pick
+        self.state.prefecture_choice = matches[0]
         self._scratch["hometown_phase"] = "city"
 
     def _handle_hometown_city(self, value: str) -> None:
         pref = self.state.prefecture_choice or ""
         city = value.strip()
+        cities = _load_cities_for_prefecture(self.session, pref)
+        if not cities:
+            self.state.hometown = pref
+            self._scratch.pop("hometown_phase", None)
+            self.step += 1
+            return
         if city:
-            cities = _load_cities_for_prefecture(self.session, pref)
-            match = next((c for c in cities if city.lower() in c['name'].lower()), None)
+            match = None
+            if city.isdigit():
+                idx = int(city) - 1
+                if 0 <= idx < len(cities):
+                    match = cities[idx]
+            if match is None:
+                match = next((c for c in cities if city.lower() in c['name'].lower()), None)
             if match:
                 self.state.hometown = f"{pref} — {match['name']}"
             else:
@@ -793,6 +1375,8 @@ class CreatePlayerEngine:
 
     # --- Step 6: school ---
     def _step_school(self) -> DecisionResult:
+        phase = self._scratch.get("school_phase", "choose")
+        candidate_idx = self._scratch.get("school_candidate_idx")
         hometown = self.state.hometown or ''
         pref = self.state.prefecture_choice
         if not pref and hometown:
@@ -818,12 +1402,62 @@ class CreatePlayerEngine:
             offers = self.session.query(School).order_by(func.random()).limit(5).all()
 
         self._scratch["school_offers"] = offers
-        lines = [f"Offers from {pref}{' — ' + city if city else ''}:"]
-        for i, t in enumerate(offers):
-            lines.append(f" {i+1}. {t.name} (Rank: {t.prestige})")
-        lines.append("0. Back")
+        labels = [f"{t.name} (Rank: {t.prestige})" for t in offers]
+
+        if phase == "confirm" and candidate_idx is not None and 0 <= candidate_idx < len(offers):
+            pick = offers[candidate_idx]
+            lines = [
+                f"Confirm School: {pick.name}",
+                f"Rank: {pick.prestige}",
+                f"Prefecture: {pick.prefecture} | City: {getattr(pick, 'city_name', '--')}",
+            ]
+            prefix = self._with_banner(STEP_TITLES.get(6, "Select School"), lines)
+            suffix = ["Use arrows + Enter to confirm or change."]
+            self._awaiting = "school_confirm"
+            return DecisionResult(
+                summary=None,
+                requests=[
+                    DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                    DecisionRequest(
+                        kind="prompt",
+                        message="",
+                        options=["Confirm", "Change"],
+                        default="1",
+                        input_mode="menu_grid",
+                        payload={"prefix": prefix, "suffix": suffix, "cols": 2, "col_width": 22},
+                    ),
+                ],
+                done=False,
+                data=self._serialize_state(),
+            )
+
         self._awaiting = "school_pick"
-        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Select Team: ", default="1"))
+        prefix = self._with_banner(
+            STEP_TITLES.get(6, "Select School"),
+            [f"Offers from {pref}{' — ' + city if city else ''}:"]
+        )
+        suffix = ["Use arrows + Enter to select; Esc to go back."]
+        return DecisionResult(
+            summary=None,
+            requests=[
+                DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                DecisionRequest(
+                    kind="prompt",
+                    message="",
+                    options=labels,
+                    default="1",
+                    input_mode="menu_grid",
+                    payload={
+                        "prefix": prefix,
+                        "suffix": suffix,
+                        "cols": 1,
+                        "col_width": 70,
+                    },
+                ),
+            ],
+            done=False,
+            data=self._serialize_state(),
+        )
 
     def _handle_school_pick(self, value: str) -> None:
         offers: List[School] = self._scratch.get("school_offers", [])
@@ -834,12 +1468,25 @@ class CreatePlayerEngine:
             return
         idx = int(value) - 1
         if 0 <= idx < len(offers):
-            self.state.school = offers[idx]
-            acad_skill, last_score = roll_academic_profile(self.state.hometown, self.state.school)
-            self.state.stats = self.state.stats or {}
-            self.state.stats['academic_skill'] = acad_skill
-            self.state.stats['test_score'] = last_score
-            self.step += 1
+            self._scratch["school_candidate_idx"] = idx
+            self._scratch["school_phase"] = "confirm"
+
+    def _handle_school_confirm(self, value: str) -> None:
+        offers: List[School] = self._scratch.get("school_offers", [])
+        idx = self._scratch.get("school_candidate_idx")
+        if value == "2":
+            self._scratch["school_phase"] = "choose"
+            return
+        if value not in {"1", "Confirm", "confirm"} or idx is None or not (0 <= idx < len(offers)):
+            return
+        self.state.school = offers[idx]
+        acad_skill, last_score = roll_academic_profile(self.state.hometown, self.state.school)
+        self.state.stats = self.state.stats or {}
+        self.state.stats['academic_skill'] = acad_skill
+        self.state.stats['test_score'] = last_score
+        self._scratch.pop("school_phase", None)
+        self._scratch.pop("school_candidate_idx", None)
+        self.step += 1
 
     # --- Step 7: pitch arsenal ---
     def _step_pitch_arsenal(self) -> DecisionResult:
@@ -847,24 +1494,61 @@ class CreatePlayerEngine:
             self.state.pitch_arsenal = []
             self.step += 1
             return self.advance()
-        current = ", ".join(self.state.pitch_arsenal) if self.state.pitch_arsenal else "--"
-        lines = [
-            "Configure Pitch Arsenal",
-            f"Need {MIN_PITCHES}-{MAX_PITCHES} total pitches.",
-            f"Current: {current}",
-            "Enter comma-separated pitch names or leave blank for defaults.",
-            "Valid options: " + ", ".join(PITCH_SELECTION_POOL),
-        ]
+        current_count = len(self.state.pitch_arsenal)
+        header = self._with_banner(
+            STEP_TITLES.get(7, "Configure Pitch Arsenal"),
+            [
+                "Select Pitches (Esc to go back)",
+                f"Current: ({current_count}/{MAX_PITCHES}) Need {MIN_PITCHES}-{MAX_PITCHES} total.",
+                "",
+            ],
+        )
         self._awaiting = "pitch_entry"
-        return self._log_and_prompt(lines, DecisionRequest(kind="prompt", message="Pitches: ", default=", ".join(DEFAULT_PITCH_ARSENAL)))
+        return DecisionResult(
+            summary=None,
+            requests=[
+                DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                DecisionRequest(
+                    kind="prompt",
+                    message="",
+                    options=PITCH_SELECTION_POOL,
+                    default="",
+                    input_mode="pitch_grid",
+                    payload={
+                        "header": header,
+                        "selected": list(self.state.pitch_arsenal),
+                    },
+                ),
+            ],
+            done=False,
+            data=self._serialize_state(),
+        )
 
     def _handle_pitch_entry(self, value: str) -> None:
-        picks = [p.strip() for p in (value or "").split(',') if p.strip()]
-        valid, message = _validate_pitch_selection(picks)
+        raw_tokens = [p.strip() for p in (value or "").split(',') if p.strip()]
+        if len(raw_tokens) == 1 and raw_tokens[0] == "0":
+            self.step = max(0, self.step - 1)
+            return
+
+        resolved: List[str] = []
+        for tok in raw_tokens:
+            if tok.isdigit():
+                idx = int(tok) - 1
+                if 0 <= idx < len(PITCH_SELECTION_POOL):
+                    resolved.append(PITCH_SELECTION_POOL[idx])
+                continue
+            resolved.append(tok)
+
+        # Blank input means defaults
+        if not raw_tokens:
+            resolved = list(DEFAULT_PITCH_ARSENAL)
+
+        valid, message = _validate_pitch_selection(resolved)
         if not valid:
             self._scratch["pitch_error"] = message
             return
-        self.state.pitch_arsenal = _dedupe_preserve_order(picks)
+
+        self.state.pitch_arsenal = _dedupe_preserve_order(resolved)
         self.step += 1
 
     # --- Step 8: finalize ---
@@ -886,20 +1570,33 @@ class CreatePlayerEngine:
             summary_lines.append(f"Starter Trait: {trait_txt}")
             arsenal = _dedupe_preserve_order(self.state.pitch_arsenal)
             summary_lines.append(f"Pitches: {', '.join(arsenal) if arsenal else '--'}")
-        summary_lines.append("1. Start Game")
-        summary_lines.append("0. Back")
+        summary_lines.append("")
         self._awaiting = "final_choice"
-        return self._log_and_prompt(summary_lines, DecisionRequest(kind="prompt", message="Choice: ", default="1"))
+        prefix = self._with_banner(STEP_TITLES.get(8, "Confirm Profile"), summary_lines)
+        suffix = ["Use arrows + Enter to start; Esc to go back."]
+        return DecisionResult(
+            summary=None,
+            requests=[
+                DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                DecisionRequest(
+                    kind="prompt",
+                    message="",
+                    options=["Start Game"],
+                    default="1",
+                    input_mode="menu_grid",
+                    payload={"prefix": prefix, "suffix": suffix, "cols": 1, "col_width": 24},
+                ),
+            ],
+            done=False,
+            data=self._serialize_state(),
+        )
 
     def _handle_final_choice(self, value: str) -> None:
         if value == "0":
             self.step = max(0, self.step - 1)
             return
-        if value == "1":
-            player_id = commit_player_to_db(self.session, self.state.__dict__)
-            self._scratch["created_player_id"] = player_id
+        if value in {"0", "1", "WIN", "LOSE"}:
             self.step += 1
-
     # --------- terminal ---------
     def is_complete(self) -> bool:
         return self.step > 8 and "created_player_id" in self._scratch
@@ -910,6 +1607,494 @@ class CreatePlayerEngine:
 
 def drive_create_player(session: Session, io: Optional[IOInterface] = None) -> Optional[int]:
     """Compatibility adapter that drives the decision engine using IOInterface."""
+
+    def _read_with_esc(prompt: str, default: str = "") -> str:
+        # Windows-only single-key capture to allow ESC for back.
+        if os.name == "nt" and 'msvcrt' in sys.modules:
+            sys.stdout.write(prompt)
+            sys.stdout.flush()
+            buf: List[str] = []
+            while True:
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    return "".join(buf) if buf else default
+                if ch == "\x1b":  # ESC
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    return "__ESC__"
+                if ch in ("\x08", "\x7f"):  # backspace
+                    if buf:
+                        buf.pop()
+                        sys.stdout.write("\b \b")
+                        sys.stdout.flush()
+                    continue
+                buf.append(ch)
+                sys.stdout.write(ch)
+                sys.stdout.flush()
+        # Fallback: standard line input
+        try:
+            return input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            return default
+
+    def _interactive_select_grid(request: DecisionRequest) -> str:
+        """Grid-based arrow menu; renders a fresh screen each move."""
+        options = request.options or []
+        payload = request.payload or {}
+        cols = int(payload.get("cols", 3))
+        col_width = int(payload.get("col_width", 26))
+        prefix = payload.get("prefix", [])
+        suffix = payload.get("suffix", [])
+        base = 1
+
+        def render(idx: int) -> None:
+            block_lines = list(prefix)
+            block_lines.extend(_options_grid(options, cols=cols, col_width=col_width, highlight=idx))
+            block_lines.extend(suffix)
+            sys.stdout.write(CLEAR_SCREEN)
+            sys.stdout.write("\n".join(block_lines) + "\n")
+            sys.stdout.flush()
+
+        sel = 0
+        if request.default.isdigit():
+            d_idx = int(request.default) - base
+            if 0 <= d_idx < len(options):
+                sel = d_idx
+        render(sel)
+
+        rows = (len(options) + cols - 1) // cols
+
+        def move(idx: int, dr: int, dc: int) -> int:
+            row, col = divmod(idx, cols)
+            start_row, start_col = row, col
+            while True:
+                row = (row + dr) % rows
+                col = (col + dc) % cols
+                nxt_idx = row * cols + col
+                if nxt_idx < len(options):
+                    return nxt_idx
+                if (row, col) == (start_row, start_col):
+                    return idx
+
+        def handle_enter() -> str:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return str(base + sel)
+
+        def handle_esc() -> str:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return "__ESC__"
+
+        if os.name == "nt" and 'msvcrt' in sys.modules:
+            while True:
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    return handle_enter()
+                if ch == "\x1b":
+                    return handle_esc()
+                if ch in ("\xe0", "\x00"):
+                    nxt = msvcrt.getwch()
+                    if nxt == "H":
+                        sel = move(sel, -1, 0)  # up
+                        render(sel)
+                    elif nxt == "P":
+                        sel = move(sel, 1, 0)  # down
+                        render(sel)
+                    elif nxt == "K":
+                        sel = move(sel, 0, -1)  # left
+                        render(sel)
+                    elif nxt == "M":
+                        sel = move(sel, 0, 1)  # right
+                        render(sel)
+                    continue
+        else:
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while True:
+                    ch = sys.stdin.read(1)
+                    if ch in ("\r", "\n"):
+                        return handle_enter()
+                    if ch == "\x1b":
+                        seq = sys.stdin.read(2)
+                        if seq == "[A":  # up
+                            sel = move(sel, -1, 0)
+                            render(sel)
+                        elif seq == "[B":  # down
+                            sel = move(sel, 1, 0)
+                            render(sel)
+                        elif seq == "[C":  # right
+                            sel = move(sel, 0, 1)
+                            render(sel)
+                        elif seq == "[D":  # left
+                            sel = move(sel, 0, -1)
+                            render(sel)
+                        else:
+                            return handle_esc()
+                        continue
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            return handle_enter()
+
+    def _interactive_pitch_grid(request: DecisionRequest) -> str:
+        """Multi-select pitch picker with checkboxes and live count."""
+        options = request.options or []
+        payload = request.payload or {}
+        selected: List[str] = list(payload.get("selected", []))
+        base_header: List[str] = list(payload.get("header", []))
+        cols = 2
+        col_width = 36
+        rows = (len(options) + cols - 1) // cols
+
+        def move(idx: int, dr: int, dc: int) -> int:
+            row, col = divmod(idx, cols)
+            start_row, start_col = row, col
+            while True:
+                row = (row + dr) % rows
+                col = (col + dc) % cols
+                nxt = row * cols + col
+                if nxt < len(options):
+                    return nxt
+                if (row, col) == (start_row, start_col):
+                    return idx
+
+        def render(idx: int, error: str = "") -> None:
+            sys.stdout.write(CLEAR_SCREEN)
+            lines = list(base_header) if base_header else []
+            count_line = f"Current: ({len(selected)}/{MAX_PITCHES}) Need {MIN_PITCHES}-{MAX_PITCHES} total."
+            if len(lines) >= 2:
+                lines[1] = count_line
+            else:
+                lines.append(count_line)
+            lines.append("")
+            lines.extend(_pitch_grid(options, selected, cols=cols, col_width=col_width, highlight=idx))
+            lines.append("Space = toggle • Enter = confirm • Esc = back")
+            if error:
+                lines.append(error)
+            sys.stdout.write("\n".join(lines) + "\n")
+            sys.stdout.flush()
+
+        def toggle(idx: int) -> Optional[str]:
+            name = options[idx]
+            if name in selected:
+                selected.remove(name)
+                return None
+            if len(selected) >= MAX_PITCHES:
+                return f"Max {MAX_PITCHES} pitches. Remove one first."
+            selected.append(name)
+            return None
+
+        def handle_enter() -> str:
+            if len(selected) < MIN_PITCHES:
+                return "__ERROR__"
+            return ",".join(selected)
+
+        sel = 0
+        if selected:
+            try:
+                sel = options.index(selected[0])
+            except ValueError:
+                sel = 0
+        render(sel)
+
+        if os.name == "nt" and 'msvcrt' in sys.modules:
+            while True:
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    result = handle_enter()
+                    if result == "__ERROR__":
+                        render(sel, error=f"Select at least {MIN_PITCHES} pitches.")
+                        continue
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    return result
+                if ch == " ":
+                    msg = toggle(sel)
+                    render(sel, error=msg or "")
+                    continue
+                if ch == "\x1b":
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    return "__ESC__"
+                if ch in ("\xe0", "\x00"):
+                    nxt = msvcrt.getwch()
+                    if nxt == "H":  # up
+                        sel = move(sel, -1, 0)
+                        render(sel)
+                    elif nxt == "P":  # down
+                        sel = move(sel, 1, 0)
+                        render(sel)
+                    elif nxt == "K":  # left
+                        sel = move(sel, 0, -1)
+                        render(sel)
+                    elif nxt == "M":  # right
+                        sel = move(sel, 0, 1)
+                        render(sel)
+                    continue
+        else:
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while True:
+                    ch = sys.stdin.read(1)
+                    if ch in ("\r", "\n"):
+                        result = handle_enter()
+                        if result == "__ERROR__":
+                            render(sel, error=f"Select at least {MIN_PITCHES} pitches.")
+                            continue
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        return result
+                    if ch == " ":
+                        msg = toggle(sel)
+                        render(sel, error=msg or "")
+                        continue
+                    if ch == "\x1b":
+                        seq = sys.stdin.read(2)
+                        if seq == "[A":  # up
+                            sel = move(sel, -1, 0)
+                            render(sel)
+                        elif seq == "[B":  # down
+                            sel = move(sel, 1, 0)
+                            render(sel)
+                        elif seq == "[D":  # left
+                            sel = move(sel, 0, -1)
+                            render(sel)
+                        elif seq == "[C":  # right
+                            sel = move(sel, 0, 1)
+                            render(sel)
+                        else:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            return "__ESC__"
+                        continue
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return handle_enter()
+
+    def _interactive_starter_spin(request: DecisionRequest) -> str:
+        """Roulette-style animation for the starter trait roll."""
+        payload = request.payload or {}
+        header_lines: List[str] = list(payload.get("header", []))
+        odds = float(payload.get("odds", 0.35))
+        label = payload.get("label", "Starter Trait")
+        frames = [
+            "| ☆ | ★ | ☆ |",
+            "| ★ | ☆ | ★ |",
+            "| ☆ | ☆ | ★ |",
+            "| ★ | ★ | ☆ |",
+        ]
+
+        def show(lines: List[str]) -> None:
+            sys.stdout.write(CLEAR_SCREEN)
+            sys.stdout.write("\n".join(lines) + "\n")
+            sys.stdout.flush()
+
+        def wait_for_enter_or_esc() -> Optional[str]:
+            if os.name == "nt" and 'msvcrt' in sys.modules:
+                while True:
+                    ch = msvcrt.getwch()
+                    if ch in ("\r", "\n"):
+                        return "enter"
+                    if ch == "\x1b":
+                        return "esc"
+            else:
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
+                try:
+                    tty.setraw(fd)
+                    while True:
+                        ch = sys.stdin.read(1)
+                        if ch in ("\r", "\n"):
+                            return "enter"
+                        if ch == "\x1b":
+                            return "esc"
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            return None
+
+        # Prompt to start
+        start_lines = list(header_lines)
+        start_lines.append(f"Press Enter to spin for {label}; Esc to go back.")
+        show(start_lines)
+        action = wait_for_enter_or_esc()
+        if action == "esc":
+            return "__ESC__"
+
+        # Run animation
+        spins = random.randint(18, 28)
+        for i in range(spins):
+            frame = frames[i % len(frames)]
+            lines = list(header_lines)
+            lines.append("Spinning...")
+            lines.append(frame)
+            show(lines)
+            time.sleep(0.05 + (i / spins) * 0.03)
+
+        win = random.random() < odds
+        result_text = "WIN! Starter Trait unlocked." if win else "Missed. No Starter Trait (for now)."
+        result_lines = list(header_lines)
+        result_lines.append(result_text)
+        result_lines.append("Press Enter to continue.")
+        show(result_lines)
+        wait_for_enter_or_esc()
+        return "WIN" if win else "LOSE"
+
+    def _interactive_yes_no(request: DecisionRequest) -> str:
+        """Inline YES/NO arrow prompt; clears screen on each movement."""
+        options = request.options or ["YES", "NO"]
+        payload = request.payload or {}
+        prefix = payload.get("prefix", [])
+        suffix = payload.get("suffix", [])
+        base = 1
+
+        def render(idx: int) -> None:
+            block_lines = list(prefix)
+            if block_lines:
+                block_lines.append("")
+            line = "    ".join([f"> {opt}" if i == idx else f"  {opt}" for i, opt in enumerate(options)])
+            block_lines.append(line)
+            block_lines.extend(suffix)
+            sys.stdout.write(CLEAR_SCREEN)
+            sys.stdout.write("\n".join(block_lines) + "\n")
+            sys.stdout.flush()
+
+        sel = 0
+        if request.default.isdigit():
+            d_idx = int(request.default) - base
+            if 0 <= d_idx < len(options):
+                sel = d_idx
+        render(sel)
+
+        def handle_enter() -> str:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return str(base + sel)
+
+        def handle_esc() -> str:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return "__ESC__"
+
+        if os.name == "nt" and 'msvcrt' in sys.modules:
+            while True:
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    return handle_enter()
+                if ch == "\x1b":
+                    return handle_esc()
+                if ch in ("\xe0", "\x00"):
+                    nxt = msvcrt.getwch()
+                    if nxt in ("H", "K"):
+                        sel = (sel - 1) % len(options)
+                        render(sel)
+                    elif nxt in ("P", "M"):
+                        sel = (sel + 1) % len(options)
+                        render(sel)
+                    continue
+        else:
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while True:
+                    ch = sys.stdin.read(1)
+                    if ch in ("\r", "\n"):
+                        return handle_enter()
+                    if ch == "\x1b":
+                        seq = sys.stdin.read(2)
+                        if seq in ("[A", "[D"):
+                            sel = (sel - 1) % len(options)
+                            render(sel)
+                        elif seq in ("[B", "[C"):
+                            sel = (sel + 1) % len(options)
+                            render(sel)
+                        else:
+                            return handle_esc()
+                        continue
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            return handle_enter()
+
+    def _interactive_select(message: str, options: List[str], default: str = "") -> str:
+        """Arrow-key menu for selection; returns index+1 as string, ESC -> __ESC__."""
+        base = 1
+
+        def render(idx: int) -> None:
+            lines = [message]
+            for i, opt in enumerate(options):
+                pointer = ">" if i == idx else " "
+                lines.append(f" {pointer} {opt}")
+            block = "\n".join(lines)
+            if render.called:
+                sys.stdout.write(f"\033[{len(lines)}F")
+            render.called = True
+            sys.stdout.write(block + "\n")
+            sys.stdout.flush()
+
+        render.called = False  # type: ignore
+        sel = 0
+        if default.isdigit():
+            d_idx = int(default) - base
+            if 0 <= d_idx < len(options):
+                sel = d_idx
+        render(sel)
+
+        def handle_enter() -> str:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return str(base + sel)
+
+        def handle_esc() -> str:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return "__ESC__"
+
+        if os.name == "nt" and 'msvcrt' in sys.modules:
+            while True:
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    return handle_enter()
+                if ch == "\x1b":
+                    return handle_esc()
+                if ch in ("\xe0", "\x00"):
+                    nxt = msvcrt.getwch()
+                    if nxt in ("H", "K"):
+                        sel = (sel - 1) % len(options)
+                        render(sel)
+                    elif nxt in ("P", "M"):
+                        sel = (sel + 1) % len(options)
+                        render(sel)
+                    continue
+                # ignore others
+        else:
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while True:
+                    ch = sys.stdin.read(1)
+                    if ch in ("\r", "\n"):
+                        return handle_enter()
+                    if ch == "\x1b":
+                        seq = sys.stdin.read(2)
+                        if seq in ("[A", "[D"):
+                            sel = (sel - 1) % len(options)
+                            render(sel)
+                        elif seq in ("[B", "[C"):
+                            sel = (sel + 1) % len(options)
+                            render(sel)
+                        else:
+                            return handle_esc()
+                        continue
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            return handle_enter()
 
     engine = CreatePlayerEngine(session)
     response: Optional[str] = None
@@ -926,7 +2111,18 @@ def drive_create_player(session: Session, io: Optional[IOInterface] = None) -> O
                 if io:
                     response = io.prompt(request.message, options=request.options)
                 else:
-                    response = input(request.message)
+                    if request.input_mode == "menu_grid":
+                        response = _interactive_select_grid(request)
+                    elif request.input_mode == "pitch_grid":
+                        response = _interactive_pitch_grid(request)
+                    elif request.input_mode == "starter_spin":
+                        response = _interactive_starter_spin(request)
+                    elif request.input_mode == "binary_yes_no":
+                        response = _interactive_yes_no(request)
+                    elif request.options:
+                        response = _interactive_select(request.message, request.options, default=request.default)
+                    else:
+                        response = _read_with_esc(request.message, default=request.default)
         if result.done and engine.result() is not None:
             return engine.result()
         if engine.is_complete():
@@ -934,31 +2130,6 @@ def drive_create_player(session: Session, io: Optional[IOInterface] = None) -> O
 
 
 create_hero = drive_create_player
-
-
-if __name__ == "__main__":
-    from database.setup_db import get_session
-
-    temp_session = get_session()
-    try:
-        create_hero(temp_session)
-    finally:
-        temp_session.close()
-                _io_log(io, f"Pitches: {', '.join(arsenal) if arsenal else '--'}")
-            _io_log(io, "─" * FRAME_WIDTH)
-
-            _io_log(io, "1. Start Game")
-            _io_log(io, "0. Back")
-
-            sel = _io_prompt(io, "Choice: ")
-            if sel == '0': step -= 1; continue
-            elif sel == '1':
-                player_id = commit_player_to_db(session, data)
-                _io_log(io, f"{Colour.GREEN}Character Saved! Good Luck!{Colour.RESET}")
-                time.sleep(2)
-                return player_id
-
-    return None
 
 
 if __name__ == "__main__":

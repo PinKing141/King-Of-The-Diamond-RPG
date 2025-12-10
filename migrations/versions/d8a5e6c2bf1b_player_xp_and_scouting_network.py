@@ -63,15 +63,25 @@ def _decode_json(payload: Any) -> dict:
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+
+    # If a previous failed attempt left partial tables behind (e.g., SQLite constraint error),
+    # drop and rebuild so the unique constraints are applied correctly.
+    if inspector.has_table("player_xp"):
+        op.drop_table("player_xp")
+    if inspector.has_table("scouting_network"):
+        op.drop_table("scouting_network")
+
     op.create_table(
         "player_xp",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("player_id", sa.Integer(), sa.ForeignKey("players.id"), nullable=False),
         sa.Column("stat_key", sa.String(), nullable=False),
         sa.Column("xp", sa.Float(), server_default="0"),
+        sa.UniqueConstraint("player_id", "stat_key", name="uq_player_xp_player_stat"),
     )
     op.create_index("ix_player_xp_player_id", "player_xp", ["player_id"], unique=False)
-    op.create_unique_constraint("uq_player_xp_player_stat", "player_xp", ["player_id", "stat_key"])
 
     op.create_table(
         "scouting_network",
@@ -79,11 +89,9 @@ def upgrade() -> None:
         sa.Column("school_id", sa.Integer(), sa.ForeignKey("schools.id"), nullable=False),
         sa.Column("scope", sa.String(), nullable=False),
         sa.Column("rating", sa.Integer(), server_default=str(_DEFAULT_RATING)),
+        sa.UniqueConstraint("school_id", "scope", name="uq_scouting_network_scope"),
     )
     op.create_index("ix_scouting_network_school_id", "scouting_network", ["school_id"], unique=False)
-    op.create_unique_constraint("uq_scouting_network_scope", "scouting_network", ["school_id", "scope"])
-
-    bind = op.get_bind()
 
     # Migrate existing training_xp blobs into player_xp rows.
     for row in bind.execute(sa.select(players.c.id, players.c.training_xp)):
@@ -119,10 +127,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint("uq_scouting_network_scope", "scouting_network", type_="unique")
     op.drop_index("ix_scouting_network_school_id", table_name="scouting_network")
     op.drop_table("scouting_network")
 
-    op.drop_constraint("uq_player_xp_player_stat", "player_xp", type_="unique")
     op.drop_index("ix_player_xp_player_id", table_name="player_xp")
     op.drop_table("player_xp")

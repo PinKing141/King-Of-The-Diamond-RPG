@@ -13,6 +13,8 @@ class DecisionRequest:
     level: optional severity for log-style requests (info/warning/error).
     options: optional constrained options for prompts; hint only.
     default: fallback value the engine will assume if no response is provided.
+    input_mode: optional hint for how to capture input (e.g., "line", "menu", "raw").
+    cursor: optional starting cursor index for menu input.
     payload: arbitrary structured data for richer renders (state snapshots, stats, etc.).
     """
 
@@ -21,6 +23,8 @@ class DecisionRequest:
     level: str = "info"
     options: Optional[List[str]] = None
     default: str = ""
+    input_mode: str = "line"
+    cursor: int = 0
     payload: Dict[str, Any] = field(default_factory=dict)
 
 
