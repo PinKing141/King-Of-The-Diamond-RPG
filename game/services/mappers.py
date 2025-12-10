@@ -60,7 +60,7 @@ def player_to_training_dto(player: Player) -> PlayerTrainingDTO:
             "determination": getattr(player, "determination", None),
             "is_two_way": getattr(player, "is_two_way", False),
             "growth_tag": getattr(player, "growth_tag", None),
-            "growth_style": getattr(player, "growth_tag", None),
+            "growth_style": getattr(player, "growth_style", None),
             "position": getattr(player, "position", None),
             "slump_timer": getattr(player, "slump_timer", 0),
         },
@@ -74,6 +74,7 @@ def apply_training_dto_to_player(player: Player, dto: PlayerTrainingDTO) -> None
     player.slump_timer = dto.slump_timer
     player.conditioning = dto.conditioning
     player.growth_tag = dto.growth_tag
+    player.growth_style = dto.attributes.get("growth_style", getattr(player, "growth_style", None))
     player.position = dto.position
 
     for key, value in dto.stats.items():

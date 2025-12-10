@@ -61,6 +61,42 @@ XP_TRACKED_STATS = {
     'throwing',
     'command',
 }
+
+# Growth style stat multipliers (multiplicative to per-drill gains)
+GROWTH_STYLE_MULTS: dict[str, dict[str, float]] = {
+    # Pitchers
+    "heat seeker": {"velocity": 1.2, "stamina": 1.1, "control": 0.85, "command": 0.8, "movement": 0.95},
+    "corner artist": {"control": 1.2, "command": 1.2, "velocity": 0.85, "movement": 0.95},
+    "spin doctor": {"movement": 1.25, "command": 0.9, "control": 0.9, "stamina": 0.9},
+    "balanced pitcher": {},
+    # Catchers
+    "iron wall": {"fielding": 1.25, "throwing": 1.2, "contact": 0.85, "power": 0.85, "speed": 0.8},
+    "battery bomber": {"power": 1.2, "contact": 1.1, "fielding": 0.85, "throwing": 0.9},
+    "field general": {"fielding": 1.1, "throwing": 1.05, "contact": 0.95, "power": 0.95, "speed": 0.9},
+    "balanced catcher": {},
+    # Infielders
+    "glove wizard": {"fielding": 1.25, "throwing": 1.1, "speed": 1.05, "power": 0.85},
+    "corner crusher": {"power": 1.25, "throwing": 1.1, "contact": 0.95, "speed": 0.8, "fielding": 0.9},
+    "table setter": {"speed": 1.25, "contact": 1.1, "throwing": 0.85, "power": 0.75},
+    "balanced infielder": {},
+    # Outfielders
+    "range rover": {"speed": 1.25, "fielding": 1.2, "throwing": 0.95, "power": 0.85},
+    "laser show": {"throwing": 1.25, "power": 1.15, "contact": 0.9, "speed": 0.9},
+    "gap hunter": {"contact": 1.15, "power": 1.1, "fielding": 0.9, "throwing": 0.9},
+    "balanced outfielder": {},
+}
+
+
+def _apply_growth_style(style: Optional[str], stat_gains: dict) -> None:
+    if not style or not stat_gains:
+        return
+    mods = GROWTH_STYLE_MULTS.get(style.lower())
+    if not mods:
+        return
+    for stat, gain in list(stat_gains.items()):
+        mult = mods.get(stat)
+        if mult is not None:
+            stat_gains[stat] = gain * mult
 BREAKTHROUGH_BASE_CHANCE = 0.01
 BREAKTHROUGH_SCALE = 0.0004
 BREAKTHROUGH_MIN = 0.005
@@ -187,7 +223,7 @@ def apply_scheduled_action(
         return {"status": "error", "message": "Player not found."}
     
     fatigue = player.fatigue or 0
-    style = player.growth_tag or "Normal"
+    style = getattr(player, "growth_style", None) or player.growth_tag or "Normal"
     conditioning = player.conditioning if player.conditioning is not None else 50
     injury_days = player.injury_days or 0
     jersey_num = player.jersey_number
@@ -422,7 +458,8 @@ def apply_scheduled_action(
             stat_gains = {'speed': 1.0}
             if style == 'Speed': synergy = 1.5
             
-        # Apply final calculation: Base * Efficiency * Synergy * Conditioning Mod
+        # Apply growth-style shaping, then final calculation: Base * Efficiency * Synergy * Conditioning Mod
+        _apply_growth_style(style, stat_gains)
         for k in stat_gains:
             stat_gains[k] *= (efficiency * synergy * mods.get('training_gain', 1.0))
             
@@ -448,6 +485,7 @@ def apply_scheduled_action(
             summary += " Confidence slump slows your rhythm."
 
     # --- DB UPDATE ---
+    _apply_growth_style(style, stat_gains)
     _apply_temp_training_bonuses(context, stat_gains)
     progression_mult = get_progression_speed_multiplier(player)
     if stat_gains and progression_mult != 1.0:

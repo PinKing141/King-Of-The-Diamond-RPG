@@ -9,10 +9,11 @@ from typing import Dict, List, Optional
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from database.setup_db import Team
+from database.setup_db import GameState, Player, Team
 from core.game_context import GameContext
 from game.services.training_service import TrainingService
 from game.services.training_domain import apply_training_action_dto
+from game.services.position_change_service import negotiate_position_change
 from core.repositories import PlayerRepository, TeamRepository
 from game.services.progression_port import ProgressionPort
 
@@ -242,6 +243,37 @@ def execute_schedule_core(
                 continue
 
             try:
+                if action.startswith("position_request_"):
+                    # Coach negotiation lives outside training XP flow; handle directly via session.
+                    target_label = {
+                        "position_request_pitcher": "Pitcher",
+                        "position_request_catcher": "Catcher",
+                        "position_request_middle_infield": "Shortstop",
+                        "position_request_outfield": "Outfielder",
+                    }.get(action, "")
+                    active_state = session.query(GameState).first()
+                    player_obj = session.get(Player, active_state.active_player_id) if active_state else None
+                    if not player_obj:
+                        raise ValueError("Active player missing for position change request")
+
+                    payload = negotiate_position_change(
+                        session,
+                        player_obj,
+                        target_label,
+                        io=getattr(context, "io", None),
+                    )
+                    summary = payload.get("message", "Position request processed.")
+                    slot_result = SlotResult(
+                        day_index=d_idx,
+                        slot_index=s_idx,
+                        action=action,
+                        training_summary=summary,
+                    )
+                    slot_result.training_details = payload
+                    slot_results.append(slot_result)
+                    day_dirty = True
+                    continue
+
                 if player_dto is not None:
                     result = apply_training_action_dto(
                         player_dto,

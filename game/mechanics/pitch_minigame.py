@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from core.io_interface import IOInterface
 from core.rng import get_rng, new_rng
 from ui.ui_display import Colour, render_clutch_banner, render_minigame_ui
 
@@ -72,6 +73,7 @@ def run_minigame(
     context: Optional[PitchMinigameContext] = None,
     auto_resolve: bool = False,
     rng: Optional[object] = None,
+    io: Optional[IOInterface] = None,
 ) -> PitchMinigameResult:
     """Run the slider minigame and return a quality score between 0 and 1."""
 
@@ -86,8 +88,20 @@ def run_minigame(
 
     random_source = rng or _rng
 
+    def _log(msg: str) -> None:
+        if io:
+            io.log(msg)
+        else:
+            print(msg)
+
+    def _prompt(msg: str) -> None:
+        if io:
+            io.prompt(msg)
+        else:
+            input(msg)
+
     if not auto_resolve:
-        print(f"\n{Colour.CYAN}⚡ Showtime Pitch Incoming ⚡{Colour.RESET}")
+        _log(f"\n{Colour.CYAN}⚡ Showtime Pitch Incoming ⚡{Colour.RESET}")
         render_clutch_banner(
             inning=context.inning,
             half=context.half,
@@ -96,12 +110,12 @@ def run_minigame(
             runners_on=context.runners_on,
             label=context.label,
         )
-        print("  Tap Enter exactly when you feel the cursor is centered.")
-        print("  Control widens the safe window; fatigue and difficulty shrink it.")
+        _log("  Tap Enter exactly when you feel the cursor is centered.")
+        _log("  Control widens the safe window; fatigue and difficulty shrink it.")
         render_minigame_ui(None, target_window, show_target=True)
-        input("  Press Enter to start the motion...")
+        _prompt("  Press Enter to start the motion...")
         start = time.perf_counter()
-        input("  SNAP IT! (Press Enter) ")
+        _prompt("  SNAP IT! (Press Enter) ")
         elapsed = time.perf_counter() - start
     else:
         elapsed = random_source.random() * 1.2
@@ -115,7 +129,7 @@ def run_minigame(
     if not auto_resolve:
         result_color = Colour.GREEN if quality >= 0.7 else Colour.YELLOW if quality >= 0.4 else Colour.RED
         render_minigame_ui(position, target_window, show_target=True, quality=quality)
-        print(f"  Result: {result_color}{feedback}{Colour.RESET}\n")
+        _log(f"  Result: {result_color}{feedback}{Colour.RESET}\n")
 
     return PitchMinigameResult(
         quality=round(quality, 3),
@@ -140,6 +154,7 @@ def trigger_pitch_minigame(
     fatigue_level: int,
     difficulty: float,
     auto_resolve: bool = False,
+    io: Optional[IOInterface] = None,
 ) -> PitchMinigameResult:
     """High-level helper that builds context and launches the minigame."""
 
@@ -157,6 +172,7 @@ def trigger_pitch_minigame(
         difficulty,
         context=context,
         auto_resolve=auto_resolve,
+        io=io,
     )
 
 

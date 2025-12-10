@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 from core.io_interface import IOInterface
 from core.config_loader import ConfigLoader
 from core.decisions import DecisionRequest
+from core.paths import data_path
 
 from database.setup_db import Player, GameState
 from debug.debug_tools import input_with_debug
@@ -58,6 +59,9 @@ from world_sim.services.sim_data import get_roster
 
 logger = logging.getLogger(__name__)
 
+# Shared scheduler config loaded once so helpers (including template loaders) can read defaults.
+_scheduler_cfg = ConfigLoader.get("weekly_scheduler", default={}) or {}
+
 
 @dataclass(frozen=True)
 class CoachOrder:
@@ -68,7 +72,7 @@ class CoachOrder:
     reward_ability_points: int
 
 
-COACH_ORDER_DEFS: Tuple[CoachOrder, ...] = (
+_DEFAULT_COACH_ORDER_DEFS: Tuple[CoachOrder, ...] = (
     CoachOrder(
         key="run_50km",
         description="Run 50km this week (plan 3 Speed drills).",
@@ -100,7 +104,39 @@ COACH_ORDER_DEFS: Tuple[CoachOrder, ...] = (
     ),
 )
 
-AUTO_SCHEDULE_TEMPLATE: Tuple[Tuple[str, str, str], ...] = (
+
+def _load_coach_orders() -> Tuple[CoachOrder, ...]:
+    path = data_path("coach_orders.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        logger.info("coach_orders.json not found; using built-in defaults")
+        return _DEFAULT_COACH_ORDER_DEFS
+    except (TypeError, ValueError) as exc:
+        logger.warning("coach_orders.json invalid (%s); using defaults", exc)
+        return _DEFAULT_COACH_ORDER_DEFS
+
+    orders: List[CoachOrder] = []
+    for raw in payload if isinstance(payload, list) else []:
+        try:
+            orders.append(
+                CoachOrder(
+                    key=str(raw.get("key", "")).strip(),
+                    description=str(raw.get("description", "")).strip(),
+                    requirement=raw.get("requirement") or {},
+                    reward_trust=int(raw.get("reward_trust", 0) or 0),
+                    reward_ability_points=int(raw.get("reward_ability_points", 0) or 0),
+                )
+            )
+        except Exception as exc:  # keep loading others even if one entry is bad
+            logger.warning("Skipping invalid coach order entry %s (%s)", raw, exc)
+
+    return tuple(orders or _DEFAULT_COACH_ORDER_DEFS)
+
+
+COACH_ORDER_DEFS: Tuple[CoachOrder, ...] = _load_coach_orders()
+_DEFAULT_AUTO_TEMPLATE: Tuple[Tuple[str, str, str], ...] = (
     ("train_power", "team_practice", "rest"),
     ("train_speed", "study", "social"),
     ("practice_match", "rest", "mind"),
@@ -110,8 +146,61 @@ AUTO_SCHEDULE_TEMPLATE: Tuple[Tuple[str, str, str], ...] = (
     ("rest", "mind", "social"),
 )
 
+
+def _validate_template(grid: object) -> Optional[Tuple[Tuple[str, str, str], ...]]:
+    if not isinstance(grid, (list, tuple)) or len(grid) != 7:
+        return None
+    validated: List[Tuple[str, str, str]] = []
+    for day in grid:
+        if not isinstance(day, (list, tuple)) or len(day) != 3:
+            return None
+        try:
+            validated.append(tuple(str(slot or "rest") for slot in day))
+        except Exception:
+            return None
+    return tuple(validated)
+
+
+def _load_auto_schedule_templates() -> Tuple[Tuple[str, str, str], ...]:
+    path = data_path("auto_schedule_templates.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        logger.info("auto_schedule_templates.json not found; using built-in default template")
+        return _DEFAULT_AUTO_TEMPLATE
+    except (TypeError, ValueError) as exc:
+        logger.warning("auto_schedule_templates.json invalid (%s); using default template", exc)
+        return _DEFAULT_AUTO_TEMPLATE
+
+    # Support either a bare template (list) or a mapping of named templates.
+    if isinstance(payload, list):
+        validated = _validate_template(payload)
+        return validated or _DEFAULT_AUTO_TEMPLATE
+
+    if isinstance(payload, dict):
+        templates = {}
+        for name, grid in payload.items():
+            validated = _validate_template(grid)
+            if validated:
+                templates[str(name)] = validated
+            else:
+                logger.warning("Skipping invalid auto schedule template '%s'", name)
+        if not templates:
+            return _DEFAULT_AUTO_TEMPLATE
+        default_name = str(_scheduler_cfg.get("auto_schedule_template", "default"))
+        if default_name in templates:
+            return templates[default_name]
+        fallback = templates.get("default") or next(iter(templates.values()))
+        logger.info("auto_schedule_template '%s' not found; using '%s'", default_name, next(iter(templates.keys())))
+        return fallback
+
+    return _DEFAULT_AUTO_TEMPLATE
+
+
+AUTO_SCHEDULE_TEMPLATE: Tuple[Tuple[str, str, str], ...] = _load_auto_schedule_templates()
+
 SMART_SIM_FATIGUE_CAP = 92
-_scheduler_cfg = ConfigLoader.get("weekly_scheduler", default={}) or {}
 SMART_SIM_FATIGUE_CAP = int(_scheduler_cfg.get("smart_sim_fatigue_cap", SMART_SIM_FATIGUE_CAP))
 MANDATORY_TRUST_PENALTIES = _scheduler_cfg.get(
     "mandatory_trust_penalties",
@@ -778,6 +867,7 @@ def get_slot_choice(current_action: Optional[str], *, context=None, session=None
     log(" 1. TRAIN (Drills)")
     log(" 2. REST  (Recover)")
     log(" 3. LIFE  (Study/Social)")
+    log(" 4. COACH (Position Request)")
     log(" 0. BACK | X. EXIT PLANNING")
 
     choice_raw = _resolve_prompt(">> ", io=io, context=context, session=session, state=state)
@@ -810,6 +900,18 @@ def get_slot_choice(current_action: Optional[str], *, context=None, session=None
         log("   [S]tudy  [F]riends  [M]ind  [B]ack")
         sub = (_resolve_prompt("   Activity: ", io=io, context=context, session=session, state=state) or "").lower().strip()
         mapping = {'s': 'study', 'f': 'social', 'm': 'mind'}
+        return mapping.get(sub)
+
+    if choice == '4':
+        log("   Coach's Office: Request a role change")
+        log("   [P]itcher  [C]atcher  [MI] Middle Infield (SS/2B)  [OF] Outfield  [B]ack")
+        sub = (_resolve_prompt("   Target: ", io=io, context=context, session=session, state=state) or "").lower().strip()
+        mapping = {
+            'p': 'position_request_pitcher',
+            'c': 'position_request_catcher',
+            'mi': 'position_request_middle_infield',
+            'of': 'position_request_outfield',
+        }
         return mapping.get(sub)
 
     if choice == '0':
@@ -1005,6 +1107,7 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
     if not player:
         log("No active player is set. Load a save before planning the week.", level="error")
         return
+    ability_points_before = int(getattr(player, "ability_points", 0) or 0)
     coach_requirement = _describe_order_requirement(coach_order) if coach_order else None
     coach_rewards = _effective_order_rewards(coach_order, getattr(player, 'school', None))
     render_weekly_brief(
@@ -1088,6 +1191,26 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
         event_text=event_text,
     )
 
+    refreshed_player = _get_active_player(context)
+    ability_points_after = int(getattr(refreshed_player, "ability_points", 0) or 0)
+    ability_points_gained = max(0, ability_points_after - ability_points_before)
+
     render_weekly_dashboard(summary)
+    if ability_points_gained > 0:
+        prompt = (
+            f"You earned {ability_points_gained} Ability Point(s). Open the Pitch Lab now? [Y/N]: "
+        )
+        nav_raw = _resolve_prompt(
+            prompt,
+            io=io,
+            context=context,
+            session=context.session if context else None,
+            state=state,
+            default="n",
+            options=["y", "n", ""]
+        )
+        if nav_raw and nav_raw.strip().lower().startswith("y"):
+            open_pitch_lab(context.session, refreshed_player, io=io)
+
     _resolve_prompt("Press Enter to continue...", io=io, context=context, session=context.session if context else None, state=state)
     return True

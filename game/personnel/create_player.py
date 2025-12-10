@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import random
 import time
 import logging
@@ -7,9 +8,12 @@ from typing import Optional, List, Tuple, Dict, Any
 
 if os.name == "nt":
     import msvcrt  # Windows-only single-key input
+    tty = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
 else:
     import tty
     import termios
+    msvcrt = None  # type: ignore[assignment]
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -20,8 +24,11 @@ from core.io_interface import IOInterface
 # Simple ANSI clear screen to reduce clutter between prompts
 CLEAR_SCREEN = "\033[2J\033[H"
 
-# Add root to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add repo root to path so sibling packages (core, game, match_engine) resolve in CLI runs.
+_THIS_DIR = os.path.abspath(os.path.dirname(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, os.pardir, os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
 
 from database.setup_db import School, Player, PitchRepertoire
 from database.populate_japan import roll_arm_slot
@@ -37,68 +44,134 @@ from match_engine.pitch_definitions import PITCH_TYPES
 LOGGER = logging.getLogger(__name__)
 
 # --- GROWTH STYLE DEFINITIONS ---
-GROWTH_STYLE_INFO = {
-    "Power Pitcher": {
-        "desc": "Overwhelm batters with raw heat and late life.",
-        "pros": "+Velocity scaling, +Stamina headroom, intimidating fastball",
-        "cons": "-Fine control early, needs reps to locate secondary pitches",
-        "detail": "Fastball velocity grows faster per year. Break and control develop slower, so early outings may be wild until reps catch up.",
+_DEFAULT_GROWTH_STYLE_INFO = {
+    # Pitchers
+    "Heat Seeker": {
+        "desc": "Overwhelm batters with raw velocity and an intimidating presence.",
+        "pros": "+Velocity scaling, +Stamina headroom, high fastballs induce whiffs",
+        "cons": "-Control develops slowly, punished heavily for mistakes in the zone",
+        "detail": "Fastball velocity and Stamina grow rapidly. Control and Command lag behind, meaning early career innings may be wild until you gain experience.",
     },
-    "Technical Pitcher": {
-        "desc": "Precision first: dot corners, mix speeds, steal strikes.",
-        "pros": "+Control growth, +Break shaping, efficient pitch counts",
-        "cons": "-Top-end velocity ceiling, punished if command slips",
-        "detail": "Command upgrades cost less training. Offspeed and breaking pitches mature quickly, letting you craft a deep repertoire early.",
+    "Corner Artist": {
+        "desc": "Surgical precision that paints the edges of the strike zone.",
+        "pros": "+Control growth, +Command consistency, efficient pitch counts",
+        "cons": "-Lower Velocity ceiling, reliant on umpire calls and framing",
+        "detail": "Control and Command attributes upgrade cheaper and faster. Velocity gains are minimal, requiring you to rely on location to generate weak contact.",
     },
-    "Fierce Pitcher": {
-        "desc": "Big-moment specialist who spikes performance under pressure.",
-        "pros": "+Guts, late-inning velocity bump, rallies momentum",
-        "cons": "-Stability between outings, streaky control",
-        "detail": "Clutch situations grant a small velocity surge and composure bonus. Off days can dip command, so routine and confidence matter.",
+    "Spin Doctor": {
+        "desc": "Master of deception who makes the ball dance away from barrels.",
+        "pros": "+Movement scaling, +Break sharpness, excels at strikeouts",
+        "cons": "-Stamina drains faster on high-effort pitches, wild pitches common",
+        "detail": "Movement and breaking ball quality improve quickly. However, Control can be volatile, and high-break pitches often carry a higher stamina tax.",
     },
-    "Marathon Pitcher": {
-        "desc": "Built to throw 140+ pitches and still finish innings.",
-        "pros": "+Stamina curve, +Stability, slower fatigue gain",
-        "cons": "-Lower peak velocity cap, needs defense behind",
-        "detail": "Fatigue drains slower per pitch. Recovery between starts is faster, but pure mph gains plateau earlier than other archetypes.",
+    "Balanced Pitcher": {
+        "desc": "Jack of all trades who adapts to any rotation spot.",
+        "pros": "No glaring weakness, steady gains across all pitching tools",
+        "cons": "No extreme specialty, elite velocity or command arrives later",
+        "detail": "Growth is distributed evenly between Velocity, Control, and Stamina. A safe path that avoids major holes in your game but lacks an immediate 'killer' tool.",
     },
-    "Offensive Catcher": {
-        "desc": "Middle-of-the-order catcher with leadership at the plate.",
-        "pros": "+Power and Contact growth, boosts lineup morale",
-        "cons": "-Defensive ceiling lags, framing/throw-outs take longer",
-        "detail": "Bat-first path that can anchor cleanup spots. Defensive tools improve, but not as quickly as offensive gains unless you invest reps there.",
+
+    # Catchers
+    "Iron Wall": {
+        "desc": "An impenetrable defender who controls the run game.",
+        "pros": "+Fielding (Blocking), +Throwing (Arm Strength), pitchers trust you",
+        "cons": "-Speed is non-existent, offensive stats grow very slowly",
+        "detail": "Fielding and Throwing attributes skyrocket, minimizing passed balls and stolen bases. Contact and Power gains are significantly muted.",
     },
-    "Defensive General": {
-        "desc": "Field commander who controls the run game and staff.",
-        "pros": "+Defense, +Trust with pitchers, blocks and framing shine",
-        "cons": "-Bat lags behind, power growth is modest",
-        "detail": "Pitch-calling and framing bonuses scale quicker. Offensive gains are steadier but muted, so expect to hit lower in the order early on.",
+    "Battery Bomber": {
+        "desc": "A heavy hitter who brings run support from behind the dish.",
+        "pros": "+Power, +Contact, creates a fearsome heart of the order",
+        "cons": "-Fielding lags, slower pop-time on throws to second",
+        "detail": "Power and Contact scale like a corner infielder. However, your Defense and Throwing take longer to develop, potentially hurting your pitcher's confidence.",
     },
-    "Power Hitter": {
-        "desc": "Launch balls into the seats with leverage and lift.",
-        "pros": "+Raw Power, +Intimidation, rewards perfect swings",
-        "cons": "-Contact consistency, -Speed, vulnerable to offspeed",
-        "detail": "Power grades climb faster per training point. Whiff risk is higher until contact skills catch up; conditioning helps offset slow-footedness.",
+    "Field General": {
+        "desc": "A cerebral leader who elevates the entire pitching staff.",
+        "pros": "+Mental, +Command bonus for pitchers (Framing), high Baseball IQ",
+        "cons": "-Raw physical tools (Speed/Power) are average at best",
+        "detail": "Mental attributes and technical Fielding (Framing) grow fast. While not a physical specimen, your presence stabilizes the battery's performance.",
     },
-    "Speedster": {
-        "desc": "Table-setter and chaos agent on the basepaths.",
-        "pros": "+Speed ceiling, +Fielding range, elite steal potential",
-        "cons": "-Power ceiling, needs on-base skills to shine",
-        "detail": "Acceleration and steal success scale quickly. Gap power can grow, but true home-run pop lags—focus on contact and reads to maximize value.",
+    "Balanced Catcher": {
+        "desc": "A reliable backstop who contributes on both sides of the ball.",
+        "pros": "Steady glove, respectable bat, versatile lineup usage",
+        "cons": "Master of none; won't win Gold Gloves or Silver Sluggers early",
+        "detail": "Splits experience evenly between defensive drills and batting practice. Good for a catcher who needs to play every day without being a liability anywhere.",
     },
-    "Defensive Specialist": {
-        "desc": "Vacuum cleaner with gold-glove ambitions.",
-        "pros": "+Fielding instincts, +Reaction, steady throwing gains",
-        "cons": "-Batting impact early, slower slugging growth",
-        "detail": "Glove skills level fast, shrinking error rates and improving range. Bat develops, but expect to hit toward the bottom until reps pile up.",
+
+    # Infielders
+    "Glove Wizard": {
+        "desc": "Defensive specialist who turns hits into outs.",
+        "pros": "+Fielding range, +Throwing accuracy, quicker double plays",
+        "cons": "-Power ceiling is low, relies on singles and walks",
+        "detail": "Fielding and Reaction grow rapidly, making you elite at SS or 2B. Power is the tradeoff, limiting you to the bottom of the batting order early on.",
     },
-    "Balanced": {
-        "desc": "Jack of all trades who stays flexible.",
-        "pros": "No glaring weakness, adapts to team needs, steady gains",
-        "cons": "No extreme specialty, peak skills arrive later",
-        "detail": "Growth is even across tools, letting you pivot roles. Doesn’t spike a single stat, but avoids major holes and plays well in any lineup slot.",
+    "Corner Crusher": {
+        "desc": "A power source designed for the hot corner or first base.",
+        "pros": "+Power, +Throwing (Arm Strength), intimidates opposing pitchers",
+        "cons": "-Speed, -Fielding range, high strikeout risk",
+        "detail": "Power and Throwing strength see major gains. Speed and lateral Fielding range are poor, making this style best suited for 1B or 3B.",
+    },
+    "Table Setter": {
+        "desc": "Chaos agent who gets on base and makes things happen.",
+        "pros": "+Speed, +Contact, excels at bunting and stealing",
+        "cons": "-Power is minimal, weaker Throwing arm",
+        "detail": "Speed and Contact are the priority, perfect for leadoff hitters. You won't hit many home runs, and your Throwing arm may limit you to 2B.",
+    },
+    "Balanced Infielder": {
+        "desc": "A dependable glove and bat who fits any infield slot.",
+        "pros": "Adaptable to 2B/SS/3B, steady development in all tools",
+        "cons": "Lacks the elite range of a Wizard or the pop of a Crusher",
+        "detail": "Even distribution of XP across Fielding, Contact, and Power. A safe bet for a utility player or a solid everyday starter with no major flaws.",
+    },
+
+    # Outfielders
+    "Range Rover": {
+        "desc": "A center-field prototype who covers gap to gap.",
+        "pros": "+Speed, +Fielding range, tracks down difficult fly balls",
+        "cons": "-Throwing power is average, -Power hitting is secondary",
+        "detail": "Speed and Fielding receive the highest multipliers, essential for CF. Batting power is sacrificed for elite defensive coverage.",
+    },
+    "Laser Show": {
+        "desc": "Right-field profile with an arm that stops runners.",
+        "pros": "+Throwing (Arm Strength), +Power, punishes greedy baserunners",
+        "cons": "-Speed is average, -Contact consistency",
+        "detail": "Throwing and Power are the focus. You can gun down runners from the warning track, but you might strike out more often than contact hitters.",
+    },
+    "Gap Hunter": {
+        "desc": "Offensive specialist who lives for extra-base hits.",
+        "pros": "+Contact, +Power (Gap), high doubles/triples potential",
+        "cons": "-Fielding instincts are slow, -Throwing accuracy",
+        "detail": "Contact and Power grow efficiently. You are a bat-first outfielder (likely LF) where defensive shortcomings are easier to hide.",
+    },
+    "Balanced Outfielder": {
+        "desc": "A five-tool hopeful who stays consistent.",
+        "pros": "Good blend of Speed, Arm, and Bat; fits any OF spot",
+        "cons": "Takes years to become elite in any single category",
+        "detail": "Allocates training evenly across Speed, Fielding, and Batting. The ideal choice if you aren't sure which outfield position you will ultimately lock down.",
     },
 }
+
+
+def _load_growth_styles() -> Dict[str, Dict[str, str]]:
+    """Load growth styles from JSON, falling back to the baked-in defaults on error."""
+
+    data_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "data", "growth_styles.json")
+    )
+    try:
+        with open(data_path, "r", encoding="utf-8") as handle:
+            parsed = json.load(handle)
+        if not isinstance(parsed, dict):
+            LOGGER.warning("growth_styles.json must be a JSON object; using defaults instead.")
+            return dict(_DEFAULT_GROWTH_STYLE_INFO)
+        return parsed
+    except FileNotFoundError:
+        LOGGER.warning("growth_styles.json not found; using defaults instead.")
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.warning("growth_styles.json failed to load (%s); using defaults instead.", exc)
+    return dict(_DEFAULT_GROWTH_STYLE_INFO)
+
+
+GROWTH_STYLE_INFO = _load_growth_styles()
 
 STEP_TITLES = {
     0: "Name Entry",
@@ -152,6 +225,52 @@ def _dedupe_preserve_order(items: Optional[List[str]]) -> List[str]:
 
 _PREFECTURE_CACHE: Optional[List[str]] = None
 _CITY_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+
+# Tokyo split handling: east = 23 wards; west = Tama area + islands.
+TOKYO_EAST_CITIES = {
+    "Adachi", "Arakawa", "Bunkyo", "Chiyoda", "Chuo", "Edogawa", "Itabashi",
+    "Katsushika", "Kita", "Koto", "Meguro", "Minato", "Nakano", "Nerima",
+    "Ota", "Setagaya", "Shibuya", "Shinagawa", "Shinjuku", "Suginami",
+    "Sumida", "Taito", "Toshima",
+}
+TOKYO_WEST_CITIES = {
+    "Hachioji", "Tachikawa", "Musashino", "Mitaka", "Ome", "Fuchu", "Akishima",
+    "Chofu", "Machida", "Kodaira", "Hino", "Higashimurayama", "Kokubunji",
+    "Koganei", "Fussa", "Komae", "Higashiyamato", "Kiyose", "Higashikurume",
+    "Musashimurayama", "Inagi", "Hamura", "Akiruno", "Nishitokyo", "Mizuho",
+    "Hinode", "Hinohara", "Okutama", "Ogasawara", "Hachijo", "Hachijo Jima",
+    "Aogashima",
+}
+
+
+def _normalize_city_key(name: str) -> str:
+    return "".join(ch.lower() for ch in (name or "") if ch.isalnum())
+
+
+TOKYO_EAST_KEYS = {_normalize_city_key(c) for c in TOKYO_EAST_CITIES}
+TOKYO_WEST_KEYS = {_normalize_city_key(c) for c in TOKYO_WEST_CITIES}
+
+
+def _tokyo_side_for_city(city_name: str) -> str:
+    key = _normalize_city_key(city_name)
+    if key in TOKYO_EAST_KEYS:
+        return "east"
+    if key in TOKYO_WEST_KEYS:
+        return "west"
+    return "either"
+
+
+def _filter_tokyo_cities(cities: List[Dict[str, Any]], side: Optional[str]) -> List[Dict[str, Any]]:
+    if not side:
+        return cities
+    side = side.lower()
+    filtered = []
+    for entry in cities:
+        city_name = entry.get("name") or ""
+        bucket = _tokyo_side_for_city(city_name)
+        if bucket == "either" or bucket == side:
+            filtered.append(entry)
+    return filtered
 
 
 def _io_log(io: Optional[IOInterface], message: str, *, level: str = "info") -> None:
@@ -600,20 +719,25 @@ def roll_stats(position, is_monster=False):
     stats['is_two_way'] = is_two_way
     stats['secondary_position'] = secondary if secondary else None
 
+    # Soft-tune secondary skill penalties so two-way players keep their playable tools.
+    weak_stat_mod = 5 if is_two_way else -5
+    very_weak_stat_mod = 5 if is_two_way else 0
+    throwing_bonus = 10 if is_two_way else 5
+
     # ---------------------------
     #  Player Skill Stats
     # ---------------------------
     # Core attributes tuned per position
     if position == "Pitcher":
-        stats['velocity'] = random.randint(125, 138) + (10 if is_monster else 0)
+        stats['velocity'] = random.randint(130, 152) + (10 if is_monster else 0)
         stats['control'] = get_val(10)
         stats['movement'] = get_val(10)
         stats['stamina'] = get_val(10)
-        stats['power'] = get_val(-5)
-        stats['contact'] = get_val(-5)
-        stats['speed'] = get_val(-5)
-        stats['fielding'] = get_val()
-        stats['throwing'] = get_val(5)
+        stats['power'] = get_val(weak_stat_mod)
+        stats['contact'] = get_val(weak_stat_mod)
+        stats['speed'] = get_val(weak_stat_mod)
+        stats['fielding'] = get_val(very_weak_stat_mod)
+        stats['throwing'] = get_val(throwing_bonus)
         stats['arm_slot'] = roll_arm_slot("pitching")
     elif position == "Catcher":
         stats['stamina'] = get_val(5)
@@ -649,15 +773,16 @@ def roll_stats(position, is_monster=False):
         stats['velocity'] = 0
         stats['arm_slot'] = "Three-Quarters"
     else:  # Outfield
-        stats['stamina'] = get_val()
-        stats['control'] = get_val(-5)
-        stats['movement'] = get_val(-5)
         stats['power'] = get_val(10)
         stats['contact'] = get_val()
         stats['speed'] = get_val(15)
         stats['fielding'] = get_val(5)
         stats['throwing'] = get_val(10)
-        stats['velocity'] = 0
+        velo_mult = 0.75 if is_two_way else 0.65
+        stats['velocity'] = int(90 + (stats['throwing'] * velo_mult))
+        stats['control'] = get_val(weak_stat_mod)
+        stats['movement'] = get_val(-5)
+        stats['stamina'] = get_val(weak_stat_mod + 5)
         stats['arm_slot'] = "Three-Quarters"
 
     # Wall (catcher ability): reflexes + focus. Catchers get a derived value; others default to 0.
@@ -701,6 +826,7 @@ def commit_player_to_db(session: Session, data) -> int:
         clean_stats.setdefault('catcher_ability', 0)
 
     growth_tag = clean_stats.pop("growth_tag", None)
+    growth_style = data.get("growth_style") or clean_stats.pop("growth_style", None)
     traits = roll_player_personality(data.get('school'))
     clean_stats.setdefault('drive', traits['drive'])
     clean_stats.setdefault('loyalty', traits['loyalty'])
@@ -722,6 +848,7 @@ def commit_player_to_db(session: Session, data) -> int:
         trust_baseline=50,
 
         growth_tag=growth_tag,
+        growth_style=growth_style,
 
         **clean_stats
     )
@@ -1180,11 +1307,13 @@ class CreatePlayerEngine:
         phase = self._scratch["growth_phase"]
 
         if self.state.position == "Pitcher":
-            styles = ["Power Pitcher", "Technical Pitcher", "Fierce Pitcher", "Marathon Pitcher", "Balanced"]
+            styles = ["Heat Seeker", "Corner Artist", "Spin Doctor", "Balanced Pitcher"]
         elif self.state.position == "Catcher":
-            styles = ["Offensive Catcher", "Defensive General", "Balanced"]
-        else:
-            styles = ["Power Hitter", "Speedster", "Balanced", "Defensive Specialist"]
+            styles = ["Iron Wall", "Battery Bomber", "Field General", "Balanced Catcher"]
+        elif self.state.position == "Infielder":
+            styles = ["Glove Wizard", "Corner Crusher", "Table Setter", "Balanced Infielder"]
+        else:  # Outfielder
+            styles = ["Range Rover", "Laser Show", "Gap Hunter", "Balanced Outfielder"]
         self._scratch["growth_styles"] = styles
 
         if phase == "choose":
@@ -1294,16 +1423,45 @@ class CreatePlayerEngine:
                 done=False,
                 data=self._serialize_state(),
             )
+        if phase == "tokyo_side":
+            self._awaiting = "hometown_tokyo_side"
+            prefix = self._with_banner(
+                STEP_TITLES.get(5, "Pick Hometown"), ["Prefecture: Tokyo", "Choose East or West Tokyo (Esc to go back)"]
+            )
+            suffix = ["Use arrows + Enter to select; Esc to go back."]
+            options = ["East Tokyo (23 Wards)", "West Tokyo (Tama/Islands)"]
+            return DecisionResult(
+                summary=None,
+                requests=[
+                    DecisionRequest(kind="log", message=CLEAR_SCREEN),
+                    DecisionRequest(
+                        kind="prompt",
+                        message="",
+                        options=options,
+                        default="1",
+                        input_mode="menu_grid",
+                        payload={"prefix": prefix, "suffix": suffix, "cols": 1, "col_width": 40},
+                    ),
+                ],
+                done=False,
+                data=self._serialize_state(),
+            )
         if phase == "city":
             pref = self.state.prefecture_choice or ""
             cities = _load_cities_for_prefecture(self.session, pref)
+            side = None
+            side_label = ""
+            if pref == "Tokyo":
+                side = self._scratch.get("tokyo_side")
+                side_label = f" ({side.title()})" if side else ""
+                cities = _filter_tokyo_cities(cities, side)
             city_labels = [
                 f"{c.get('name', '--')} ({c.get('school_count', '')})" if c.get("school_count") else c.get("name", "--")
                 for c in cities
             ]
             self._awaiting = "hometown_city"
             prefix = self._with_banner(
-                STEP_TITLES.get(5, "Pick Hometown"), [f"Prefecture: {pref}", "Select a city or skip (Esc to go back)"]
+                STEP_TITLES.get(5, "Pick Hometown"), [f"Prefecture: {pref}{side_label}", "Select a city or skip (Esc to go back)"]
             )
             suffix = ["Use arrows + Enter to select; Esc to skip."]
             return DecisionResult(
@@ -1324,6 +1482,7 @@ class CreatePlayerEngine:
             )
         # done
         self._scratch.pop("hometown_phase", None)
+        self._scratch.pop("tokyo_side", None)
         self.step += 1
         return self.advance()
 
@@ -1338,21 +1497,51 @@ class CreatePlayerEngine:
             idx = int(val) - 1
             if 0 <= idx < len(prefectures):
                 self.state.prefecture_choice = prefectures[idx]
-                self._scratch["hometown_phase"] = "city"
+                if self.state.prefecture_choice == "Tokyo":
+                    self._scratch["tokyo_side"] = None
+                    self._scratch["hometown_phase"] = "tokyo_side"
+                else:
+                    self._scratch.pop("tokyo_side", None)
+                    self._scratch["hometown_phase"] = "city"
             return
 
         matches = [p for p in prefectures if val.lower() in p.lower()] if val else prefectures
         if not matches:
             return
         self.state.prefecture_choice = matches[0]
-        self._scratch["hometown_phase"] = "city"
+        if self.state.prefecture_choice == "Tokyo":
+            self._scratch["tokyo_side"] = None
+            self._scratch["hometown_phase"] = "tokyo_side"
+        else:
+            self._scratch.pop("tokyo_side", None)
+            self._scratch["hometown_phase"] = "city"
+
+    def _handle_hometown_tokyo_side(self, value: str) -> None:
+        if value == "0":
+            self._scratch["hometown_phase"] = "pref"
+            return
+        if not value.isdigit():
+            return
+        idx = int(value) - 1
+        if idx == 0:
+            self._scratch["tokyo_side"] = "east"
+            self._scratch["hometown_phase"] = "city"
+        elif idx == 1:
+            self._scratch["tokyo_side"] = "west"
+            self._scratch["hometown_phase"] = "city"
 
     def _handle_hometown_city(self, value: str) -> None:
         pref = self.state.prefecture_choice or ""
         city = value.strip()
         cities = _load_cities_for_prefecture(self.session, pref)
+        if pref == "Tokyo":
+            cities = _filter_tokyo_cities(cities, self._scratch.get("tokyo_side"))
+        side = self._scratch.get("tokyo_side") if pref == "Tokyo" else None
         if not cities:
-            self.state.hometown = pref
+            if pref == "Tokyo" and side:
+                self.state.hometown = f"{pref} ({side.title()})"
+            else:
+                self.state.hometown = pref
             self._scratch.pop("hometown_phase", None)
             self.step += 1
             return
@@ -1365,12 +1554,22 @@ class CreatePlayerEngine:
             if match is None:
                 match = next((c for c in cities if city.lower() in c['name'].lower()), None)
             if match:
-                self.state.hometown = f"{pref} — {match['name']}"
+                if pref == "Tokyo" and side:
+                    self.state.hometown = f"{pref} ({side.title()}) — {match['name']}"
+                else:
+                    self.state.hometown = f"{pref} — {match['name']}"
             else:
-                self.state.hometown = f"{pref} — {city}"
+                if pref == "Tokyo" and side:
+                    self.state.hometown = f"{pref} ({side.title()}) — {city}"
+                else:
+                    self.state.hometown = f"{pref} — {city}"
         else:
-            self.state.hometown = pref
+            if pref == "Tokyo" and side:
+                self.state.hometown = f"{pref} ({side.title()})"
+            else:
+                self.state.hometown = pref
         self._scratch.pop("hometown_phase", None)
+        self._scratch.pop("tokyo_side", None)
         self.step += 1
 
     # --- Step 6: school ---

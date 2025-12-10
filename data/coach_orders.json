@@ -1,0 +1,31 @@
+[
+  {
+    "key": "run_50km",
+    "description": "Run 50km this week (plan 3 Speed drills).",
+    "requirement": {"type": "action_count", "actions": ["train_speed"], "count": 3},
+    "reward_trust": 4,
+    "reward_ability_points": 1
+  },
+  {
+    "key": "practice_pickoffs",
+    "description": "Practice pick-offs twice this week.",
+    "requirement": {
+      "type": "action_count",
+      "actions": ["train_control", "team_practice"],
+      "count": 2
+    },
+    "reward_trust": 3,
+    "reward_ability_points": 1
+  },
+  {
+    "key": "bullpen_command",
+    "description": "Coach wants two high-intensity team reps.",
+    "requirement": {
+      "type": "action_count",
+      "actions": ["team_practice", "practice_match"],
+      "count": 2
+    },
+    "reward_trust": 5,
+    "reward_ability_points": 2
+  }
+]

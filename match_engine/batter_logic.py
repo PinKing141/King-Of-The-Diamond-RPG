@@ -272,7 +272,7 @@ def _should_slide_step(state, pitcher, runner_threats, fatigue_level: float) -> 
     if not threat:
         return False
     pick_skill = getattr(pitcher, "pickoff_rating", getattr(pitcher, "control", 50)) or 50
-    base = _tune("slide_step_base", 0.18)
+    base = _tune("slide_step_base", 0.2)
     base += max(0.0, threat.lead_off_distance - 7.0) * _tune("slide_step_lead_scale", 0.04)
     base += threat.jump_quality * _tune("slide_step_jump_scale", 0.02)
     base += max(0.0, getattr(state, "pressure_index", 0.0) - 5.0) * _tune("slide_step_pressure_scale", 0.02)
@@ -367,13 +367,13 @@ def _maybe_call_pickoff_attempt(state, pitcher, runner_threats):
         return False
     threat = runner_threats[target_idx]
     pick_skill = getattr(pitcher, "pickoff_rating", getattr(pitcher, "control", 50)) or 50
-    base = _tune("pickoff_base", 0.08)
+    base = _tune("pickoff_base", 0.1)
     base += max(0.0, threat.lead_off_distance - 7.0) * _tune("pickoff_lead_scale", 0.05)
     base += threat.jump_quality * _tune("pickoff_jump_scale", 0.03)
     base += max(0.0, pick_skill - 55) * _tune("pickoff_skill_scale", 0.003)
     base += max(0.0, getattr(state, "pressure_index", 0.0) - 6.0) * _tune("pickoff_pressure_scale", 0.015)
     base -= _pitcher_fatigue_level(state, pitcher) * _tune("pickoff_fatigue_penalty", 0.1)
-    base = max(0.0, min(_tune("pickoff_cap", 0.6), base + rng.uniform(-_tune("pickoff_rng_delta", 0.02), _tune("pickoff_rng_delta", 0.02))))
+    base = max(0.0, min(_tune("pickoff_cap", 0.65), base + rng.uniform(-_tune("pickoff_rng_delta", 0.02), _tune("pickoff_rng_delta", 0.02))))
     if rng.random() > base:
         return False
     return _execute_pickoff_attempt(state, pitcher, runner_threats, target_idx)
@@ -455,7 +455,30 @@ def _apply_squeeze_mods(batter_mods, intent: BuntIntent):
     return batter_mods
 
 
-def _resolve_bunt_contact(state, batter, pitcher, intent: BuntIntent, trait_mods):
+def _bunt_pitch_modifier(pitch_res) -> float:
+    """Adjust bunt success based on pitch family/location/velo heuristics."""
+    if not pitch_res:
+        return 0.0
+    location = getattr(pitch_res, "location", None) or "Zone"
+    family = getattr(pitch_res, "pitch_family", None) or getattr(pitch_res, "pitch_name", "")
+    velocity = getattr(pitch_res, "velocity", 0) or 0
+    delta = 0.0
+    # Hardest: high-octane fastballs in/near zone
+    if family and "Fastball" in str(family):
+        if velocity >= 145 and location == "Zone":
+            delta -= 0.12
+        elif location == "Chase":
+            delta -= 0.08
+    else:
+        # Offspeed/breakers are easier to deaden, especially in the zone
+        if location == "Zone":
+            delta += 0.06
+        elif location == "Chase":
+            delta += 0.02
+    return delta
+
+
+def _resolve_bunt_contact(state, batter, pitcher, intent: BuntIntent, trait_mods, pitch_res=None):
     runner = _runner_at_base(state, intent.runner_base)
     if not runner:
         return ContactResult(HitType.OUT, "Squares early but no runner breaks.", credited_hit=False, special_play=intent.play)
@@ -467,6 +490,7 @@ def _resolve_bunt_contact(state, batter, pitcher, intent: BuntIntent, trait_mods
     success = _tune("bunt_success_base", 0.45)
     success += (contact_skill - 55) * BUNT_CONTACT_SCALE
     success += (runner_speed - 60) * BUNT_SPEED_SCALE
+    success += _bunt_pitch_modifier(pitch_res)
     if threat:
         success += threat.jump_quality * BUNT_JUMP_SCALE
         success += max(0.0, threat.lead_off_distance - 7.0) * BUNT_LEAD_SCALE
@@ -1572,6 +1596,7 @@ class AtBatStateMachine:
         slide_trait_mods: dict = {}
 
         defense_runners = getattr(state, "runners", None) or []
+        io = getattr(state, "io", None)
         if _user_controls_defense(state) and any(defense_runners[:2]):
             from player_roles.pitcher_controls import prompt_runner_threat_controls
             prompt_runner_threat_controls(self.pitcher, state, io=io)
@@ -1711,7 +1736,7 @@ class AtBatStateMachine:
         p_mod = getattr(pitch_res, 'power_mod', 0)
         bunt_intent = getattr(pitch_res, "bunt_intent", None)
         if bunt_intent and getattr(bunt_intent, "squeeze", False):
-            contact_res = _resolve_bunt_contact(state, self.batter, self.pitcher, bunt_intent, batter_trait_mods)
+            contact_res = _resolve_bunt_contact(state, self.batter, self.pitcher, bunt_intent, batter_trait_mods, pitch_res=pitch_res)
         else:
             contact_res = resolve_contact(
                 pitch_res.contact_quality,

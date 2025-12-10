@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import random
 import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence
@@ -32,6 +33,8 @@ from game.coach_strategy import consume_strategy_mods
 
 HALF_TOP = InningHalf.TOP.value
 HALF_BOT = InningHalf.BOT.value
+
+logger = logging.getLogger(__name__)
 
 
 def _serialize_lineup(state, lineup: List[Any]) -> List[Dict[str, Any]]:
@@ -993,6 +996,25 @@ def run_match(
         )
 
         winner = controller.start_game()
+        rivalry_ctx = getattr(state, "rival_match_context", None)
+        if rivalry_ctx:
+            winner_team_id = getattr(winner, "id", None)
+            try:
+                rivalry_ctx.finalize(winner_team_id)
+                logs = getattr(state, "logs", None)
+                if isinstance(logs, list) and winner_team_id:
+                    hero_team = getattr(rivalry_ctx, "hero_team_id", None)
+                    rival_team = getattr(rivalry_ctx, "rival_team_id", None)
+                    hero_name = getattr(state, "hero_name", "Hero")
+                    rival_name = getattr(state, "rival_name", "Rival")
+                    heat = getattr(getattr(rivalry_ctx, "rival", None), "heat_level", None)
+                    heat_label = f" (heat {heat:.1f})" if isinstance(heat, (int, float)) else ""
+                    if winner_team_id == hero_team:
+                        logs.append(f"[Rivals] {hero_name} claims the matchup over {rival_name}{heat_label}.")
+                    elif winner_team_id == rival_team:
+                        logs.append(f"[Rivals] {rival_name} bites back against {hero_name}{heat_label}.")
+            except Exception:
+                logger.warning("Failed to finalize rivalry result", exc_info=True)
         bus = getattr(state, "event_bus", None)
         summary_line = summarize_mastery_report(state)
         if bus:

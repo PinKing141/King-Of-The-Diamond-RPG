@@ -1,0 +1,101 @@
+{
+  "Heat Seeker": {
+    "desc": "Overwhelm batters with raw velocity and an intimidating presence.",
+    "pros": "+Velocity scaling, +Stamina headroom, high fastballs induce whiffs",
+    "cons": "-Control develops slowly, punished heavily for mistakes in the zone",
+    "detail": "Fastball velocity and Stamina grow rapidly. Control and Command lag behind, meaning early career innings may be wild until you gain experience."
+  },
+  "Corner Artist": {
+    "desc": "Surgical precision that paints the edges of the strike zone.",
+    "pros": "+Control growth, +Command consistency, efficient pitch counts",
+    "cons": "-Lower Velocity ceiling, reliant on umpire calls and framing",
+    "detail": "Control and Command attributes upgrade cheaper and faster. Velocity gains are minimal, requiring you to rely on location to generate weak contact."
+  },
+  "Spin Doctor": {
+    "desc": "Master of deception who makes the ball dance away from barrels.",
+    "pros": "+Movement scaling, +Break sharpness, excels at strikeouts",
+    "cons": "-Stamina drains faster on high-effort pitches, wild pitches common",
+    "detail": "Movement and breaking ball quality improve quickly. However, Control can be volatile, and high-break pitches often carry a higher stamina tax."
+  },
+  "Balanced Pitcher": {
+    "desc": "Jack of all trades who adapts to any rotation spot.",
+    "pros": "No glaring weakness, steady gains across all pitching tools",
+    "cons": "No extreme specialty, elite velocity or command arrives later",
+    "detail": "Growth is distributed evenly between Velocity, Control, and Stamina. A safe path that avoids major holes in your game but lacks an immediate 'killer' tool."
+  },
+
+  "Iron Wall": {
+    "desc": "An impenetrable defender who controls the run game.",
+    "pros": "+Fielding (Blocking), +Throwing (Arm Strength), pitchers trust you",
+    "cons": "-Speed is non-existent, offensive stats grow very slowly",
+    "detail": "Fielding and Throwing attributes skyrocket, minimizing passed balls and stolen bases. Contact and Power gains are significantly muted."
+  },
+  "Battery Bomber": {
+    "desc": "A heavy hitter who brings run support from behind the dish.",
+    "pros": "+Power, +Contact, creates a fearsome heart of the order",
+    "cons": "-Fielding lags, slower pop-time on throws to second",
+    "detail": "Power and Contact scale like a corner infielder. However, your Defense and Throwing take longer to develop, potentially hurting your pitcher's confidence."
+  },
+  "Field General": {
+    "desc": "A cerebral leader who elevates the entire pitching staff.",
+    "pros": "+Mental, +Command bonus for pitchers (Framing), high Baseball IQ",
+    "cons": "-Raw physical tools (Speed/Power) are average at best",
+    "detail": "Mental attributes and technical Fielding (Framing) grow fast. While not a physical specimen, your presence stabilizes the battery's performance."
+  },
+  "Balanced Catcher": {
+    "desc": "A reliable backstop who contributes on both sides of the ball.",
+    "pros": "Steady glove, respectable bat, versatile lineup usage",
+    "cons": "Master of none; won't win Gold Gloves or Silver Sluggers early",
+    "detail": "Splits experience evenly between defensive drills and batting practice. Good for a catcher who needs to play every day without being a liability anywhere."
+  },
+
+  "Glove Wizard": {
+    "desc": "Defensive specialist who turns hits into outs.",
+    "pros": "+Fielding range, +Throwing accuracy, quicker double plays",
+    "cons": "-Power ceiling is low, relies on singles and walks",
+    "detail": "Fielding and Reaction grow rapidly, making you elite at SS or 2B. Power is the tradeoff, limiting you to the bottom of the batting order early on."
+  },
+  "Corner Crusher": {
+    "desc": "A power source designed for the hot corner or first base.",
+    "pros": "+Power, +Throwing (Arm Strength), intimidates opposing pitchers",
+    "cons": "-Speed, -Fielding range, high strikeout risk",
+    "detail": "Power and Throwing strength see major gains. Speed and lateral Fielding range are poor, making this style best suited for 1B or 3B."
+  },
+  "Table Setter": {
+    "desc": "Chaos agent who gets on base and makes things happen.",
+    "pros": "+Speed, +Contact, excels at bunting and stealing",
+    "cons": "-Power is minimal, weaker Throwing arm",
+    "detail": "Speed and Contact are the priority, perfect for leadoff hitters. You won't hit many home runs, and your Throwing arm may limit you to 2B."
+  },
+  "Balanced Infielder": {
+    "desc": "A dependable glove and bat who fits any infield slot.",
+    "pros": "Adaptable to 2B/SS/3B, steady development in all tools",
+    "cons": "Lacks the elite range of a Wizard or the pop of a Crusher",
+    "detail": "Even distribution of XP across Fielding, Contact, and Power. A safe bet for a utility player or a solid everyday starter with no major flaws."
+  },
+
+  "Range Rover": {
+    "desc": "A center-field prototype who covers gap to gap.",
+    "pros": "+Speed, +Fielding range, tracks down difficult fly balls",
+    "cons": "-Throwing power is average, -Power hitting is secondary",
+    "detail": "Speed and Fielding receive the highest multipliers, essential for CF. Batting power is sacrificed for elite defensive coverage."
+  },
+  "Laser Show": {
+    "desc": "Right-field profile with an arm that stops runners.",
+    "pros": "+Throwing (Arm Strength), +Power, punishes greedy baserunners",
+    "cons": "-Speed is average, -Contact consistency",
+    "detail": "Throwing and Power are the focus. You can gun down runners from the warning track, but you might strike out more often than contact hitters."
+  },
+  "Gap Hunter": {
+    "desc": "Offensive specialist who lives for extra-base hits.",
+    "pros": "+Contact, +Power (Gap), high doubles/triples potential",
+    "cons": "-Fielding instincts are slow, -Throwing accuracy",
+    "detail": "Contact and Power grow efficiently. You are a bat-first outfielder (likely LF) where defensive shortcomings are easier to hide."
+  },
+  "Balanced Outfielder": {
+    "desc": "A five-tool hopeful who stays consistent.",
+    "pros": "Good blend of Speed, Arm, and Bat; fits any OF spot",
+    "cons": "Takes years to become elite in any single category",
+    "detail": "Allocates training evenly across Speed, Fielding, and Batting. The ideal choice if you aren't sure which outfield position you will ultimately lock down."
+  }
+}

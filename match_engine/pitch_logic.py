@@ -499,6 +499,10 @@ def _maybe_flag_wild_pitch(result, state, pitcher):
     block_skill = _catcher_block_skill(catcher, trust_snapshot) if catcher else 0.45
 
     control = getattr(pitcher, 'control', 50) or 50
+    command = getattr(pitcher, 'command', None)
+    if command in (None, 0):
+        command = control
+    control_anchor = (control * 0.65) + (command * 0.35)
     fatigue = max(0, _weather_adjusted_pitch_count(state, getattr(pitcher, 'id', None)) - 85)
     weather_push = getattr(weather, 'wild_pitch_modifier', 0.0) if weather else 0.0
     effects = _weather_effects(state)
@@ -514,7 +518,7 @@ def _maybe_flag_wild_pitch(result, state, pitcher):
     except (AttributeError, TypeError):
         mechanics_risk = 0.0
 
-    base = max(0.0, (60 - control) * 0.0025)
+    base = max(0.0, (60 - control_anchor) * 0.0025)
     fatigue_bonus = fatigue * 0.001
     chance = base + fatigue_bonus + mechanics_risk
     if weather_push >= 0:
@@ -981,6 +985,11 @@ def resolve_pitch(
     effective_movement = base_movement * movement_plane_mult * plane_bonus * slot_group_bonus
 
     base_control = (getattr(pitcher, 'control', 50) or 50) + pitcher_trait_mods.get('control', 0)
+    base_command = getattr(pitcher, 'command', None)
+    if base_command in (None, 0):
+        base_command = base_control
+    else:
+        base_command += pitcher_trait_mods.get('command', 0)
     effective_control = (base_control * slot_mods['control_penalty_mult']) - control_penalty
     effective_control -= getattr(slide_profile, "control_penalty", 0.0)
     effective_control += mastery_ctrl_bonus
@@ -994,19 +1003,37 @@ def resolve_pitch(
         mechanics_deception = mech_adj.deception_bonus
         perception_penalty = mech_adj.perception_penalty
         mechanics_tags = mech_adj.tags
+        effective_command = base_command * slot_mods['control_penalty_mult']
+        effective_command -= control_penalty * 0.5
+        effective_command -= getattr(slide_profile, "control_penalty", 0.0) * 0.5
+        effective_command += mastery_ctrl_bonus * 0.5
+        effective_command += mix_ctrl * 0.5
+        effective_command += sig_mods.get("ctrl", 0.0) * 0.5
+        effective_command += mech_adj.control_bonus * 0.5
+    else:
+        effective_command = (base_command * slot_mods['control_penalty_mult']) - (control_penalty * 0.5)
+        effective_command -= getattr(slide_profile, "control_penalty", 0.0) * 0.5
+        effective_command += mastery_ctrl_bonus * 0.5
+        effective_command += mix_ctrl * 0.5
+        effective_command += sig_mods.get("ctrl", 0.0) * 0.5
     if weather:
         effective_control -= weather.wild_pitch_modifier * 60
+        effective_command -= weather.wild_pitch_modifier * 30
     if weather_effects and weather_effects.ball_slip_chance:
         effective_control -= weather_effects.ball_slip_chance * 35
+        effective_command -= weather_effects.ball_slip_chance * 20
     pitch_confidence = get_confidence(state, pitcher.id)
     effective_control += pitch_confidence * 0.25
+    effective_command += pitch_confidence * 0.2
     velocity += pitch_confidence * 0.05
     if dominance:
         effective_control += dominance * 1.25
         effective_movement += dominance * 1.4
+        effective_command += dominance * 0.9
     if tto_stage:
         effective_control -= 4 * tto_stage
         velocity -= tto_stage * 0.5
+        effective_command -= 2 * tto_stage
 
     effective_movement += mix_move
     mechanics_deception += mix_deception
@@ -1019,15 +1046,18 @@ def resolve_pitch(
         sync_buffer = max(0.6, 1.0 - (battery_sync_value * 0.08))
         effective_control -= tension * 1.5 * sync_buffer
         effective_movement -= tension * 0.5 * sync_buffer
+        effective_command -= tension * 1.0 * sync_buffer
     elif trust_snapshot > 65:
         sync_bonus = 1.0 + max(0.0, battery_sync_value) * 0.08
         effective_control += (trust_snapshot - 65) * 0.15 * sync_bonus
         effective_movement += (trust_snapshot - 65) * 0.05 * sync_bonus
+        effective_command += (trust_snapshot - 65) * 0.1 * sync_bonus
 
     if forced_call:
         forced_penalty = 3 + max(0.0, -battery_sync_value) * 0.5
         effective_control -= forced_penalty
         effective_movement -= forced_penalty * 0.2
+        effective_command -= forced_penalty * 0.7
 
     flow_offense = _flow_multiplier(state, _offense_team_id(state))
     flow_defense = _flow_multiplier(state, _defense_team_id(state))
@@ -1035,6 +1065,7 @@ def resolve_pitch(
         effective_control *= flow_defense
         effective_movement *= flow_defense
         velocity *= flow_defense
+        effective_command *= flow_defense
 
     aura_penalty = _baserunning_aura_penalty(state)
     if aura_penalty:
@@ -1043,6 +1074,7 @@ def resolve_pitch(
         runner = _runner_on_base(state, 0)
         if isinstance(logs, list) and runner:
             logs.append(f"[Field General] {getattr(runner, 'name', 'Runner')} toys with the pitcher on first. Control -10.")
+        effective_command -= aura_penalty * 0.5
 
     pitcher_pressure = state.pressure_penalty(pitcher, "pitcher") if hasattr(state, "pressure_penalty") else 0.0
     if pitcher_pressure:
@@ -1050,9 +1082,11 @@ def resolve_pitch(
         effective_control *= control_factor
         effective_movement *= control_factor
         velocity *= max(0.6, 1.0 - pitcher_pressure * 0.5)
+        effective_command *= max(0.55, 1.0 - pitcher_pressure * 0.8)
 
     clutch_effect = _consume_clutch_pitch_effect(state, pitcher_id)
     if clutch_effect:
+        pre_clutch_control = effective_control
         quality = float(clutch_effect.get("quality", 0.5) or 0.0)
         effective_control, effective_movement, velocity, special = _apply_clutch_bonus(
             effective_control,
@@ -1060,6 +1094,7 @@ def resolve_pitch(
             velocity,
             quality,
         )
+        effective_command += max(0.0, effective_control - pre_clutch_control) * 0.4
         clutch_effect["special"] = special
         clutch_effect["applied_inning"] = getattr(state, "inning", 1)
         if isinstance(getattr(state, "logs", None), list):
@@ -1253,6 +1288,9 @@ def resolve_pitch(
         reaction += 3 * tto_stage
         bat_control += 4 * tto_stage
     
+    cmd_delta = base_command - base_control
+    location_skill = _clamp(effective_control + (cmd_delta * 0.35), 5.0, 110.0)
+
     # DECISION: SWING OR TAKE?
     should_swing = False
     
@@ -1342,7 +1380,7 @@ def resolve_pitch(
         _battle_breakdown.append(("signature", sig_mods["contact_tax"]))
 
     # Pitcher Control Check (Mistake pitch?)
-    mistake_pitch = rng.randint(0, 100) > effective_control
+    mistake_pitch = rng.randint(0, 100) > location_skill
     if mistake_pitch:
         hit_difficulty -= 20 # Hanging pitch
     

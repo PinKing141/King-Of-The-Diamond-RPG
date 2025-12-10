@@ -13,6 +13,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from database.setup_db import PitchRepertoire
 from core.io_interface import IOInterface
 from ui.ui_core import BAR_WIDTH as UI_BAR_WIDTH, colored_bar as ui_colored_bar, simple_bar as ui_simple_bar
+from game.systems import talent_tree
+from game.systems.talent_tree_service import (
+    get_player_talent_state,
+    list_owned_talent_nodes,
+    unlock_talent_node,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -311,10 +317,17 @@ def open_pitch_lab(session, player, *, io: Optional[IOInterface] = None) -> None
             if sig:
                 label += f" | Sig: {sig}{' (Unlocked)' if unlocked else ' (Ready)' if ready else ''}"
             _log(label, io=io)
-        _log("[U] Unlock first ready signature (1 AP)  |  [Q] Back", io=io)
+        _log("[T] Talent Tree  |  [U] Unlock first ready signature (1 AP)  |  [Q] Back", io=io)
         choice = _prompt("> ", io=io).strip().lower()
         if choice == "q":
             break
+        if choice == "t":
+            _open_talent_menu(session, player, io=io)
+            try:
+                session.refresh(player)
+            except Exception:
+                pass
+            continue
         if choice == "u":
             ready_pitch = next((p for p in repertoire if getattr(p, "signature_ready", False) and not getattr(p, "signature_unlocked", False)), None)
             if not ready_pitch:
@@ -354,6 +367,84 @@ def open_pitch_lab(session, player, *, io: Optional[IOInterface] = None) -> None
             f"Signature: {getattr(pitch, 'signature_tag', 'None')} ({'Unlocked' if getattr(pitch, 'signature_unlocked', False) else 'Locked'})",
             io=io,
         )
+        _prompt("Press Enter...", io=io)
+
+
+def _open_talent_menu(session, player, *, io: Optional[IOInterface] = None) -> None:
+    tree = talent_tree._load_talent_tree()
+    if not tree:
+        _log("No talent tree data loaded.", io=io)
+        _prompt("Press Enter...", io=io)
+        return
+
+    def _render_ascii_talent_tree() -> None:
+        owned = set(get_player_talent_state(player).get("owned_nodes", []))
+        tiers = sorted({n.tier for n in tree.values()})
+        _log("[Legend] [*] Unlocked  [>] Available  [ ] Locked", io=io)
+        for tier in tiers:
+            nodes = [n for n in tree.values() if n.tier == tier]
+            nodes.sort(key=lambda n: n.key)
+            labels = []
+            for node in nodes:
+                if node.key in owned:
+                    marker = "*"
+                elif talent_tree.can_unlock_talent(player, node.key, owned_nodes=owned):
+                    marker = ">"
+                else:
+                    marker = " "
+                labels.append(f"[{marker}] {node.key}")
+            _log(f"T{tier}: " + "  ".join(labels), io=io)
+            for node in nodes:
+                if node.parents:
+                    parents = ", ".join(node.parents)
+                    _log(f"     {node.key} <= {parents}", io=io)
+
+    while True:
+        state = get_player_talent_state(player)
+        owned = set(state.get("owned_nodes", []))
+        ap = state.get("ability_points", 0)
+        _log("\n=== Talent Tree ===", io=io)
+        _log(f"Ability Points: {ap}", io=io)
+        _render_ascii_talent_tree()
+
+        tiers = sorted({n.tier for n in tree.values()})
+        options: list[tuple[str, talent_tree.TalentNode, str]] = []
+        for tier in tiers:
+            _log(f"-- Tier {tier} --", io=io)
+            nodes = [n for n in tree.values() if n.tier == tier]
+            nodes.sort(key=lambda n: n.key)
+            for node in nodes:
+                status = "Unlocked" if node.key in owned else ("Available" if talent_tree.can_unlock_talent(player, node.key, owned_nodes=owned) else "Locked")
+                marker = ">" if status == "Available" else " "
+                _log(f" {marker} {node.key}: {node.description} (Cost {node.cost}) [{status}]", io=io)
+                options.append((node.key, node, status))
+
+        _log("Select node key to unlock, or Q to return.", io=io)
+        choice = _prompt("> ", io=io).strip()
+        if not choice or choice.lower() == "q":
+            break
+        match = next((item for item in options if item[0].lower() == choice.lower()), None)
+        if not match:
+            _log("Invalid selection.", io=io)
+            continue
+        node_key, node, status = match
+        if status == "Unlocked":
+            _log("Already unlocked.", io=io)
+            continue
+        if status != "Available":
+            _log("Requirements not met.", io=io)
+            continue
+        confirm = _prompt(f"Unlock {node.key} for {node.cost} AP? (y/n): ", io=io).strip().lower()
+        if confirm != "y":
+            continue
+        ok, msg = unlock_talent_node(session, player, node_key)
+        _log(msg, io=io)
+        if ok:
+            try:
+                session.refresh(player)
+            except Exception:
+                pass
+            continue
         _prompt("Press Enter...", io=io)
 
 

@@ -31,6 +31,37 @@ XP_TRACKED_STATS = {
     "command",
 }
 
+GROWTH_STYLE_MULTS: dict[str, dict[str, float]] = {
+    "heat seeker": {"velocity": 1.2, "stamina": 1.1, "control": 0.85, "command": 0.8, "movement": 0.95},
+    "corner artist": {"control": 1.2, "command": 1.2, "velocity": 0.85, "movement": 0.95},
+    "spin doctor": {"movement": 1.25, "command": 0.9, "control": 0.9, "stamina": 0.9},
+    "balanced pitcher": {},
+    "iron wall": {"fielding": 1.25, "throwing": 1.2, "contact": 0.85, "power": 0.85, "speed": 0.8},
+    "battery bomber": {"power": 1.2, "contact": 1.1, "fielding": 0.85, "throwing": 0.9},
+    "field general": {"fielding": 1.1, "throwing": 1.05, "contact": 0.95, "power": 0.95, "speed": 0.9},
+    "balanced catcher": {},
+    "glove wizard": {"fielding": 1.25, "throwing": 1.1, "speed": 1.05, "power": 0.85},
+    "corner crusher": {"power": 1.25, "throwing": 1.1, "contact": 0.95, "speed": 0.8, "fielding": 0.9},
+    "table setter": {"speed": 1.25, "contact": 1.1, "throwing": 0.85, "power": 0.75},
+    "balanced infielder": {},
+    "range rover": {"speed": 1.25, "fielding": 1.2, "throwing": 0.95, "power": 0.85},
+    "laser show": {"throwing": 1.25, "power": 1.15, "contact": 0.9, "speed": 0.9},
+    "gap hunter": {"contact": 1.15, "power": 1.1, "fielding": 0.9, "throwing": 0.9},
+    "balanced outfielder": {},
+}
+
+
+def _apply_growth_style(style: Optional[str], stat_gains: dict) -> None:
+    if not style or not stat_gains:
+        return
+    mods = GROWTH_STYLE_MULTS.get(style.lower())
+    if not mods:
+        return
+    for stat, gain in list(stat_gains.items()):
+        mult = mods.get(stat)
+        if mult is not None:
+            stat_gains[stat] = gain * mult
+
 BREAKTHROUGH_BASE_CHANCE = 0.01
 BREAKTHROUGH_SCALE = 0.0004
 BREAKTHROUGH_MIN = 0.005
@@ -147,7 +178,13 @@ def apply_training_action_dto(
 
     fatigue = player.fatigue or 0
     starting_fatigue = fatigue
-    style = player.growth_tag or player.attributes.get("growth_tag") or "Normal"
+    style = (
+        player.attributes.get("growth_style")
+        or getattr(player, "growth_style", None)
+        or player.growth_tag
+        or player.attributes.get("growth_tag")
+        or "Normal"
+    )
     conditioning = player.conditioning if player.conditioning is not None else 50
     injury_days = player.injury_days or 0
     jersey_num = player.jersey_number
@@ -293,6 +330,8 @@ def apply_training_action_dto(
         elif gain_mult < 1.0:
             cond_note = " (Sluggish...)"
         summary = f"Drill ({drill.title()}): Session complete.{cond_note}"
+
+    _apply_growth_style(style, stat_gains)
 
     slump_timer = player.slump_timer or 0
     if slump_timer > 0:

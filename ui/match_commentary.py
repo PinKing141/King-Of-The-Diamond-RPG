@@ -196,6 +196,8 @@ class CommentaryListener:
         event_bus.subscribe(EventType.BATTERY_SHAKE.value, self._on_battery_shake)
         event_bus.subscribe(EventType.BATTERY_FORCED_CALL.value, self._on_battery_forced)
         event_bus.subscribe(EventType.BASERUN_PICKOFF.value, self._on_pickoff_event)
+        event_bus.subscribe(EventType.BASERUN_THREAT.value, self._on_baserun_threat)
+        event_bus.subscribe(EventType.BASERUN_STEAL.value, self._on_baserun_steal)
         event_bus.subscribe(EventType.OFFENSE_CALLS_SQUEEZE.value, self._on_squeeze_call)
 
     def _log(self, message: str, *, level: str = "info") -> None:
@@ -250,6 +252,32 @@ class CommentaryListener:
             self._log(f"   Score knotted at {score}. Heading to extra innings ({inning + 1}).")
         elif phase == "DRAW":
             self._log("   Match declared a draw. Arms are spent, spirits remain high.")
+
+    def _on_baserun_threat(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        runner_id = payload.get("runner_id")
+        base = payload.get("base")
+        lead = payload.get("lead")
+        jump = payload.get("jump")
+        tension = payload.get("tension")
+        name = self._player_names.get(runner_id, "Runner")
+        base_label = {0: "first", 1: "second", 2: "third"}.get(base, "first")
+        if tension == "high" or (lead and lead >= 9.5) or (jump and jump >= 3.0):
+            self._log(f"   >> {name} takes a huge lead off {base_label}! Crowd murmurs.", level="warning")
+        elif tension is None:
+            self._log(f"   >> {name} edges off {base_label}. (Lead {lead:.1f} / Jump {jump:.1f})")
+
+    def _on_baserun_steal(self, payload: Dict[str, Any]) -> None:
+        if not commentary_enabled():
+            return
+        runner_id = payload.get("runner_id")
+        success = payload.get("success")
+        name = self._player_names.get(runner_id, "Runner")
+        if success:
+            self._log(f"   >> {name} swipes the bag!", level="info")
+        else:
+            self._log(f"   >> {name} gunned down trying to steal.", level="warning")
 
     def _on_game_over(self, payload: Dict[str, Any]) -> None:
         if not commentary_enabled():

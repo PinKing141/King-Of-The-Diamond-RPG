@@ -259,16 +259,18 @@ def simulate_pickoff(state, *, threat: RunnerThreatState, pitcher) -> PickoffOut
 
 
 def note_runner_pressure(state, threat: RunnerThreatState) -> None:
-    _publish(
-        state,
-        EventType.BASERUN_THREAT,
-        {
-            "runner_id": getattr(threat.runner, "id", None),
-            "base": threat.base_index,
-            "lead": threat.lead_off_distance,
-            "jump": threat.jump_quality,
-        },
-    )
+    payload = {
+        "runner_id": getattr(threat.runner, "id", None),
+        "base": threat.base_index,
+        "lead": threat.lead_off_distance,
+        "jump": threat.jump_quality,
+    }
+    _publish(state, EventType.BASERUN_THREAT, payload)
+
+    if threat.lead_off_distance >= 9.5 or threat.jump_quality >= 3.0:
+        payload = dict(payload)
+        payload["tension"] = "high"
+        _publish(state, EventType.BASERUN_THREAT, payload)
 
 
 __all__ = [

@@ -371,6 +371,76 @@ CONDITION_REGISTRY: Dict[str, Callable[[Player, Dict[str, float], Dict[str, obje
 }
 
 
+def _stat_lookup(player: Player, key: str, default: int = 0) -> int:
+    """Safely read an int-like stat from the player record."""
+
+    value = getattr(player, key, None)
+    if value is None and hasattr(player, "__dict__"):
+        value = player.__dict__.get(key)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def evaluate_position_change_request(player: Player, target_pos: str) -> Tuple[bool, str]:
+    """Return whether a player meets the gates for a requested position change.
+
+    The intent is to gate two-way unlocks behind trust and tangible physical tools
+    instead of pure RNG. Target positions are compared case-insensitively.
+    """
+
+    target = (target_pos or "").strip().lower()
+    throwing = _stat_lookup(player, "throwing")
+    velocity = _stat_lookup(player, "velocity")
+    fielding = _stat_lookup(player, "fielding")
+    speed = _stat_lookup(player, "speed")
+    loyalty = _stat_lookup(player, "loyalty")
+    mental = _stat_lookup(player, "mental")
+
+    if target == "pitcher":
+        if throwing < 65 and velocity < 130:
+            return False, "Your arm isn't strong enough. (Need 65+ Throwing or 130+ Velo)"
+    elif target in {"ss", "2b", "shortstop", "second base"}:
+        if fielding < 60 or speed < 55:
+            return False, "Your glove work or first step is short of the middle infield standard."
+    elif target == "catcher":
+        if loyalty < 50 or mental < 50:
+            return False, "You lack the mindset to lead the battery. (Need 50+ Loyalty & Mental)"
+
+    return True, "I'll let you try it out in the next practice."
+
+
+def apply_position_change_request(
+    session: Session,
+    player: Player,
+    target_pos: str,
+    *,
+    trust_gate: int = 80,
+    trust_cost: int = 15,
+) -> Tuple[bool, str]:
+    """Process a coach negotiation for a secondary position unlock.
+
+    - Fails fast if trust is too low.
+    - Evaluates physical gates before approving.
+    - On success: marks player as two-way, assigns secondary position, and spends trust.
+    """
+
+    trust = _stat_lookup(player, "trust_baseline")
+    if trust < trust_gate:
+        return False, f"Coach: Focus on your current role before asking for favors. (Need {trust_gate} Trust)"
+
+    allowed, reason = evaluate_position_change_request(player, target_pos)
+    if not allowed:
+        return False, f"Coach: No. {reason}"
+
+    player.is_two_way = True
+    player.secondary_position = target_pos
+    player.trust_baseline = max(0, trust - trust_cost)
+    session.commit()
+    return True, f"Coach: {reason}"
+
+
 def _default_milestone_payload() -> List[Dict[str, object]]:
     return [
         {

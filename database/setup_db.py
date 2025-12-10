@@ -156,6 +156,8 @@ def ensure_player_schema():
         statements.append("ALTER TABLE players ADD COLUMN arm_slot VARCHAR DEFAULT 'Three-Quarters'")
     if 'ability_points' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN ability_points INTEGER DEFAULT 0")
+    if 'talent_nodes' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN talent_nodes TEXT")
     if 'training_xp' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN training_xp TEXT DEFAULT '{}'")
     if 'theme_song' not in columns:
@@ -482,6 +484,7 @@ class Player(Base):
     overall = Column(Integer, default=0)
     potential_grade = Column(String, default="C")
     growth_tag = Column(String, default="Normal")
+    growth_style = Column(String, nullable=True)
     theme_song = Column(String, nullable=True)
 
     # Mental / Battery

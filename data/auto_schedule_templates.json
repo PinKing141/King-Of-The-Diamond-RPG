@@ -1,0 +1,29 @@
+{
+  "default": [
+    ["train_power", "team_practice", "rest"],
+    ["train_speed", "study", "social"],
+    ["practice_match", "rest", "mind"],
+    ["train_control", "team_practice", "rest"],
+    ["train_contact", "study", "mind"],
+    ["team_practice", "rest", "social"],
+    ["rest", "mind", "social"]
+  ],
+  "rest_heavy": [
+    ["rest", "mind", "rest"],
+    ["study", "rest", "social"],
+    ["rest", "rest", "mind"],
+    ["train_control", "rest", "rest"],
+    ["rest", "study", "rest"],
+    ["team_practice", "rest", "rest"],
+    ["rest", "social", "rest"]
+  ],
+  "technical_focus": [
+    ["train_control", "study", "mind"],
+    ["train_contact", "study", "social"],
+    ["train_speed", "rest", "mind"],
+    ["bullpen_session", "team_practice", "mind"],
+    ["train_power", "study", "rest"],
+    ["team_practice", "rest", "study"],
+    ["rest", "mind", "social"]
+  ]
+}
