@@ -583,16 +583,20 @@ def _support_tier(state: MatchState, school) -> int:
 
 
 def _emit_scouting_card(state: MatchState) -> None:
-    opponent = state.away_team if getattr(state, "top_bottom", "Top") == "Top" else state.away_team
+    half = getattr(state, "top_bottom", "Top")
+    label = getattr(half, "value", half)
+    label = str(label).lower()
+    is_top = label.startswith("top")
+
+    opponent = state.away_team if is_top else state.home_team
     if not opponent:
         return
-    lineup = getattr(state, "away_lineup", [])
-    star = None
-    if lineup:
-        star = max(lineup, key=lambda p: (getattr(p, "overall", 0) or 0))
+
+    lineup = state.away_lineup if is_top else getattr(state, "home_lineup", [])
+    star = max(lineup, key=lambda p: (getattr(p, "overall", 0) or 0)) if lineup else None
     band_tier = _support_tier(state, opponent)
     era = getattr(opponent, "current_era", "REBUILDING") or "REBUILDING"
-    text = f"[Scouting Card] {getattr(opponent, 'name', 'Opponent')} — Era: {era}, Brass tier: {band_tier}."
+    text = f"[Scouting Card] {getattr(opponent, 'name', 'Opponent')} - Era: {era}, Brass tier: {band_tier}."
     if star:
         text += f" Star: {getattr(star, 'last_name', getattr(star, 'name', 'Ace'))}."
     if isinstance(state.logs, list):
@@ -673,11 +677,20 @@ def prepare_match(
     
     # Select Pitcher
     # Try to find assigned 'ACE' or 'STARTER' pitcher role
-    home_pitcher = next((p for p in home_players if p.position == 'Pitcher' and p.role == 'ACE'), None)
-    if not home_pitcher: home_pitcher = next((p for p in home_players if p.position == 'Pitcher'), home_players[0])
-    
-    away_pitcher = next((p for p in away_players if p.position == 'Pitcher' and p.role == 'ACE'), None)
-    if not away_pitcher: away_pitcher = next((p for p in away_players if p.position == 'Pitcher'), away_players[0])
+    def _choose_pitcher(players):
+        ace = next((p for p in players if getattr(p, "position", None) == "Pitcher" and getattr(p, "role", None) == "ACE"), None)
+        if ace:
+            return ace
+        fallback = next((p for p in players if getattr(p, "position", None) == "Pitcher"), None)
+        if fallback:
+            return fallback
+        return players[0] if players else None
+
+    home_pitcher = _choose_pitcher(home_players)
+    away_pitcher = _choose_pitcher(away_players)
+    if home_pitcher is None or away_pitcher is None:
+        logger.error("prepare_match failed: missing pitchers (home=%s, away=%s)", home_pitcher, away_pitcher)
+        return None
     
     rivalry_info = _apply_rivalry_context(db_session, home_lineup, away_lineup) if rival_match_context is None else None
 

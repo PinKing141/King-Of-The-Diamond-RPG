@@ -80,7 +80,7 @@ def _rotate_lineup(lineup: List[Any]) -> List[Any]:
     return lineup[1:] + lineup[:1]
 
 @dataclass
-class MatchContext:
+class MatchContextLegacy:
     """Lightweight snapshot describing pacing metadata."""
 
     inning: int
@@ -91,13 +91,13 @@ class MatchContext:
 
 
 @dataclass
-class GameResult:
+class GameResultLegacy:
     """Return type emitted when the controller finishes a game."""
 
     winner: Any
 
 
-class MatchController:
+class MatchControllerLegacy:
     """Owns the paced match loop and delegates at-bats to MatchSimulation."""
 
     def __init__(
@@ -135,7 +135,7 @@ class MatchController:
             human_team_ids=human_team_ids,
             rng=self.rng,
         )
-        self.context = MatchContext(inning=state.inning, half=state.top_bottom)
+        self.context = MatchContextLegacy(inning=state.inning, half=state.top_bottom)
         self._started = False
         self._needs_inning_setup = True
         self._current_inning_runs = {HALF_TOP: 0, HALF_BOT: 0}
@@ -176,12 +176,12 @@ class MatchController:
 
         while True:
             result = self.step()
-            if isinstance(result, GameResult):
+            if isinstance(result, GameResultLegacy):
                 return result.winner
 
     def step(self) -> GameResult | PlayOutcome | None:
         if self._finished:
-            return GameResult(self._winner)
+            return GameResultLegacy(self._winner)
 
         if not self._started:
             self._start_match()
@@ -236,7 +236,7 @@ class MatchController:
             {"inning": self.state.inning, "half": half},
         )
 
-    def _apply_outcome(self, outcome: PlayOutcome) -> Optional[GameResult]:
+    def _apply_outcome(self, outcome: PlayOutcome) -> Optional[GameResultLegacy]:
         half = self.state.top_bottom
         self._current_inning_runs[half] += outcome.runs_scored
         if not outcome.half_complete:
@@ -373,7 +373,7 @@ class MatchController:
         )
         return False
 
-    def _finalize_game(self) -> GameResult:
+    def _finalize_game(self) -> GameResultLegacy:
         if self._winner is None:
             if self.state.home_score > self.state.away_score:
                 self._winner = self.state.home_team
@@ -381,7 +381,7 @@ class MatchController:
                 self._winner = self.state.away_team
         self._emit_game_over(self._winner)
         self._finished = True
-        return GameResult(self._winner)
+        return GameResultLegacy(self._winner)
 
     def _state_change(self, phase: str, payload: Optional[Dict[str, Any]] = None) -> None:
         data = payload or {}
