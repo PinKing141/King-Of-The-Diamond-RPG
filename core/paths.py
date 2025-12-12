@@ -14,11 +14,12 @@ try:
 except ImportError:  # lightweight fallback
     def user_data_dir(appname: str, appauthor: str = "") -> str:
         base = Path.home() / ".local" / "share"
-        return str(base / appname)
+        target = base / appauthor / appname if appauthor else base / appname
+        return str(target)
 
 
-_APP_NAME = "Koshien_RPG"
-_APP_AUTHOR = ""
+_APP_NAME = "King_of_the_Diamond"
+_APP_AUTHOR = "KingStudios"
 
 
 @dataclass

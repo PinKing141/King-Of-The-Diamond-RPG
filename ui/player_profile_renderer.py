@@ -399,7 +399,17 @@ def _render_pitch_repertoire(player: Player, knowledge_level: int) -> List[str]:
         level_txt = "Lv ?" if knowledge_level == 0 else f"Lv {level}"
         if knowledge_level >= 3 and next_xp is not None:
             level_txt = f"Lv {level} ({xp}/{next_xp})"
-        lines.append(f"  {name:<18} Grade:{quality}  Break:{break_level}  Mastery:{level_txt}")
+        if knowledge_level >= 3:
+            h_mult = getattr(pitch, "h_break_mult", 1.0)
+            v_mult = getattr(pitch, "v_break_mult", 1.0)
+            rel = getattr(pitch, "release_height", 6.0)
+            ext = getattr(pitch, "extension", 6.0)
+            lines.append(
+                f"  {name:<18} Grade:{quality}  Break:{break_level}  Mastery:{level_txt}"
+                f"  HB:{h_mult:.2f} VB:{v_mult:.2f} Rel:{rel:.1f} Ext:{ext:.1f}"
+            )
+        else:
+            lines.append(f"  {name:<18} Grade:{quality}  Break:{break_level}  Mastery:{level_txt}")
     lines.append("")
     return lines
 

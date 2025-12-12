@@ -141,6 +141,76 @@ def _velocity_band(velocity: float) -> str:
     return "slow"
 
 
+def _push_comment(state, text: str) -> None:
+    """Publish a commentary line and log it for UI consumers."""
+    if not text:
+        return
+    bus = getattr(state, "event_bus", None)
+    if bus:
+        try:
+            bus.publish("MATCH_COMMENTARY", {"text": text})
+        except Exception:
+            pass
+    logs = getattr(state, "logs", None)
+    if isinstance(logs, list):
+        logs.append(text)
+
+
+def _shape_tier(delta: float) -> str | None:
+    delta = abs(delta)
+    if delta >= 0.28:
+        return "extreme"
+    if delta >= 0.18:
+        return "strong"
+    if delta >= 0.10:
+        return "mild"
+    return None
+
+
+def _describe_pitch_shape(
+    pitch_name: str,
+    p_def: dict,
+    *,
+    h_mult: float,
+    v_mult: float,
+    velocity: float,
+    base_fb: float,
+) -> str | None:
+    """Summarise unusual break/profile for commentary."""
+    tier_h = _shape_tier(h_mult - 1.0)
+    tier_v = _shape_tier(v_mult - 1.0)
+    name = (pitch_name or "").lower()
+    family = p_def.get("family", "").lower()
+    plane = p_def.get("plane", "").lower()
+    notes = []
+
+    if tier_v and (family in {"curve", "drop", "splitter"} or "curve" in name or "split" in name or "fork" in name):
+        label = {"mild": "extra drop", "strong": "hammer drop", "extreme": "falls off a cliff"}[tier_v]
+        notes.append(f"{pitch_name} shows {label}.")
+    elif tier_h and (family in {"slider", "sweeper"} or "slider" in name or "sweep" in name):
+        label = {"mild": "extra sweep", "strong": "huge sweep", "extreme": "absurd sweep"}[tier_h]
+        notes.append(f"{pitch_name} has {label} to glove side.")
+    elif tier_h and plane == "run":
+        label = {"mild": "runs arm-side", "strong": "heavy run", "extreme": "violent run"}[tier_h]
+        notes.append(f"{pitch_name} shows {label}.")
+    elif tier_v and plane in {"ride", "rise"}:
+        label = {"mild": "late ride", "strong": "heavy ride", "extreme": "rises on hitters"}[tier_v]
+        notes.append(f"{pitch_name} carries with {label}.")
+
+    velo_gap = max(0.0, base_fb - velocity)
+    if "change" in name or family == "changeup":
+        if velo_gap >= 12 and (tier_h or tier_v):
+            notes.append("Changeup shows big fade/drop with a massive velo gap.")
+        elif velo_gap >= 8:
+            notes.append("Changeup comes in much slower than the heater.")
+    if ("split" in name or "fork" in name) and (tier_v or velo_gap >= 5):
+        notes.append("Splitter/fork dives under bats late.")
+
+    if not notes:
+        return None
+    return " ".join(notes)
+
+
 def _evaluate_pitch_tunneling(state, pitcher_id, batter_id, pitch_name, pitch_def, location):
     bucket = _get_sequence_bucket(state, pitcher_id)
     last_vs_batter = bucket["by_batter"].get(batter_id)
@@ -922,6 +992,16 @@ def resolve_pitch(
             hiding_factor = float(form_effect.get("hiding_factor", 1.0) or 1.0)
     except Exception:
         mechanics_profile = None
+    # Pitch-specific release/extension (per-repertoire variance)
+    pitch_release = getattr(pitch, "release_height", None)
+    pitch_extension = getattr(pitch, "extension", None)
+    if pitch_extension is not None:
+        extension_bonus += max(-1.0, min(1.5, (float(pitch_extension) - 6.0) * 0.35))
+    release_penalty = 0.0
+    if pitch_release is not None:
+        # Extreme low slots can add run but reduce command; high slots add carry but reduce sweep.
+        release_delta = float(pitch_release) - 6.0
+        release_penalty = abs(release_delta) * 0.4
     
     # Arm Slot Mods
     arm_slot = getattr(pitcher, 'arm_slot', 'Three-Quarters')
@@ -982,6 +1062,16 @@ def resolve_pitch(
         movement_plane_mult = slot_mods['horizontal_mult']
     else:
         movement_plane_mult = (slot_mods['vertical_mult'] + slot_mods['horizontal_mult']) / 2.0
+    # Per-pitch break multipliers
+    h_mult = float(getattr(pitch, "h_break_mult", 1.0) or 1.0)
+    v_mult = float(getattr(pitch, "v_break_mult", 1.0) or 1.0)
+    if p_def['type'] in ["Vertical", "Drop_Sink"]:
+        movement_plane_mult *= v_mult
+    elif p_def['type'] == "Horizontal":
+        movement_plane_mult *= h_mult
+    else:
+        movement_plane_mult *= (h_mult + v_mult) / 2.0
+
     effective_movement = base_movement * movement_plane_mult * plane_bonus * slot_group_bonus
 
     base_control = (getattr(pitcher, 'control', 50) or 50) + pitcher_trait_mods.get('control', 0)
@@ -1022,6 +1112,9 @@ def resolve_pitch(
     if weather_effects and weather_effects.ball_slip_chance:
         effective_control -= weather_effects.ball_slip_chance * 35
         effective_command -= weather_effects.ball_slip_chance * 20
+    if release_penalty:
+        effective_command -= release_penalty
+        effective_control -= release_penalty * 0.6
     pitch_confidence = get_confidence(state, pitcher.id)
     effective_control += pitch_confidence * 0.25
     effective_command += pitch_confidence * 0.2
@@ -1039,6 +1132,27 @@ def resolve_pitch(
     mechanics_deception += mix_deception
     effective_movement += sig_mods.get("move", 0.0)
     mechanics_deception += sig_mods.get("deception", 0.0)
+
+    # Pitch shape commentary (notable break/velo gaps)
+    shape_text = None
+    if commentary_enabled():
+        shape_text = _describe_pitch_shape(
+            pitch.pitch_name,
+            p_def,
+            h_mult=h_mult,
+            v_mult=v_mult,
+            velocity=velocity,
+            base_fb=(getattr(pitcher, "velocity", 0) or 0),
+        )
+        if shape_text:
+            memory = getattr(state, "commentary_memory", None)
+            key = f"shape_{pitcher_id}_{pitch.pitch_name}"
+            if isinstance(memory, set):
+                if key not in memory:
+                    memory.add(key)
+                    _push_comment(state, shape_text)
+            else:
+                _push_comment(state, shape_text)
 
     if shakes:
         tension = shakes * max(0.8, (65 - trust_snapshot) / 10.0)

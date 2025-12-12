@@ -573,6 +573,10 @@ def generate_stats(position, specific_pos, focus):
     def _clamp(val, low=10, high=99):
         return max(low, min(high, int(val)))
 
+    def _derived_velocity(throwing: int, base: float, scale: float) -> int:
+        """Map throwing to a velocity-ish scale (kph) for non-pitchers."""
+        return _clamp(base + (throwing or 0) * scale, low=70, high=155)
+
     focus_label = (focus or "Balanced").lower()
 
     def get_val(bonus=0, tag=None):
@@ -642,7 +646,6 @@ def generate_stats(position, specific_pos, focus):
         stats['fielding'] = get_val(10, tag="fielding")
         stats['speed'] = get_val(-5, tag="speed")
     else:
-        stats['velocity'] = 0
         stats['control'] = 10
         stats['movement'] = 0
         stats['arm_slot'] = "Three-Quarters"
@@ -680,6 +683,18 @@ def generate_stats(position, specific_pos, focus):
             stats['throwing'] += 5
         stats['throwing'] = _clamp(stats['throwing'])
 
+        # Derive velocity for non-pitchers from arm strength and role.
+        if specific_pos == "C":
+            stats['velocity'] = _derived_velocity(stats['throwing'], 85, 0.60)
+        elif specific_pos in {"RF", "CF", "LF"}:
+            stats['velocity'] = _derived_velocity(stats['throwing'], 90, 0.65)
+        elif specific_pos in {"SS", "2B"}:
+            stats['velocity'] = _derived_velocity(stats['throwing'], 84, 0.60)
+        elif specific_pos in {"1B", "3B"}:
+            stats['velocity'] = _derived_velocity(stats['throwing'], 82, 0.55)
+        else:
+            stats['velocity'] = _derived_velocity(stats['throwing'], 80, 0.50)
+
     # Mental/discipline/clutch & command ratings (were previously defaults)
     mental = random.randint(35, 70)
     discipline = random.randint(32, 72)
@@ -701,6 +716,12 @@ def generate_stats(position, specific_pos, focus):
     if position == "Pitcher":
         command = stats['control'] + random.randint(-5, 7)
 
+    # Catcher-specific wall metric; others default to 0.
+    if specific_pos == "C":
+        stats['catcher_ability'] = _clamp((stats['fielding'] + discipline + command) / 3)
+    else:
+        stats['catcher_ability'] = 0
+
     stats['mental'] = _clamp(mental)
     stats['discipline'] = _clamp(discipline)
     stats['clutch'] = _clamp(clutch)
@@ -716,6 +737,31 @@ def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
     arsenal = []
     base_xp = 0
     base_level = mastery_level_for_xp(base_xp)
+    height_cm = getattr(player_obj, "height_cm", 178) or 178
+    height_ft = max(5.0, min(7.5, height_cm / 30.48))
+    base_release = 5.5 if "Sidearm" in arm_slot or "Submarine" in arm_slot else 6.2
+    base_extension = 6.0 + max(0.0, (height_ft - 6.0) * 0.6)
+
+    def _seed_break_multiplier(pitch_name: str, axis: str) -> float:
+        name = (pitch_name or "").lower()
+        slot = (arm_slot or "three-quarters").lower()
+        base = 1.0
+        if axis == "h":
+            if "sidearm" in slot or "sub" in slot:
+                base += 0.1
+            if "sinker" in name or "shuuto" in name:
+                base += 0.08
+            if "cutter" in name:
+                base += 0.05
+        else:
+            if "overhand" in slot or "high three" in slot:
+                base += 0.08
+            if "curve" in name or "12-6" in name:
+                base += 0.06
+            if "split" in name or "fork" in name:
+                base += 0.04
+        jitter = random.uniform(-0.06, 0.08)
+        return round(max(0.85, min(1.25, base + jitter)), 3)
     
     # Fastball
     fb_choice = "4-Seam Fastball"
@@ -729,6 +775,10 @@ def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
         break_level=player_obj.movement + random.randint(-10, 5), # using movement stat
         mastery_xp=base_xp,
         mastery_level=base_level,
+        h_break_mult=_seed_break_multiplier(fb_choice, "h"),
+        v_break_mult=_seed_break_multiplier(fb_choice, "v"),
+        release_height=base_release + random.uniform(-0.3, 0.3),
+        extension=base_extension + random.uniform(-0.4, 0.4),
     )
     arsenal.append(fb)
     
@@ -745,6 +795,10 @@ def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
             break_level=player_obj.movement + random.randint(-5, 15),
             mastery_xp=base_xp,
             mastery_level=base_level,
+            h_break_mult=_seed_break_multiplier(p_name, "h"),
+            v_break_mult=_seed_break_multiplier(p_name, "v"),
+            release_height=base_release + random.uniform(-0.3, 0.3),
+            extension=base_extension + random.uniform(-0.4, 0.4),
         )
         arsenal.append(pitch)
         

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Optional, Protocol
 
+from core.io_interface import IOInterface
+
 
 class SeasonView(Protocol):
     """Interface describing the UI surface SeasonManager interacts with."""
+
+    io: IOInterface
 
     def show_banner(self) -> None: ...
 

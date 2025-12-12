@@ -94,6 +94,12 @@ def _spray_direction(angle: float) -> str:
     return "center"
 
 
+def _runner_speed(runner):
+    if not runner:
+        return 50
+    return getattr(runner, "running", getattr(runner, "speed", 50)) or 50
+
+
 def _fence_profile(stadium_obj, spray_angle: float) -> tuple[float, float]:
     direction = _spray_direction(spray_angle)
     if direction == "left" and spray_angle > -22:
@@ -124,6 +130,12 @@ def _wall_outcome(ball, fence_distance_ft: float, fence_height_ft: float) -> str
     return "Home Run" if estimated_height_at_wall > fence_height_ft else "Wall Hit"
 
 
+def _foul_pop_out(prob_scale: float, foul_ground_scale: float) -> bool:
+    """Simple foul-pop resolution: larger foul ground means more outs."""
+    chance = prob_scale * foul_ground_scale
+    return rng.random() < chance
+
+
 class ContactResult:
     def __init__(
         self,
@@ -141,6 +153,9 @@ class ContactResult:
         sacrifice: bool = False,
         rbi_credit: bool = False,
         error_type: str | None = None,
+        distance: float | None = None,
+        ball_type: str | None = None,
+        fielder_arm: float | None = None,
     ):
         if isinstance(hit_type, HitType):
             self.hit_type = hit_type
@@ -160,6 +175,9 @@ class ContactResult:
         self.sacrifice = sacrifice
         self.rbi_credit = rbi_credit
         self.error_type = error_type
+        self.distance = distance
+        self.ball_type = ball_type
+        self.fielder_arm = fielder_arm
 
 
 def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_mods=None):
@@ -183,6 +201,8 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
     surface_friction = float(getattr(stadium_obj, "friction", 1.0) or 1.0)
     bounce_restitution = float(getattr(stadium_obj, "bounce_restitution", 1.0) or 1.0)
     bad_hop_chance = float(getattr(stadium_obj, "bad_hop_chance", 0.0) or 0.0)
+    foul_ground_scale = float(getattr(stadium_obj, "foul_ground_scale", 1.0) or 1.0)
+    wind_profile = (getattr(stadium_obj, "wind_profile", "") or "").lower()
 
     if flow_offense != 1.0:
         contact_quality *= flow_offense
@@ -278,6 +298,30 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
         fence_distance=fence_distance,
     )
 
+    # Foul territory: high foul pops can become outs depending on space/hang time.
+    if batted_ball.ball_type != "ground" and (spray_angle <= -45 or spray_angle >= 45):
+        base_catch = 0.22 * foul_ground_scale
+        base_catch += max(0.0, batted_ball.hang_time - 1.0) * 0.12
+        base_catch = _clamp(base_catch, 0.05, 0.9)
+        primary_pos = "third base" if spray_angle < 0 else "first base"
+        if rng.random() < base_catch:
+            desc = f"Foul pop near {primary_pos.title()}—caught!"
+            return ContactResult(HitType.OUT, desc, credited_hit=False, primary_position=primary_pos.title(), distance=batted_ball.landing_distance, ball_type="foul_pop")
+        desc = "Foul pop drifts out of play."
+        return ContactResult("FOUL", desc, credited_hit=False, primary_position=primary_pos.title(), distance=batted_ball.landing_distance, ball_type="foul_pop")
+
+    # Wind influence: modest nudge to distance/hang time by stadium profile.
+    if wind_profile:
+        if "hamikaze" in wind_profile:
+            batted_ball.landing_distance *= 0.96
+            batted_ball.hang_time *= 1.02
+        elif "swirling" in wind_profile:
+            delta = rng.uniform(-0.05, 0.05)
+            batted_ball.landing_distance *= 1.0 + delta
+            batted_ball.hang_time *= 1.0 + (delta / 2)
+        elif "breeze" in wind_profile:
+            batted_ball.landing_distance *= 1.01
+
     # Adjust grounders for surface friction and determine wall outcomes for flies.
     if batted_ball.ball_type == "ground":
         friction_scale = max(0.7, min(1.35, surface_friction))
@@ -342,10 +386,65 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
     credited_hit = not error_on_play and hit_type != HitType.OUT
     error_position = fielding_play.primary_position
 
+    fielder_arm = None
+    try:
+        if alignment and fielding_play.primary_position:
+            snap = next(
+                (s for s in alignment if getattr(s, "position", "").lower() == str(fielding_play.primary_position).lower()),
+                None,
+            )
+            if snap:
+                fielder_arm = getattr(snap, "arm_rating", None)
+    except Exception:
+        fielder_arm = None
+
     if error_on_play:
         defense_id = _defense_team_id(state)
         if defense_id is not None:
             apply_fielding_error_confidence(state, defense_id, error_position)
+
+    runner_advances = None
+    extra_outs = 0
+    ball_distance = getattr(batted_ball, "landing_distance", None)
+
+    # Double-play chance on grounders with a force at 2B.
+    if hit_type == HitType.OUT and getattr(batted_ball, "ball_type", "") == "ground":
+        if getattr(state, "outs", 0) <= 1 and getattr(state, "runners", None):
+            r1 = state.runners[0] if len(state.runners) > 0 else None
+            if r1:
+                dp_chance = 0.55
+                dp_chance += (fielder_arm or 50 - 50) * 0.004
+                dp_chance += 0.06 if (ball_distance or 0) <= 140 else 0.0  # sharply hit at infielders
+                dp_chance -= (_runner_speed(r1) - 50) * 0.007
+                dp_chance = max(0.25, min(0.85, dp_chance))
+                if rng.random() < dp_chance:
+                    extra_outs = 1
+                    desc = desc + " (turned two)" if "two" not in desc.lower() else desc
+                    runner_advances = [(0, -1, r1)]
+
+    # Tag-up logic on deep fly outs.
+    if hit_type == HitType.OUT and getattr(batted_ball, "ball_type", "") != "ground":
+        runners = getattr(state, "runners", [])
+        r3 = runners[2] if len(runners) > 2 else None
+        r2 = runners[1] if len(runners) > 1 else None
+        advances = []
+        arm_penalty = (fielder_arm - 50) * 0.005 if fielder_arm is not None else 0.0
+        if r3:
+            chance = 0.40 + (_runner_speed(r3) - 50) * 0.01
+            chance += (ball_distance or 0 - 220) * 0.0015
+            chance -= arm_penalty
+            chance = max(0.05, min(0.95, chance))
+            if rng.random() < chance:
+                advances.append((2, 3, r3))
+        if r2:
+            chance = 0.25 + (_runner_speed(r2) - 50) * 0.008
+            chance += (ball_distance or 0 - 240) * 0.0012
+            chance -= arm_penalty * 0.8
+            chance = max(0.02, min(0.6, chance))
+            if rng.random() < chance:
+                advances.append((1, 2, r2))
+        if advances:
+            runner_advances = (runner_advances or []) + advances
 
     return ContactResult(
         hit_type,
@@ -354,6 +453,11 @@ def resolve_contact(contact_quality, batter, pitcher, state, power_mod=0, trait_
         error_on_play=error_on_play,
         primary_position=error_position,
         error_type=fielding_play.error_type,
+        distance=ball_distance,
+        ball_type=getattr(batted_ball, "ball_type", None),
+        fielder_arm=fielder_arm,
+        runner_advances=runner_advances,
+        extra_outs=extra_outs,
     )
 
 

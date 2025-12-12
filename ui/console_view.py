@@ -36,6 +36,8 @@ def _safe_input(prompt: str, default: str = "", ui: Optional[UI] = None) -> str:
 class ConsoleIO(IOInterface):
     """Console implementation of IOInterface used by logic modules."""
 
+    supports_raw_input: bool = True
+
     def __init__(self, renderer: Optional[ConsoleRenderer] = None) -> None:
         self.renderer = renderer or ConsoleRenderer()
 
@@ -420,6 +422,44 @@ class ConsoleView(SeasonView):
     def announce_character_creation(self) -> None:
         self.ui.log(f"\n{Colour.CYAN}No player data found. Starting Character Creation...{Colour.RESET}")
         self.ui.wait(1)
+
+    def announce_world_gen(self) -> None:
+        self.ui.log(f"\n{Colour.CYAN}Generating world data...{Colour.RESET}")
+        self.ui.wait(0.2)
+
+    def announce_world_gen_complete(self) -> None:
+        self.ui.log(f"{Colour.GREEN}World generation complete!{Colour.RESET}")
+        self.ui.wait(0.2)
+
+    def announce_new_career_ready(self) -> None:
+        self.ui.log(f"{Colour.GREEN}New career ready. Let's play!{Colour.RESET}")
+        self.ui.wait(0.2)
+
+    def announce_player_created(self) -> None:
+        self.ui.log(f"{Colour.GREEN}Player created and ready to go!{Colour.RESET}")
+        self.ui.wait(0.2)
+
+    def handle_decision_requests(self, requests: list) -> Optional[str]:
+        """Basic handler for DecisionRequest envelopes."""
+        for req in requests:
+            kind = getattr(req, "kind", "")
+            if kind == "log":
+                self.ui.log(getattr(req, "message", ""), level=getattr(req, "level", "info"))
+                continue
+            if kind == "clear":
+                self.ui.clear()
+                continue
+            if kind == "wait":
+                payload = getattr(req, "payload", {}) or {}
+                seconds = 0.0
+                if isinstance(payload, dict):
+                    seconds = float(payload.get("seconds", payload.get("delay", 0)) or 0)
+                self.ui.wait(seconds)
+                continue
+            if kind == "prompt":
+                options = getattr(req, "options", None)
+                return self.ui.prompt(getattr(req, "message", ""), options=options)
+        return None
 
     def info(self, message: str) -> None:
         self.ui.log(message)

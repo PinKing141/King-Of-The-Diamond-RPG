@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Dict, Any
+from typing import Callable, Optional, Dict, Any, Sequence
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -23,6 +23,7 @@ class GameContext:
     school_id: Optional[int] = None
     temp_effects_init: Optional[Dict[str, Any]] = None
     session_provider: Optional[SessionProvider] = None
+    match_event_listeners: Optional[Sequence[Callable[..., Any]]] = None
     story_tracker: StoryTracker = field(default_factory=StoryTracker)
     rivalry_ledger = get_ledger()
     _temp_effects_store: TempEffects = field(default=None, init=False, repr=False)

@@ -34,6 +34,10 @@ def player_to_training_dto(player: Player) -> PlayerTrainingDTO:
             pitch_name=entry.pitch_name,
             mastery_level=getattr(entry, "mastery_level", 0) or 0,
             mastery_xp=getattr(entry, "mastery_xp", 0) or 0,
+            h_break_mult=float(getattr(entry, "h_break_mult", 1.0) or 1.0),
+            v_break_mult=float(getattr(entry, "v_break_mult", 1.0) or 1.0),
+            release_height=float(getattr(entry, "release_height", 6.0) or 6.0),
+            extension=float(getattr(entry, "extension", 6.0) or 6.0),
         )
         for entry in getattr(player, "pitch_repertoire", []) or []
     ]
@@ -104,6 +108,10 @@ def apply_training_dto_to_player(player: Player, dto: PlayerTrainingDTO) -> None
                     pitch_name=dto_entry.pitch_name,
                     mastery_level=dto_entry.mastery_level,
                     mastery_xp=dto_entry.mastery_xp,
+                    h_break_mult=dto_entry.h_break_mult,
+                    v_break_mult=dto_entry.v_break_mult,
+                    release_height=dto_entry.release_height,
+                    extension=dto_entry.extension,
                 )
             )
 

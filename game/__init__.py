@@ -18,7 +18,7 @@ _LAZY_MODULES: Dict[str, str] = {
 	"talent_tree": "game.systems.talent_tree",
 	"pitch_types": "game.mechanics.pitch_types",
 	"commentary_pools": "game.story.commentary_pools",
-	"stadiums": "game.story.stadiums",
+	"stadiums": "game.stadiums",
 }
 
 __all__ = list(_LAZY_MODULES.keys())

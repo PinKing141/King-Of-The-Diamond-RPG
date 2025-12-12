@@ -223,6 +223,29 @@ def _dedupe_preserve_order(items: Optional[List[str]]) -> List[str]:
         result.append(item)
     return result
 
+
+def _seed_break_multiplier(pitch_name: str, arm_slot: str, axis: str) -> float:
+    """Seed slight pitch-specific shape variance based on arm slot and randomness."""
+    name = (pitch_name or "").lower()
+    slot = (arm_slot or "three-quarters").lower()
+    base = 1.0
+    if axis == "h":
+        if "sidearm" in slot or "sub" in slot:
+            base += 0.1
+        if "sinker" in name or "shuuto" in name:
+            base += 0.08
+        if "cutter" in name:
+            base += 0.05
+    else:
+        if "overhand" in slot or "high three" in slot:
+            base += 0.08
+        if "curve" in name or "12-6" in name:
+            base += 0.06
+        if "split" in name or "fork" in name:
+            base += 0.04
+    jitter = random.uniform(-0.06, 0.08)
+    return round(max(0.85, min(1.25, base + jitter)), 3)
+
 _PREFECTURE_CACHE: Optional[List[str]] = None
 _CITY_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -517,6 +540,7 @@ def _stat_lines(position: str, stats: dict) -> List[str]:
         ("Speed", stats.get("speed")),
         ("Fielding", stats.get("fielding")),
         ("Throwing", stats.get("throwing")),
+        ("Velocity", stats.get("velocity")),
     ]
 
     lines.append("-- GENERAL --")
@@ -540,6 +564,15 @@ def _stat_lines(position: str, stats: dict) -> List[str]:
             lines.append(f" {label:<10} {bar}  {val_txt}")
         if stats.get("arm_slot"):
             lines.append(f" Arm Slot   {stats['arm_slot']}")
+
+    if position == "Catcher":
+        wall = stats.get("catcher_ability")
+        if wall is not None:
+            bar = _bar(wall)
+            val_txt = f"{int(wall):>3}" if wall is not None else "--"
+            lines.append("")
+            lines.append("-- CATCHER --")
+            lines.append(f" Wall (CAA)  {bar}  {val_txt}")
 
     return lines
 
@@ -616,7 +649,10 @@ def _preview_lines(state: "CreatePlayerState") -> List[str]:
                 f"Spd{stats.get('speed','--')}",
                 f"Fld{stats.get('fielding','--')}",
                 f"Arm{stats.get('throwing','--')}",
+                f"Velo{stats.get('velocity','--')}",
             ]
+            if state.position == "Catcher":
+                core.append(f"Wall{stats.get('catcher_ability','--')}")
         lines.append("Stats: " + " | ".join(str(c) for c in core))
 
     if state.position == "Pitcher" and state.pitch_arsenal:
@@ -643,7 +679,10 @@ def _render_stat_overview(position: str, stats: dict) -> None:
             ("Speed", stats.get('speed')),
             ("Fielding", stats.get('fielding')),
             ("Throwing", stats.get('throwing')),
+            ("Velocity", stats.get('velocity')),
         ]
+        if position == "Catcher":
+            fields.append(("Catcher Ability", stats.get('catcher_ability')))
     for label, value in fields:
         bar = _bar(value)
         val_txt = f"{int(value):>3}" if value is not None else "--"
@@ -677,6 +716,10 @@ def roll_stats(position, is_monster=False):
 
     def get_val(bonus=0):
         return max(10, min(99, random.randint(base_min + bonus, base_max + bonus)))
+
+    def _derived_velocity(throwing: int, base: float, scale: float) -> int:
+        """Map throwing to a velocity-ish scale (kph) with sane bounds."""
+        return max(70, min(155, int(base + (throwing or 0) * scale)))
 
     # Growth Tag
     roll = random.random()
@@ -748,7 +791,7 @@ def roll_stats(position, is_monster=False):
         stats['speed'] = get_val(-10)
         stats['fielding'] = get_val(10)
         stats['throwing'] = get_val(15)
-        stats['velocity'] = 0
+        stats['velocity'] = _derived_velocity(stats['throwing'], 85, 0.60)
         stats['arm_slot'] = "Three-Quarters"
     elif position in {"First Base", "Third Base"}:
         stats['stamina'] = get_val()
@@ -759,7 +802,7 @@ def roll_stats(position, is_monster=False):
         stats['speed'] = get_val(-10)
         stats['fielding'] = get_val()
         stats['throwing'] = get_val()
-        stats['velocity'] = 0
+        stats['velocity'] = _derived_velocity(stats['throwing'], 82, 0.55)
         stats['arm_slot'] = "Three-Quarters"
     elif position in {"Second Base", "Shortstop"}:
         stats['stamina'] = get_val()
@@ -770,7 +813,7 @@ def roll_stats(position, is_monster=False):
         stats['speed'] = get_val(10)
         stats['fielding'] = get_val(15)
         stats['throwing'] = get_val(5)
-        stats['velocity'] = 0
+        stats['velocity'] = _derived_velocity(stats['throwing'], 84, 0.60)
         stats['arm_slot'] = "Three-Quarters"
     else:  # Outfield
         stats['power'] = get_val(10)
@@ -877,6 +920,12 @@ def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Option
     quality_seed = int((stats.get("control", 50) + stats.get("velocity", 50)) / 2)
     break_seed = int(stats.get("movement", 50) / 2)
 
+    arm_slot = stats.get("arm_slot") or getattr(player, "arm_slot", "Three-Quarters")
+    height_cm = getattr(player, "height_cm", stats.get("height_cm", 175))
+    height_ft = max(5.0, min(7.5, height_cm / 30.48))
+    base_release = 5.5 if "Sidearm" in arm_slot or "Submarine" in arm_slot else 6.2
+    base_extension = 6.0 + max(0.0, (height_ft - 6.0) * 0.6)
+
     for name in arsenal:
         repertoire_row = PitchRepertoire(
             player_id=getattr(player, "id", None),
@@ -887,6 +936,10 @@ def _persist_pitch_arsenal(session: Session, player: Player, pitch_names: Option
             mastery_level=0,
             signature_ready=False,
             signature_unlocked=False,
+            h_break_mult=_seed_break_multiplier(name, arm_slot, axis="h"),
+            v_break_mult=_seed_break_multiplier(name, arm_slot, axis="v"),
+            release_height=base_release + random.uniform(-0.3, 0.3),
+            extension=base_extension + random.uniform(-0.4, 0.4),
         )
         session.add(repertoire_row)
     session.flush()
@@ -1762,14 +1815,38 @@ class CreatePlayerEngine:
         acad_skill = (self.state.stats or {}).get('academic_skill', '??')
         last_score = (self.state.stats or {}).get('test_score', '??')
         summary_lines.append(f"Academics: Skill {acad_skill} / Latest Test {last_score}")
+        stats = self.state.stats or {}
         if self.state.position == "Pitcher":
-            arm_slot = (self.state.stats or {}).get('arm_slot') or "Three-Quarters"
+            arm_slot = stats.get('arm_slot') or "Three-Quarters"
             summary_lines.append(f"Arm Slot: {arm_slot}")
             trait_txt = "Unlocked" if self.state.starter_trait else "--"
             summary_lines.append(f"Starter Trait: {trait_txt}")
+            summary_lines.append(
+                "Pitching: "
+                f"V{stats.get('velocity','--')} | C{stats.get('control','--')} | "
+                f"M{stats.get('movement','--')} | St{stats.get('stamina','--')}"
+            )
             arsenal = _dedupe_preserve_order(self.state.pitch_arsenal)
             summary_lines.append(f"Pitches: {', '.join(arsenal) if arsenal else '--'}")
+        else:
+            line = "Offense/Defense: " + " | ".join(
+                [
+                    f"Con{stats.get('contact','--')}",
+                    f"Pow{stats.get('power','--')}",
+                    f"Spd{stats.get('speed','--')}",
+                    f"Fld{stats.get('fielding','--')}",
+                    f"Arm{stats.get('throwing','--')}",
+                    f"Velo{stats.get('velocity','--')}",
+                ]
+            )
+            if self.state.position == "Catcher":
+                line += f" | Wall{stats.get('catcher_ability','--')}"
+            summary_lines.append(line)
+        err = self._scratch.pop("finalize_error", None)
         summary_lines.append("")
+        if err:
+            summary_lines.append(f"Error creating player: {err}")
+            summary_lines.append("")
         self._awaiting = "final_choice"
         prefix = self._with_banner(STEP_TITLES.get(8, "Confirm Profile"), summary_lines)
         suffix = ["Use arrows + Enter to start; Esc to go back."]
@@ -1795,6 +1872,29 @@ class CreatePlayerEngine:
             self.step = max(0, self.step - 1)
             return
         if value in {"0", "1", "WIN", "LOSE"}:
+            # Persist player to DB and mark flow complete.
+            try:
+                if not self.state.position or not self.state.stats or not self.state.school:
+                    raise ValueError("Missing required data (position/stats/school) to create player.")
+                data = {
+                    "first_name": self.state.first_name,
+                    "last_name": self.state.last_name,
+                    "position": self.state.position,
+                    "specific_pos": self.state.specific_pos,
+                    "growth_style": self.state.growth_style,
+                    "stats": self.state.stats or {},
+                    "hometown": self.state.hometown,
+                    "school": self.state.school,
+                    "pitch_arsenal": self.state.pitch_arsenal,
+                    "starter_trait": self.state.starter_trait,
+                }
+                player_id = commit_player_to_db(self.session, data)
+                self._scratch["created_player_id"] = player_id
+            except Exception as exc:
+                # Stay on finalize step and surface an error message on next render.
+                self._scratch["finalize_error"] = str(exc)
+                return
+
             self.step += 1
     # --------- terminal ---------
     def is_complete(self) -> bool:

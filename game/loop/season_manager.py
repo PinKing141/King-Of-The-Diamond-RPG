@@ -61,11 +61,17 @@ class SeasonManager:
             return False
 
         try:
-            if any("match" in (action or "") for action in mandatory.values()):
-                return True
-        except (AttributeError, ValueError, TypeError) as exc:
-            self.view.display_warning(f"Warning: Could not check schedule: {exc}")
+            mandatory = build_mandatory_schedule(player)
+        except ScheduleError as exc:
+            self.view.display_warning(f"Warning: Could not build schedule: {exc}")
             return False
+        except Exception as exc:
+            self.view.display_warning(f"Warning: Unexpected schedule error: {exc}")
+            return False
+
+        if isinstance(mandatory, dict):
+            return any("match" in str(action or "").lower() for action in mandatory.values())
+        return False
 
 
     def _deliver_decision_requests(self, decision: DecisionResult, *, scouting_available: bool = False) -> Optional[str]:
@@ -94,7 +100,6 @@ class SeasonManager:
                     state=self.state,
                 )
         return None
-        return SeasonConfigLoader.is_tournament_week(week)
 
     def _run_story_arcs(self, user_player: Player) -> None:
         """Kick off or advance narrative arcs each week."""

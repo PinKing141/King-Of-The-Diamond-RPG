@@ -15,6 +15,10 @@ class PitchRepertoireDTO:
     pitch_name: str
     mastery_level: int
     mastery_xp: int
+    h_break_mult: float = 1.0
+    v_break_mult: float = 1.0
+    release_height: float = 6.0
+    extension: float = 6.0
 
 
 @dataclass

@@ -1747,6 +1747,21 @@ class AtBatStateMachine:
                 trait_mods=batter_trait_mods,
             )
         announce_play(contact_res)
+        raw_hit = contact_res.hit_type
+        if isinstance(raw_hit, str) and raw_hit.upper() == "FOUL":
+            if getattr(state, "strikes", 0) < 2:
+                state.strikes += 1
+            snap = getattr(state, "last_pitch_snapshot", {}) or {}
+            snap.update(
+                {
+                    "result": "foul",
+                    "hit_type": "FOUL",
+                    "distance": getattr(contact_res, "distance", None),
+                    "launch_angle": getattr(contact_res, "launch_angle", None),
+                }
+            )
+            state.last_pitch_snapshot = snap
+            return "continue"
         hit_type = contact_res.hit_type
         if isinstance(hit_type, str) and hit_type in HitType._value2member_map_:
             hit_type = HitType(hit_type)
@@ -1792,7 +1807,7 @@ class AtBatStateMachine:
 
             pre_home = state.home_score
             pre_away = state.away_score
-            runs = advance_runners(state, hit_type, self.batter)
+            runs = advance_runners(state, hit_type, self.batter, contact_res)
             lead_change = _lead_changed(state, runs, pre_home, pre_away)
             runs_scored_on_play = runs
 

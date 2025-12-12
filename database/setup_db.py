@@ -125,6 +125,8 @@ def ensure_player_schema():
         statements.append("ALTER TABLE players ADD COLUMN height_potential INTEGER DEFAULT 180")
     if 'growth_tag' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN growth_tag VARCHAR DEFAULT 'late_bloomer'")
+    if 'growth_style' not in columns:
+        statements.append("ALTER TABLE players ADD COLUMN growth_style VARCHAR")
     if 'weight_kg' not in columns:
         statements.append("ALTER TABLE players ADD COLUMN weight_kg INTEGER DEFAULT 72")
     if 'is_two_way' not in columns:
@@ -317,6 +319,14 @@ def ensure_pitch_repertoire_schema():
         statements.append("ALTER TABLE pitch_repertoire ADD COLUMN signature_ready BOOLEAN DEFAULT 0")
     if 'signature_unlocked' not in columns:
         statements.append("ALTER TABLE pitch_repertoire ADD COLUMN signature_unlocked BOOLEAN DEFAULT 0")
+    if 'h_break_mult' not in columns:
+        statements.append("ALTER TABLE pitch_repertoire ADD COLUMN h_break_mult FLOAT DEFAULT 1.0")
+    if 'v_break_mult' not in columns:
+        statements.append("ALTER TABLE pitch_repertoire ADD COLUMN v_break_mult FLOAT DEFAULT 1.0")
+    if 'release_height' not in columns:
+        statements.append("ALTER TABLE pitch_repertoire ADD COLUMN release_height FLOAT DEFAULT 6.0")
+    if 'extension' not in columns:
+        statements.append("ALTER TABLE pitch_repertoire ADD COLUMN extension FLOAT DEFAULT 6.0")
 
     with engine.begin() as conn:
         for stmt in statements:
@@ -327,6 +337,10 @@ def ensure_pitch_repertoire_schema():
         conn.execute(text("UPDATE pitch_repertoire SET mastery_level = 0 WHERE mastery_xp <= 0"))
         conn.execute(text("UPDATE pitch_repertoire SET signature_ready = COALESCE(signature_ready, 0)"))
         conn.execute(text("UPDATE pitch_repertoire SET signature_unlocked = COALESCE(signature_unlocked, 0)"))
+        conn.execute(text("UPDATE pitch_repertoire SET h_break_mult = COALESCE(h_break_mult, 1.0)"))
+        conn.execute(text("UPDATE pitch_repertoire SET v_break_mult = COALESCE(v_break_mult, 1.0)"))
+        conn.execute(text("UPDATE pitch_repertoire SET release_height = COALESCE(release_height, 6.0)"))
+        conn.execute(text("UPDATE pitch_repertoire SET extension = COALESCE(extension, 6.0)"))
 
 
 def ensure_school_schema():
@@ -792,6 +806,10 @@ class PitchRepertoire(Base):
     signature_tag = Column(String)
     signature_ready = Column(Boolean, default=False)
     signature_unlocked = Column(Boolean, default=False)
+    h_break_mult = Column(Float, default=1.0)    # Horizontal break scale
+    v_break_mult = Column(Float, default=1.0)    # Vertical break scale
+    release_height = Column(Float, default=6.0)  # Feet; influences perceived rise/drop
+    extension = Column(Float, default=6.0)       # Feet toward home; affects perceived velo
 
     player = relationship("Player", back_populates="pitch_repertoire")
 

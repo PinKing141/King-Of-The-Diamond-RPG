@@ -26,12 +26,15 @@ def is_debug_enabled() -> bool:
     return _debug_enabled
 
 
-def input_with_debug(prompt: str, *, context=None, session=None, state=None) -> Optional[str]:
+def input_with_debug(prompt: str, *, context=None, session=None, state=None, raw_override: Optional[str] = None) -> Optional[str]:
     """Wrap input; if the master code is typed, open the debug menu and return None."""
-    try:
-        raw = input(prompt)
-    except EOFError:
-        return None
+    if raw_override is None:
+        try:
+            raw = input(prompt)
+        except EOFError:
+            return None
+    else:
+        raw = raw_override
     if raw.strip() == DEBUG_CODE:
         enable_debug_mode()
         open_debug_menu(context=context, session=session, state=state)
@@ -79,17 +82,26 @@ def _prompt_player_choice(matchup) -> str:
 
 
 def _set_player_stats(player, *, all_value: Optional[int] = None, **overrides):
+    """Set a broad set of live stats to a single value (or individual overrides)."""
     if not player:
         return
+    # Keep this list in sync with the Player model's core performance attributes.
     fields = [
-        "control",
-        "power",
         "velocity",
-        "contact",
+        "control",
+        "command",
+        "movement",
         "stamina",
-        "running",
-        "breaking_ball",
         "fielding",
+        "speed",
+        "contact",
+        "power",
+        "throwing",
+        "discipline",
+        "clutch",
+        "mental",
+        "catcher_ability",
+        "catcher_leadership",
     ]
     for field in fields:
         new_val = overrides.get(field, all_value)
@@ -98,6 +110,7 @@ def _set_player_stats(player, *, all_value: Optional[int] = None, **overrides):
         try:
             setattr(player, field, int(new_val))
         except Exception:
+            # Keep the debug menu resilient if a column is missing in a WIP save.
             continue
 
 
@@ -127,6 +140,76 @@ def _quick_exhibition(session, user_school_id: int, opponent_id: int):
     time.sleep(2)
 
 
+def _edit_pitch_shapes(session, player):
+    """Interactive editor for a pitcher's per-pitch shape/release/extension."""
+    if not player:
+        print("No active player.")
+        time.sleep(1)
+        return
+    if getattr(player, "position", None) != "Pitcher":
+        print("Active player is not a pitcher.")
+        time.sleep(1)
+        return
+    pitches = list(getattr(player, "pitch_repertoire", []) or [])
+    if not pitches:
+        print("No pitches found on this player.")
+        time.sleep(1)
+        return
+
+    while True:
+        clear_screen()
+        print(f"{Colour.CYAN}{Colour.BOLD}Pitch Arsenal Editor{Colour.RESET}")
+        for idx, p in enumerate(pitches, start=1):
+            print(
+                f"{idx}) {p.pitch_name or 'Pitch'} | Q {getattr(p, 'quality', '?')}"
+                f" BL {getattr(p, 'break_level', '?')}"
+                f" | H {getattr(p, 'h_break_mult', 1.0):.2f} V {getattr(p, 'v_break_mult', 1.0):.2f}"
+                f" | Rel {getattr(p, 'release_height', 6.0):.2f} Ext {getattr(p, 'extension', 6.0):.2f}"
+            )
+        print("0) Back")
+        sel = input("Select pitch to edit: ").strip()
+        if sel == "0" or sel.lower() == "exit":
+            return
+        try:
+            choice_idx = int(sel)
+        except ValueError:
+            continue
+        if choice_idx < 1 or choice_idx > len(pitches):
+            continue
+
+        pitch = pitches[choice_idx - 1]
+        try:
+            h_val = input(f"H break mult [{pitch.h_break_mult:.2f}]: ").strip()
+            v_val = input(f"V break mult [{pitch.v_break_mult:.2f}]: ").strip()
+            rel_val = input(f"Release height ft [{pitch.release_height:.2f}]: ").strip()
+            ext_val = input(f"Extension ft [{pitch.extension:.2f}]: ").strip()
+            qual_val = input(f"Quality [{pitch.quality}]: ").strip()
+            brk_val = input(f"Break level [{pitch.break_level}]: ").strip()
+
+            if h_val:
+                pitch.h_break_mult = float(h_val)
+            if v_val:
+                pitch.v_break_mult = float(v_val)
+            if rel_val:
+                pitch.release_height = float(rel_val)
+            if ext_val:
+                pitch.extension = float(ext_val)
+            if qual_val:
+                pitch.quality = int(qual_val)
+            if brk_val:
+                pitch.break_level = int(brk_val)
+
+            if session:
+                session.add(pitch)
+                session.commit()
+            print("Pitch updated.")
+            time.sleep(1)
+        except Exception as exc:
+            print(f"Update failed: {exc}")
+            time.sleep(1)
+            continue
+
+
 def open_debug_menu(*, context=None, session=None, state=None):
     enable_debug_mode()
     if session is None and context is not None:
@@ -142,6 +225,7 @@ def open_debug_menu(*, context=None, session=None, state=None):
         print("5) Quick exhibition vs school id")
         print("6) Give max stats (99) + full stamina")
         print("7) Play full match vs school id (turn-based)")
+        print("8) Edit pitch shape / release / extension (pitchers)")
         print("0) Exit debug menu")
         choice = input(">> ").strip().lower()
 
@@ -305,4 +389,13 @@ def open_debug_menu(*, context=None, session=None, state=None):
             except Exception as exc:
                 print(f"Failed: {exc}")
                 time.sleep(1)
+            continue
+
+        if choice == "8":
+            player = _get_player(context, session, state)
+            if not player:
+                print("No active player.")
+                time.sleep(1)
+                continue
+            _edit_pitch_shapes(session, player)
             continue

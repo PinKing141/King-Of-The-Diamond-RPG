@@ -1,6 +1,6 @@
 import sys
 import os
-
+from functools import partial
 from database.setup_db import create_database, GameState, School, Player, get_session, safe_delete_db
 from database.populate_japan import populate_world
 from ui.ui_core import DEFAULT_THEME
@@ -46,7 +46,7 @@ def check_first_time_setup(session, state, view: SeasonView):
     if not new_id:
         return None
 
-    state.active_player_id = new_id
+    setattr(state, "active_player_id", new_id)
     session.commit()
 
     view.announce_player_created()
@@ -99,7 +99,7 @@ def start_new_career_same_world(view: SeasonView, *, session=None):
             view.display_info("Character creation aborted.")
             return False
 
-        state.active_player_id = new_id
+        setattr(state, "active_player_id", new_id)
         session.commit()
         view.announce_new_career_ready()
         return True
@@ -118,18 +118,26 @@ def rebuild_world_database(view: SeasonView):
             return False
 
     create_database()
-    view.display_info("Database reset. Fresh world will be generated on next launch.")
+
+    # Immediately generate a fresh world so the main menu can resume without jumping into creation.
+    with get_session() as session:
+        ensure_world_population(session, view)
+    view.display_info("Database reset and world regenerated. Returning to main menu...")
     return True
 
 
 def launch_game_engine(view: SeasonView, *, session=None, session_provider: SessionProvider | None = None):
     """Bootstraps the GameContext and hands off to the SeasonManager."""
 
+    # Ensure DB and migrations are applied for direct callers (legacy paths may bypass main_menu).
+    create_database()
+
     provider = session_provider or SessionProvider(get_session, initial_session=session)
     owns_provider = session_provider is None
     session = session or provider.get()
     context = GameContext(session_factory=provider.get, session_provider=provider)
-    context.match_event_listeners = (lambda bus, io=view.io: attach_commentary_listener(bus, io=io),)
+    # Pre-register commentary listener using the current IO without capturing via lambda defaults.
+    context.match_event_listeners = (partial(attach_commentary_listener, io=view.io),)
     session.expire_all()
 
     try:
@@ -152,8 +160,9 @@ def main_menu(view: ConsoleView, *, session=None, session_provider: SessionProvi
     provider = session_provider or SessionProvider(get_session, initial_session=session)
 
     try:
-        session = provider.get()
         while True:
+            # The game engine closes sessions when it exits; always fetch a fresh one.
+            session = provider.get()
             state = session.query(GameState).first()
             has_save = state is not None
             player_info = get_player_info(session, state) if has_save else "No Data"
@@ -178,7 +187,8 @@ def main_menu(view: ConsoleView, *, session=None, session_provider: SessionProvi
                         provider.close()
                         provider = SessionProvider(get_session)
                         session = provider.get()
-                        launch_game_engine(view, session=session, session_provider=provider)
+                        # After regeneration, stay in main menu (no auto-launch/character creation).
+                        continue
             elif choice == "5":
                 break
     finally:
@@ -188,6 +198,8 @@ def main_menu(view: ConsoleView, *, session=None, session_provider: SessionProvi
 def run_game_loop():
     """Backwards compatibility wrapper for older entry points."""
     view = ConsoleView(theme=MAIN_MENU_THEME)
+    # Guard to avoid crashing on clean installs when invoked directly.
+    create_database()
     launch_game_engine(view)
 
 

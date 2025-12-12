@@ -30,7 +30,7 @@ if not os.path.exists(DATA_FOLDER) and not getattr(sys, 'frozen', False):
 
 # --- USER DATA (SAVE FILES) ---
 # Determine standard user data directory based on OS
-APP_NAME = "Koshien_RPG"
+APP_NAME = "King_of_the_Diamond"
 
 _APP_PATHS = get_app_paths()
 USER_DATA_DIR = str(_APP_PATHS.saves_dir)
