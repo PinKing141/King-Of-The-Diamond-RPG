@@ -39,6 +39,7 @@ from game.personnel.personality import roll_player_personality
 from game.personnel.player_generation import maybe_assign_bad_trait
 from game.mechanics.trait_logic import grant_user_creation_trait_rolls
 from game.mechanics.pitch_mastery import mastery_level_for_xp
+from game.story.theme_generator import assign_theme_if_eligible
 from match_engine.pitch_definitions import PITCH_TYPES
 
 LOGGER = logging.getLogger(__name__)
@@ -211,6 +212,48 @@ DEFAULT_PITCH_ARSENAL = [pitch for pitch in ("4-Seam Fastball", "Slider", "Chang
 FASTBALL_PITCHES = {"4-Seam Fastball", "2-Seam Fastball", "Sinker", "Turbo Sinker", "Shuuto", "Cutter", "Power Cutter"}
 MIN_PITCHES = 1
 MAX_PITCHES = 4
+
+_FASTBALLS = {"4-Seam Fastball", "2-Seam Fastball", "Cutter", "Power Cutter", "Sinker", "Turbo Sinker", "Shuuto"}
+_BREAKERS = {"Slider", "Sweeper", "Curveball", "Power Curve", "Knuckle Curve"}
+_CHANGEUPS = {"Changeup", "Circle Change", "Vulcan Change", "Split-Change"}
+
+
+def _pitch_recommendations(selected: List[str], arm_slot: str | None) -> List[str]:
+    """Lightweight pitch mix suggestions to guide new players."""
+    picks = set(p.lower() for p in selected)
+    recs: List[str] = []
+
+    def _add(name: str, reason: str) -> None:
+        if name.lower() in picks:
+            return
+        recs.append(f"{name} — {reason}")
+
+    # Anchor: always suggest a true heater if missing.
+    if not (_FASTBALLS & picks):
+        _add("4-Seam Fastball", "Anchor velo pitch; everything else tunnels off it.")
+
+    # Horizontal breaker.
+    if not (_BREAKERS & picks):
+        _add("Slider", "Glove-side breaker to pair with the heater.")
+
+    # Off-speed / change of pace.
+    if not (_CHANGEUPS & picks):
+        _add("Circle Change", "Speed differential to disrupt timing.")
+
+    # Vertical shape.
+    has_vert = any(p in {"Curveball", "Power Curve", "Knuckle Curve"} for p in selected)
+    if not has_vert:
+        _add("Curveball", "Downward break to change eye level.")
+
+    # Platoon/weak-contact tool if still under max.
+    if len(recs) < 3:
+        slot = (arm_slot or "").lower()
+        if "side" in slot or "sub" in slot:
+            _add("Sweeper", "Plays up from a lower slot with big sweep.")
+        else:
+            _add("Sinker", "Arm-side run for grounders and quick outs.")
+
+    return recs[:4]
 
 
 def _dedupe_preserve_order(items: Optional[List[str]]) -> List[str]:
@@ -534,14 +577,17 @@ def _stat_lines(position: str, stats: dict) -> List[str]:
     if not stats:
         return lines
 
+    is_pitcher = position == "Pitcher"
+
     general_fields = [
         ("Contact", stats.get("contact")),
         ("Power", stats.get("power")),
         ("Speed", stats.get("speed")),
         ("Fielding", stats.get("fielding")),
         ("Throwing", stats.get("throwing")),
-        ("Velocity", stats.get("velocity")),
     ]
+    if not is_pitcher:
+        general_fields.append(("Velocity", stats.get("velocity")))
 
     lines.append("-- GENERAL --")
     for label, value in general_fields:
@@ -549,12 +595,13 @@ def _stat_lines(position: str, stats: dict) -> List[str]:
         val_txt = f"{int(value):>3}" if value is not None else "--"
         lines.append(f" {label:<10} {bar}  {val_txt}")
 
-    if position == "Pitcher":
+    if is_pitcher:
         lines.append("")
         lines.append("-- PITCHING --")
         pitch_fields = [
             ("Velocity", stats.get("velocity")),
             ("Control", stats.get("control")),
+            ("Command", stats.get("command")),
             ("Movement", stats.get("movement")),
             ("Stamina", stats.get("stamina")),
         ]
@@ -774,6 +821,7 @@ def roll_stats(position, is_monster=False):
     if position == "Pitcher":
         stats['velocity'] = random.randint(130, 152) + (10 if is_monster else 0)
         stats['control'] = get_val(10)
+        stats['command'] = get_val(8)
         stats['movement'] = get_val(10)
         stats['stamina'] = get_val(10)
         stats['power'] = get_val(weak_stat_mod)
@@ -793,6 +841,7 @@ def roll_stats(position, is_monster=False):
         stats['throwing'] = get_val(15)
         stats['velocity'] = _derived_velocity(stats['throwing'], 85, 0.60)
         stats['arm_slot'] = "Three-Quarters"
+        stats['catcher_leadership'] = max(20, min(95, int((stats['fielding'] + stats['control'] + stats['discipline']) / 3)))
     elif position in {"First Base", "Third Base"}:
         stats['stamina'] = get_val()
         stats['control'] = get_val(-10)
@@ -865,8 +914,40 @@ def commit_player_to_db(session: Session, data) -> int:
     # Ensure Wall stat exists for catchers even if upstream rolling missed it
     if data.get('position') == "Catcher":
         clean_stats['catcher_ability'] = clean_stats.get('catcher_ability', 0) or max(10, int((clean_stats.get('fielding', 50) + 50) / 2))
+        clean_stats['catcher_leadership'] = clean_stats.get('catcher_leadership', 0) or max(
+            20,
+            int((clean_stats.get('discipline', 50) + clean_stats.get('fielding', 50)) / 2),
+        )
     else:
         clean_stats.setdefault('catcher_ability', 0)
+        clean_stats.setdefault('catcher_leadership', 0)
+
+    # Seed a base mechanics blob for pitchers so pitch lab and gameplay have data.
+    if data.get('position') == "Pitcher":
+        clean_stats.setdefault('mechanics_json', "{}")
+
+    # Compute a quick overall rating (0-99) based on primary tools.
+    def _avg(pool):
+        values = [v for v in pool if isinstance(v, (int, float))]
+        return sum(values) / len(values) if values else 0
+
+    if data.get('position') == "Pitcher":
+        overall = int(_avg([
+            clean_stats.get('velocity', 0),
+            clean_stats.get('control', 0),
+            clean_stats.get('command', clean_stats.get('control', 0)),
+            clean_stats.get('movement', 0),
+            clean_stats.get('stamina', 0),
+        ]))
+    else:
+        overall = int(_avg([
+            clean_stats.get('contact', 0),
+            clean_stats.get('power', 0),
+            clean_stats.get('speed', 0),
+            clean_stats.get('fielding', 0),
+            clean_stats.get('throwing', 0),
+        ]))
+    clean_stats['overall'] = max(0, min(99, overall))
 
     growth_tag = clean_stats.pop("growth_tag", None)
     growth_style = data.get("growth_style") or clean_stats.pop("growth_style", None)
@@ -904,6 +985,7 @@ def commit_player_to_db(session: Session, data) -> int:
     seed_relationships(session, p)
     grant_user_creation_trait_rolls(session, p, rolls=3)
     maybe_assign_bad_trait(session, p)
+    assign_theme_if_eligible(p)
     return p.id
 
 
@@ -1335,7 +1417,7 @@ class CreatePlayerEngine:
                     options=options,
                     default="1",
                     input_mode="menu_grid",
-                    payload={"prefix": prefix, "suffix": suffix, "cols": 1, "col_width": 48},
+                    payload={"prefix": prefix, "suffix": suffix, "cols": 1, "col_width": 48, "roulette": True},
                 ),
             ],
             done=False,
@@ -1527,7 +1609,7 @@ class CreatePlayerEngine:
                         options=city_labels if city_labels else ["Skip"],
                         default="1",
                         input_mode="menu_grid",
-                        payload={"prefix": prefix, "suffix": suffix, "cols": 3, "col_width": 26},
+                        payload={"prefix": prefix, "suffix": suffix, "cols": 4, "col_width": 22},
                     ),
                 ],
                 done=False,
@@ -1747,11 +1829,15 @@ class CreatePlayerEngine:
             self.step += 1
             return self.advance()
         current_count = len(self.state.pitch_arsenal)
+        rec_lines = _pitch_recommendations(self.state.pitch_arsenal, (self.state.stats or {}).get("arm_slot"))
         header = self._with_banner(
             STEP_TITLES.get(7, "Configure Pitch Arsenal"),
             [
                 "Select Pitches (Esc to go back)",
                 f"Current: ({current_count}/{MAX_PITCHES}) Need {MIN_PITCHES}-{MAX_PITCHES} total.",
+                "",
+                "Recommended:",
+                *([f"- {line}" for line in rec_lines] if rec_lines else ["- Pick a heater + breaker + changeup."]),
                 "",
             ],
         )
@@ -2428,7 +2514,36 @@ def drive_create_player(session: Session, io: Optional[IOInterface] = None) -> O
             return engine.result()
 
 
-create_hero = drive_create_player
+def create_hero(session: Session, *, use_tui: Optional[bool] = None) -> Optional[int]:
+    """
+    Entry point for character creation. Uses Textual TUI when enabled.
+    """
+    env_raw = os.environ.get("USE_TUI_CREATOR", "")
+    env_forced = env_raw.lower() in {"1", "true", "yes"}
+    if use_tui is None:
+        # Default to TUI if available; env can force on/off.
+        use_tui = env_forced or True
+    if use_tui:
+        try:
+            import importlib
+            run_tui_create_player = importlib.import_module("ui.tui_create_player").run_tui_create_player
+        except Exception:
+            if env_forced:
+                print("TUI creator unavailable; aborting character creation.")
+                return None
+            else:
+                print("TUI creator unavailable; falling back to console creator.")
+                return drive_create_player(session)
+        else:
+            res = run_tui_create_player(session)
+            if res is not None:
+                return res
+            if env_forced:
+                print("TUI creator cancelled or failed; aborting character creation.")
+                return None
+            print("TUI creator cancelled; falling back to console creator.")
+            return drive_create_player(session)
+    return drive_create_player(session)
 
 
 if __name__ == "__main__":

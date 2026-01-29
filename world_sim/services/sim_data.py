@@ -60,26 +60,65 @@ def get_roster(session, school_id: int):
 def iter_schools_basic(session) -> Iterable[SimpleNamespace]:
     """Yield lightweight school records for regional/qualifier sims."""
 
-    query = session.query(School.id, School.name, School.prefecture, School.prestige)
+    query = session.query(School.id, School.name, School.prefecture, School.prestige, School.city_name)
     try:
         rows = query.order_by(School.id).yield_per(256)
     except AttributeError:
         # Allow lightweight fake sessions used in tests that only support yield_per.
         rows = getattr(query, "yield_per", lambda _n: query)(256)
     for row in rows:
-        if isinstance(row, (tuple, list)) and len(row) == 4:
-            sid, name, prefecture, prestige = row
+        if isinstance(row, (tuple, list)) and len(row) == 5:
+            sid, name, prefecture, prestige, city_name = row
         else:
             sid = getattr(row, "id", None)
             name = getattr(row, "name", None)
             prefecture = getattr(row, "prefecture", None)
             prestige = getattr(row, "prestige", None)
+            city_name = getattr(row, "city_name", None)
         yield SimpleNamespace(
             id=sid,
             name=name,
             prefecture=prefecture,
             prestige=prestige,
+            city_name=city_name,
         )
+
+
+def normalize_prefecture(prefecture: str, *, city_name: Optional[str] = None, school_id: Optional[int] = None) -> str:
+    """Split Hokkaido into North/South (and allow future splits) for seeding/regions."""
+    pref = (prefecture or "").strip()
+    if pref.lower() != "hokkaido":
+        return pref or ""
+    north_cities = {
+        "asahikawa",
+        "wakkanai",
+        "abashiri",
+        "kitami",
+        "kushiro",
+        "obihiro",
+        "nemuro",
+        "monbetsu",
+        "nayoro",
+    }
+    south_cities = {
+        "sapporo",
+        "otaru",
+        "hakodate",
+        "muroran",
+        "tomakomai",
+        "chitose",
+        "iwamizawa",
+        "ishikari",
+    }
+    city_key = (city_name or "").lower()
+    if city_key in north_cities:
+        return "Hokkaido North"
+    if city_key in south_cities:
+        return "Hokkaido South"
+    # Deterministic fallback split by school_id parity to avoid oscillation.
+    if school_id and school_id % 2 == 0:
+        return "Hokkaido North"
+    return "Hokkaido South"
 
 
 def schools_by_region(session) -> Dict[str, List[SimpleNamespace]]:
@@ -87,7 +126,9 @@ def schools_by_region(session) -> Dict[str, List[SimpleNamespace]]:
 
     buckets: Dict[str, List[SimpleNamespace]] = defaultdict(list)
     for school in iter_schools_basic(session):
-        region = get_region_for_prefecture(getattr(school, "prefecture", "") or "")
+        pref = normalize_prefecture(getattr(school, "prefecture", "") or "", city_name=getattr(school, "city_name", None), school_id=getattr(school, "id", None))
+        school.prefecture = pref
+        region = get_region_for_prefecture(pref)
         if region == "Unknown":
             continue
         buckets[region].append(school)

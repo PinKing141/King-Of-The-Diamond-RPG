@@ -13,7 +13,11 @@ try:
     from appdirs import user_data_dir
 except ImportError:  # lightweight fallback
     def user_data_dir(appname: str, appauthor: str = "") -> str:
-        base = Path.home() / ".local" / "share"
+        """Minimal appdirs replacement with Windows-local awareness."""
+        if os.name == "nt":
+            base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        else:
+            base = Path.home() / ".local" / "share"
         target = base / appauthor / appname if appauthor else base / appname
         return str(target)
 

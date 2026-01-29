@@ -2,7 +2,7 @@ import sys
 import os
 from functools import partial
 from database.setup_db import create_database, GameState, School, Player, get_session, safe_delete_db
-from database.populate_japan import populate_world
+from database.populate_japan import populate_world, prefecture_counts
 from ui.ui_core import DEFAULT_THEME
 from game.personnel.create_player import create_hero
 from game.save_manager import show_save_menu
@@ -13,6 +13,8 @@ from game.interfaces import SeasonView
 from ui.console_view import ConsoleView
 from config import DB_PATH
 from ui.match_commentary import attach_commentary_listener
+from ui.tui_main_menu import run_tui_main_menu
+from ui.tui_world_gen import run_tui_world_gen
 
 
 MAIN_MENU_THEME = DEFAULT_THEME
@@ -27,9 +29,29 @@ def ensure_world_population(session, view: SeasonView):
         raise
 
     if school_count < 10:
-        view.announce_world_gen()
-        populate_world()
-        view.announce_world_gen_complete()
+        # Optional Textual overlay for world generation.
+        use_tui_world = os.environ.get("USE_TUI_WORLD_LOADING", "").lower() in {"1", "true", "yes"} or os.environ.get("USE_TUI_MAIN_MENU", "").lower() in {"1", "true", "yes"}
+        if use_tui_world:
+            import queue
+
+            progress_q: queue.Queue[tuple[str, int, int]] = queue.Queue()
+
+            def _gen_world():
+                populate_world(progress_cb=lambda pref, idx, total: progress_q.put((pref, idx, total)))
+
+            ran = run_tui_world_gen(_gen_world, progress_queue=progress_q)
+            if ran is None:
+                # Fallback if TUI unavailable
+                view.announce_world_gen()
+                populate_world()
+                view.announce_world_gen_complete()
+            else:
+                # Already executed inside the TUI app.
+                view.display_info("World generation finished.")
+        else:
+            view.announce_world_gen()
+            populate_world()
+            view.announce_world_gen_complete()
 
 
 def check_first_time_setup(session, state, view: SeasonView):
@@ -110,6 +132,34 @@ def start_new_career_same_world(view: SeasonView, *, session=None):
 
 def rebuild_world_database(view: SeasonView):
     """Delete the active database file and create a clean world."""
+    def _do_rebuild() -> bool:
+        if os.path.exists(DB_PATH):
+            try:
+                safe_delete_db(DB_PATH)
+            except OSError as exc:
+                view.display_error(f"Could not delete save: {exc}")
+                return False
+        create_database()
+        with get_session() as session:
+            ensure_world_population(session, view)
+        return True
+
+    use_tui = os.environ.get("USE_TUI_REBUILD", "").lower() in {"1", "true", "yes"} or os.environ.get("USE_TUI_WORLD_LOADING", "").lower() in {"1", "true", "yes"} or os.environ.get("USE_TUI_MAIN_MENU", "").lower() in {"1", "true", "yes"}
+    if use_tui:
+        try:
+            from ui.tui_rebuild_world import run_tui_rebuild_world
+
+            res = run_tui_rebuild_world(_do_rebuild)
+            if res is not None:
+                if res:
+                    view.display_info("Database reset and world regenerated. Returning to main menu...")
+                else:
+                    view.display_error("Rebuild failed or cancelled.")
+                return bool(res)
+        except Exception:
+            pass
+
+    # Fallback: console flow
     if os.path.exists(DB_PATH):
         try:
             safe_delete_db(DB_PATH)
@@ -167,7 +217,19 @@ def main_menu(view: ConsoleView, *, session=None, session_provider: SessionProvi
             has_save = state is not None
             player_info = get_player_info(session, state) if has_save else "No Data"
 
-            choice = view.prompt_main_menu(player_info=player_info, has_save=has_save)
+            choice = None
+            used_tui_menu = False
+            if os.environ.get("USE_TUI_MAIN_MENU", "").lower() in {"1", "true", "yes"}:
+                try:
+                    choice = run_tui_main_menu(player_info=player_info, has_save=has_save)
+                    used_tui_menu = choice is not None
+                except Exception as exc:
+                    # Fall back to console menu if TUI fails.
+                    view.display_error(f"TUI menu failed ({exc}); using console menu.")
+                    choice = None
+
+            if choice is None:
+                choice = view.prompt_main_menu(player_info=player_info, has_save=has_save)
             session.expire_all()
 
             if choice == "1":
@@ -182,7 +244,22 @@ def main_menu(view: ConsoleView, *, session=None, session_provider: SessionProvi
                 if start_new_career_same_world(view, session=session):
                     launch_game_engine(view, session=session, session_provider=provider)
             elif choice == "4":
-                if view.prompt_rebuild_world():
+                confirmed = False
+                if used_tui_menu:
+                    try:
+                        from ui.tui_confirm import run_tui_confirm
+
+                        res = run_tui_confirm("Rebuild the world database? This will delete existing saves.")
+                        if res is None:
+                            view.display_error("TUI confirm unavailable; rebuild cancelled.")
+                            continue
+                        confirmed = bool(res)
+                    except Exception:
+                        view.display_error("TUI confirm failed; rebuild cancelled.")
+                        continue
+                if not confirmed:
+                    confirmed = view.prompt_rebuild_world()
+                if confirmed:
                     if rebuild_world_database(view):
                         provider.close()
                         provider = SessionProvider(get_session)

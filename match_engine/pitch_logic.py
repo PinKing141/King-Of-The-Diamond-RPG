@@ -1,3 +1,4 @@
+import importlib
 import os
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
@@ -16,6 +17,7 @@ from game.mechanics.mechanics import (
 from game.mechanics.skill_system import player_has_skill
 from game.mechanics.pitch_mastery import mastery_level_for_xp, record_pitch_xp
 from battery_system.battery_trust import adjust_battery_sync, get_battery_sync, trust_scaled_wall
+from battery_system.negotiation_types import NegotiatedPitchCall
 
 # Toggle: allow battle-math logs to be pushed into at-bat feeds without always printing.
 ADV_BATTLE_FEEDBACK = os.environ.get("ADV_BATTLE_FEEDBACK", "1") not in {"0", "false", "False"}
@@ -877,9 +879,7 @@ def resolve_pitch(
 
         # Patch battery negotiation globals so any stray prompts are silenced during tests/auto sims.
         try:
-            import battery_system.battery_negotiation as bn
-            from battery_system.battery_negotiation import NegotiatedPitchCall
-
+            bn = importlib.import_module("battery_system.battery_negotiation")
             bn.print = (lambda *_, **__: None)
             bn.input = (lambda *_, **__: "1")
 
@@ -914,7 +914,6 @@ def resolve_pitch(
         call_result = manual_call.get("call")
         state.manual_pitch_call = None
     else:
-        from battery_system.battery_negotiation import NegotiatedPitchCall
         auto_pitch = type("_P", (), {"pitch_name": "Auto", "break_level": getattr(pitcher, "breaking_ball", 50) or 50})()
         call_result = NegotiatedPitchCall(
             pitch=auto_pitch,

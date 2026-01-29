@@ -298,7 +298,58 @@ def open_pitch_lab(session, player, *, io: Optional[IOInterface] = None) -> None
         _log("No recorded pitches yet.", io=io)
         _prompt("Press Enter to exit.", io=io)
         return
+    use_tui = os.environ.get("USE_TUI_PITCH_LAB", "").lower() in {"1", "true", "yes"}
+
     while True:
+        if use_tui:
+            try:
+                import importlib
+                run_tui_pitch_lab = importlib.import_module("ui.tui_pitch_lab").run_tui_pitch_lab
+
+                ap = int(getattr(player, "ability_points", 0) or 0)
+                res = run_tui_pitch_lab(repertoire, ap)
+                if res is None:
+                    # fallback to console if TUI unavailable
+                    use_tui = False
+                    continue
+                action, idx = res
+                if action == "EXIT":
+                    break
+                if action == "TALENT":
+                    _open_talent_menu(session, player, io=io)
+                    try:
+                        session.refresh(player)
+                    except Exception:
+                        pass
+                    continue
+                if action == "UNLOCK":
+                    ready_pitch = None
+                    if idx is not None and 0 <= idx < len(repertoire):
+                        candidate = repertoire[idx]
+                        if getattr(candidate, "signature_ready", False) and not getattr(candidate, "signature_unlocked", False):
+                            ready_pitch = candidate
+                    if ready_pitch is None:
+                        ready_pitch = next((p for p in repertoire if getattr(p, "signature_ready", False) and not getattr(p, "signature_unlocked", False)), None)
+                    if not ready_pitch:
+                        _log("No signature-ready pitches.", io=io)
+                        continue
+                    if (player.ability_points or 0) <= 0:
+                        _log("Need 1 Ability Point to unlock.", io=io)
+                        continue
+                    if mastery_level_for_xp(getattr(ready_pitch, "mastery_xp", 0)) < 1:
+                        _log("Need at least Lv1 mastery before spending Ability Points here.", io=io)
+                        continue
+                    player.ability_points -= 1
+                    ready_pitch.signature_unlocked = True
+                    session.add(player)
+                    session.add(ready_pitch)
+                    session.commit()
+                    _log(f"Unlocked {ready_pitch.pitch_name} signature: {ready_pitch.signature_tag}.", io=io)
+                    continue
+            except Exception:
+                use_tui = False
+                # fall through to console flow
+
         _log("\n=== Pitch Lab ===", io=io)
         _log(f"Ability Points: {getattr(player, 'ability_points', 0) or 0}", io=io)
         for idx, pitch in enumerate(repertoire, start=1):

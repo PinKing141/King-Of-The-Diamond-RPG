@@ -523,48 +523,59 @@ def build_location_cache(session):
     return cache
 
 
-try:
-    name_db_conn = sqlite3.connect(NAME_DB_PATH) if os.path.exists(NAME_DB_PATH) else None
-    name_db_cursor = name_db_conn.cursor() if name_db_conn else None
-except: name_db_conn = None
+name_db_conn = None  # legacy placeholder; avoid global SQLite handles across threads
 
 # --- HELPERS ---
 
 def get_random_english_name(gender='M'):
-    if not name_db_conn:
+    """Open a fresh SQLite connection per call to stay thread-safe."""
+    if not os.path.exists(NAME_DB_PATH):
         return "Yamada", "Taro"
 
+    conn = None
     try:
+        conn = sqlite3.connect(NAME_DB_PATH, check_same_thread=False)
+        cursor = conn.cursor()
+
         # SURNAME
         try:
-            name_db_cursor.execute("SELECT reading FROM last_names ORDER BY RANDOM() LIMIT 1")
+            cursor.execute("SELECT reading FROM last_names ORDER BY RANDOM() LIMIT 1")
         except sqlite3.OperationalError:
-            name_db_cursor.execute("SELECT kanji FROM names ORDER BY RANDOM() LIMIT 1")
-            
-        last_reading = name_db_cursor.fetchone()[0]
+            cursor.execute("SELECT kanji FROM names ORDER BY RANDOM() LIMIT 1")
+        last_row = cursor.fetchone()
+        last_reading = last_row[0] if last_row else "Yamada"
 
         # FIRST NAME
         try:
             sex_values = ["M", "m", "Male", "male", "MALE", "boy", "Boy", "BOY"]
             placeholders = ",".join("?" * len(sex_values))
-            name_db_cursor.execute(
+            cursor.execute(
                 f"SELECT reading FROM first_names WHERE sex IN ({placeholders}) ORDER BY RANDOM() LIMIT 1",
-                sex_values
+                sex_values,
             )
         except sqlite3.OperationalError:
-             return "Yamada", "Taro"
+            return "Yamada", "Taro"
 
-        row = name_db_cursor.fetchone()
-        first_reading = row[0] if row else "太郎"
+        row = cursor.fetchone()
+        first_reading = row[0] if row else "Taro"
 
-        # Convert readings to romaji
-        l_romaji = "".join([i["hepburn"] for i in kks.convert(last_reading)]).capitalize()
-        f_romaji = "".join([i["hepburn"] for i in kks.convert(first_reading)]).capitalize()
+        try:
+            import pykakasi
 
-        return l_romaji, f_romaji
+            kks_local = pykakasi.kakasi()
+            last_romaji = "".join([i["hepburn"] for i in kks_local.convert(last_reading)]).capitalize()
+            first_romaji = "".join([i["hepburn"] for i in kks_local.convert(first_reading)]).capitalize()
+            return last_romaji, first_romaji
+        except Exception:
+            # Fallback to readings if transliteration fails
+            return last_reading, first_reading
 
     except Exception:
         return "Yamada", "Taro"
+    finally:
+        if conn:
+            conn.close()
+
 
 def generate_stats(position, specific_pos, focus):
     # Generates raw stats dictionary
@@ -806,7 +817,7 @@ def generate_pitch_arsenal(player_obj, style_focus, arm_slot="Three-Quarters"):
 
 used_school_names = set()
 
-def populate_world():
+def populate_world(progress_cb=None):
     start_time = time.perf_counter()
     with session_scope() as session:
         import_city_catalog(session)
@@ -833,171 +844,185 @@ def populate_world():
         weights = [PHILOSOPHY_MATRIX[k].get('weight', 1) for k in archetype_keys]
         _shuffle_name_sets()
 
-        for pref, count in prefecture_counts.items():
-            target = max(6, int(count * SCALE_FACTOR))
-            distribution = plan_city_distribution(pref, target, locations_by_pref)
-            slot_queue = expand_city_slots(distribution, target)
+    total_pref = len(prefecture_counts)
 
-            print(f"Processing: {pref} ({len(slot_queue)} slots)...", end=" ")
-            schools_in_pref = 0
+    for pref_idx, (pref, count) in enumerate(prefecture_counts.items(), start=1):
+        target = max(6, int(count * SCALE_FACTOR))
+        distribution = plan_city_distribution(pref, target, locations_by_pref)
+        slot_queue = expand_city_slots(distribution, target)
 
-            for location in slot_queue:
-                try:
-                    phil_name = random.choices(archetype_keys, weights=weights, k=1)[0]
-                    data = PHILOSOPHY_MATRIX[phil_name]
+        print(f"Processing: {pref} ({len(slot_queue)} slots)...", end=" ")
+        if progress_cb:
+            # Inform any UI about the prefecture we just started.
+            try:
+                progress_cb(f"{pref} (building)", pref_idx, total_pref)
+            except Exception:
+                pass
+        schools_in_pref = 0
 
-                    archetype = roll_school_archetype()
-                    city_label = (location.city_name if location else pref).strip()
-                    school_name = generate_school_name(pref, city_label, archetype)
+        for location in slot_queue:
+            try:
+                phil_name = random.choices(archetype_keys, weights=weights, k=1)[0]
+                data = PHILOSOPHY_MATRIX[phil_name]
 
-                    if location:
-                        location.school_count = (location.school_count or 0) + 1
+                archetype = roll_school_archetype()
+                city_label = (location.city_name if location else pref).strip()
+                school_name = generate_school_name(pref, city_label, archetype)
 
-                    base_budget_yen = data.get('budget', 50_000) * 100
-                    final_budget = int(base_budget_yen * random.uniform(0.8, 1.2))
+                if location:
+                    location.school_count = (location.school_count or 0) + 1
 
-                    prestige_low, prestige_high = data.get('prestige_range', (25, 80))
-                    prestige = random.randint(int(prestige_low), int(prestige_high))
-                    network_map, era_state, era_momentum = seed_school_meta(phil_name, data, prestige)
+                base_budget_yen = data.get('budget', 50_000) * 100
+                final_budget = int(base_budget_yen * random.uniform(0.8, 1.2))
 
-                    school = School(
-                        name=school_name,
-                        prefecture=pref,
-                        city_name=city_label,
-                        geo_location_id=location.id if location else None,
-                        prestige=prestige,
-                        budget=final_budget,
-                        philosophy=phil_name,
-                        focus=data.get('focus', 'Balanced'),
-                        training_style=data.get('training_style', 'Modern'),
-                        seniority_weight=data.get('seniority_bias', 0.5),
-                        trust_weight=data.get('trust_weight', 0.5),
-                        stats_weight=data.get('stats_weight', 0.5),
-                        injury_tolerance=data.get('injury_tolerance', 0.0),
-                        scouting_network=json.dumps(network_map),
-                        current_era=era_state,
-                        era_momentum=era_momentum,
-                    )
-                    session.add(school)
+                prestige_low, prestige_high = data.get('prestige_range', (25, 80))
+                prestige = random.randint(int(prestige_low), int(prestige_high))
+                network_map, era_state, era_momentum = seed_school_meta(phil_name, data, prestige)
+
+                school = School(
+                    name=school_name,
+                    prefecture=pref,
+                    city_name=city_label,
+                    geo_location_id=location.id if location else None,
+                    prestige=prestige,
+                    budget=final_budget,
+                    philosophy=phil_name,
+                    focus=data.get('focus', 'Balanced'),
+                    training_style=data.get('training_style', 'Modern'),
+                    seniority_weight=data.get('seniority_bias', 0.5),
+                    trust_weight=data.get('trust_weight', 0.5),
+                    stats_weight=data.get('stats_weight', 0.5),
+                    injury_tolerance=data.get('injury_tolerance', 0.0),
+                    scouting_network=json.dumps(network_map),
+                    current_era=era_state,
+                    era_momentum=era_momentum,
+                )
+                session.add(school)
+                session.flush()
+                for scope, rating in (network_map or {}).items():
+                    session.add(ScoutingNetwork(school_id=school.id, scope=scope, rating=rating))
+                schools_in_pref += 1
+                total_schools += 1
+
+                coach = generate_coach_for_school(school)
+                session.add(coach)
+
+                roster_players = []
+                pitcher_arsenal_map = {}
+                positions_needed = [
+                    "Pitcher", "Pitcher", "Pitcher", "Pitcher",
+                    "Catcher", "Catcher",
+                    "1B", "2B", "3B", "SS",
+                    "LF", "CF", "RF",
+                    "Infielder", "Outfielder", "Infielder", "Outfielder", "Utility"
+                ]
+
+                for spec_pos in positions_needed:
+                    broad_pos = spec_pos
+                    if spec_pos in ["1B", "2B", "3B", "SS", "Utility"]:
+                        broad_pos = "Infielder"
+                    if spec_pos in ["LF", "CF", "RF"]:
+                        broad_pos = "Outfielder"
+
+                    stats = generate_stats(broad_pos, spec_pos, data.get('focus', 'Balanced'))
+                    l_name, f_name = get_random_english_name('M')
+
+                    valid_cols = {c.key for c in Player.__table__.columns}
+
+                    p_data = {
+                        "school_id": school.id,
+                        "name": f"{l_name} {f_name}",
+                        "first_name": f_name,
+                        "last_name": l_name,
+                        "year": random.choices([1, 2, 3], weights=[30, 40, 30])[0],
+                        "position": broad_pos,
+                        "role": "BENCH",
+                        **{k: v for k, v in stats.items() if k in valid_cols}
+                    }
+                    traits = roll_player_personality(school)
+                    p_data['drive'] = traits['drive']
+                    p_data['loyalty'] = traits['loyalty']
+                    p_data['volatility'] = traits['volatility']
+
+                    player = Player(**p_data)
+                    assign_player_archetype(player, school, position=spec_pos)
+
+                    class PseudoPlayer:
+                        def __init__(self, s):
+                            self.control = s.get('control', 50)
+                            self.movement = s.get('movement', 50)
+
+                    if broad_pos == "Pitcher":
+                        arsenal = generate_pitch_arsenal(PseudoPlayer(stats), data.get('focus'), "Overhand")
+                        pitcher_arsenal_map[player] = arsenal
+
+                    roster_players.append(player)
+
+                pitchers = [p for p in roster_players if p.position == "Pitcher"]
+                fielders = [p for p in roster_players if p.position != "Pitcher"]
+
+                pitchers.sort(key=lambda x: x.velocity + x.control, reverse=True)
+                fielders.sort(key=lambda x: x.contact + x.power + x.fielding, reverse=True)
+
+                if pitchers:
+                    pitchers[0].jersey_number = 1
+                    pitchers[0].role = "ACE"
+                    pitchers[0].is_starter = True
+
+                used_nums = {1}
+                for i, f in enumerate(fielders[:8]):
+                    num = i + 2
+                    f.jersey_number = num
+                    f.is_starter = True
+                    f.role = "STARTER"
+                    used_nums.add(num)
+
+                bench = pitchers[1:] + fielders[8:]
+                next_num = 10
+                for b in bench:
+                    b.jersey_number = next_num
+                    b.role = "BENCH"
+                    if b.position == "Pitcher":
+                        b.role = "RELIEVER"
+                    next_num += 1
+
+                if POPULATE_BULK_INSERT:
+                    # Persist players quickly and hydrate primary keys for downstream trait seeding.
+                    session.bulk_save_objects(roster_players, return_defaults=True)
                     session.flush()
-                    for scope, rating in (network_map or {}).items():
-                        session.add(ScoutingNetwork(school_id=school.id, scope=scope, rating=rating))
-                    schools_in_pref += 1
-                    total_schools += 1
+                else:
+                    session.add_all(roster_players)
+                    session.flush()
 
-                    coach = generate_coach_for_school(school)
-                    session.add(coach)
+                pitch_rows = []
+                for player, arsenal in pitcher_arsenal_map.items():
+                    for pitch in arsenal:
+                        pitch.player_id = player.id
+                        pitch_rows.append(pitch)
+                if pitch_rows:
+                    session.bulk_save_objects(pitch_rows)
+                    session.flush()
+                seed_initial_traits(session, roster_players)
+                seed_negative_traits(session, roster_players)
 
-                    roster_players = []
-                    pitcher_arsenal_map = {}
-                    positions_needed = [
-                        "Pitcher", "Pitcher", "Pitcher", "Pitcher",
-                        "Catcher", "Catcher",
-                        "1B", "2B", "3B", "SS",
-                        "LF", "CF", "RF",
-                        "Infielder", "Outfielder", "Infielder", "Outfielder", "Utility"
-                    ]
+                if schools_in_pref % 25 == 0:
+                    print(".", end="", flush=True)
 
-                    for spec_pos in positions_needed:
-                        broad_pos = spec_pos
-                        if spec_pos in ["1B", "2B", "3B", "SS", "Utility"]:
-                            broad_pos = "Infielder"
-                        if spec_pos in ["LF", "CF", "RF"]:
-                            broad_pos = "Outfielder"
+            except Exception as e:
+                if os.getenv("POPULATE_DEBUG"):
+                    traceback.print_exc()
+                continue
 
-                        stats = generate_stats(broad_pos, spec_pos, data.get('focus', 'Balanced'))
-                        l_name, f_name = get_random_english_name('M')
+        session.commit()
+        print(f" Done. ({schools_in_pref} Schools)")
+        if progress_cb:
+            try:
+                progress_cb(f"{pref} (Done)", pref_idx, total_pref)
+            except Exception:
+                pass
 
-                        valid_cols = {c.key for c in Player.__table__.columns}
-
-                        p_data = {
-                            "school_id": school.id,
-                            "name": f"{l_name} {f_name}",
-                            "first_name": f_name,
-                            "last_name": l_name,
-                            "year": random.choices([1, 2, 3], weights=[30, 40, 30])[0],
-                            "position": broad_pos,
-                            "role": "BENCH",
-                            **{k: v for k, v in stats.items() if k in valid_cols}
-                        }
-                        traits = roll_player_personality(school)
-                        p_data['drive'] = traits['drive']
-                        p_data['loyalty'] = traits['loyalty']
-                        p_data['volatility'] = traits['volatility']
-
-                        player = Player(**p_data)
-                        assign_player_archetype(player, school, position=spec_pos)
-
-                        class PseudoPlayer:
-                            def __init__(self, s):
-                                self.control = s.get('control', 50)
-                                self.movement = s.get('movement', 50)
-
-                        if broad_pos == "Pitcher":
-                            arsenal = generate_pitch_arsenal(PseudoPlayer(stats), data.get('focus'), "Overhand")
-                            pitcher_arsenal_map[player] = arsenal
-
-                        roster_players.append(player)
-
-                    pitchers = [p for p in roster_players if p.position == "Pitcher"]
-                    fielders = [p for p in roster_players if p.position != "Pitcher"]
-
-                    pitchers.sort(key=lambda x: x.velocity + x.control, reverse=True)
-                    fielders.sort(key=lambda x: x.contact + x.power + x.fielding, reverse=True)
-
-                    if pitchers:
-                        pitchers[0].jersey_number = 1
-                        pitchers[0].role = "ACE"
-                        pitchers[0].is_starter = True
-
-                    used_nums = {1}
-                    for i, f in enumerate(fielders[:8]):
-                        num = i + 2
-                        f.jersey_number = num
-                        f.is_starter = True
-                        f.role = "STARTER"
-                        used_nums.add(num)
-
-                    bench = pitchers[1:] + fielders[8:]
-                    next_num = 10
-                    for b in bench:
-                        b.jersey_number = next_num
-                        b.role = "BENCH"
-                        if b.position == "Pitcher":
-                            b.role = "RELIEVER"
-                        next_num += 1
-
-                    if POPULATE_BULK_INSERT:
-                        # Persist players quickly and hydrate primary keys for downstream trait seeding.
-                        session.bulk_save_objects(roster_players, return_defaults=True)
-                        session.flush()
-                    else:
-                        session.add_all(roster_players)
-                        session.flush()
-
-                    pitch_rows = []
-                    for player, arsenal in pitcher_arsenal_map.items():
-                        for pitch in arsenal:
-                            pitch.player_id = player.id
-                            pitch_rows.append(pitch)
-                    if pitch_rows:
-                        session.bulk_save_objects(pitch_rows)
-                        session.flush()
-                    seed_initial_traits(session, roster_players)
-                    seed_negative_traits(session, roster_players)
-
-                    if schools_in_pref % 25 == 0:
-                        print(".", end="", flush=True)
-
-                except Exception as e:
-                    if os.getenv("POPULATE_DEBUG"):
-                        traceback.print_exc()
-                    continue
-
-            session.commit()
-            print(f" Done. ({schools_in_pref} Schools)")
-
-    if name_db_conn: name_db_conn.close()
+    if name_db_conn:
+        name_db_conn.close()
     elapsed = time.perf_counter() - start_time
     if elapsed > 30 and not POPULATE_BULK_INSERT:
         print(f"[Perf] Population ran in {elapsed:.1f}s. Consider enabling bulk inserts for players via POPULATE_BULK_INSERT=1 to speed up large worlds.")

@@ -2,7 +2,7 @@
 
 # Prefecture-to-region mapping follows the Autumn/Spring tournament blocks.
 REGION_MAP = {
-    "Hokkaido-Tohoku": ["Hokkaido", "Aomori", "Iwate", "Akita", "Yamagata", "Miyagi", "Fukushima"],
+    "Hokkaido-Tohoku": ["Hokkaido", "Hokkaido North", "Hokkaido South", "Aomori", "Iwate", "Akita", "Yamagata", "Miyagi", "Fukushima"],
     "Kanto": ["Ibaraki", "Tochigi", "Gunma", "Saitama", "Chiba", "Kanagawa", "Yamanashi"],
     "Tokyo": ["Tokyo"],  # Tokyo is often its own block due to school density
     "Hokushin-etsu": ["Niigata", "Nagano", "Toyama", "Ishikawa", "Fukui"],
@@ -25,7 +25,10 @@ REGION_MAP = {
 
 def get_region_for_prefecture(pref_name: str) -> str:
     """Return the region block label for a given prefecture name."""
+    pref = pref_name.strip()
     for region, prefs in REGION_MAP.items():
-        if pref_name in prefs:
+        if pref in prefs:
             return region
+    if pref.lower() == "hokkaido":
+        return "Hokkaido-Tohoku"
     return "Unknown"

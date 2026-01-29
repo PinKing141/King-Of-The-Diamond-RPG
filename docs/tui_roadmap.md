@@ -5,13 +5,20 @@ Scope: replace the current CLI menus with a richer terminal UI using `textual`, 
 ## Phase 1 – Main Menu (now)
 - [x] Add `docs/tui_roadmap.md` to track progress.
 - [x] Scaffold a `Textual` main menu that mirrors current options and returns the same choice tokens.
-- [ ] Gate entry via env flag (`USE_TUI_MAIN_MENU=1`) while keeping console as default.
+- [x] Gate entry via env flag (`USE_TUI_MAIN_MENU=1`) while keeping console as default.
 - [ ] Smoke-test locally once `textual` is installed (optional dependency).
 
 ## Phase 2 – Season shell
-- [ ] Weekly command menu (next-week, scouting, save, smart-sim) with keybinds.
-- [ ] Scouting/character sheet panels (read-only first) with scrollable panes.
-- [ ] Save/load selector with slots, confirmation dialogs.
+- [x] Weekly command menu (next-week, scouting, save, smart-sim) with keybinds.
+- [x] Save/load selector with slots, confirmation dialogs (Textual; env-gated).
+- [x] Character creation flow (Textual) hooked to env flag.
+- [x] World loading overlay (Textual spinner) gated by env flag (`USE_TUI_WORLD_LOADING`).
+- [x] Scouting report + character sheet panels via Textual (env-gated viewers).
+- [x] Training slot picker (Textual) with action choices.
+- [x] Pitch Lab overlay (Textual; unlocks/talent tree access).
+- [x] Week planner grid (Textual; optional env `USE_TUI_WEEK_PLANNER`).
+- [x] TUI confirmations for planner (skip/over-fatigue, post-week pitch lab prompt).
+- [x] Rebuild world TUI (confirm + spinner; env `USE_TUI_REBUILD`).
 
 ## Phase 3 – In-game overlays
 - [ ] Match HUD: scoreboard, basepaths, at-bat log, pitch input prompts, and runner states.
@@ -33,3 +40,7 @@ Scope: replace the current CLI menus with a richer terminal UI using `textual`, 
 - Should we expose the debug menu inside the TUI (keybind) or keep it CLI-only?
 - Do we want live stat widgets (battery sync, momentum) during games?
 - Should the TUI also cover character creation, or remain on the console flow?"
+
+
+$env:USE_TUI_MAIN_MENU = "1"
+.venv\Scripts\python main.py

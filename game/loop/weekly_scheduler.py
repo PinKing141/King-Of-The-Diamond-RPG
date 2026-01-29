@@ -44,6 +44,8 @@ from ui.weekly_view import (
     render_planning_ui,
     render_weekly_brief,
 )
+from ui.tui_week_planner import run_tui_week_planner
+from ui.tui_confirm import run_tui_confirm
 from game.loop.weekly_scheduler_core import (
     DAYS_OF_WEEK,
     SLOTS,
@@ -857,9 +859,37 @@ def _resolve_prompt(
     except EOFError:
         return None
 
+
+def _confirm_bool(prompt: str, *, io=None, context=None, session=None, state=None, default: str = "n") -> bool:
+    """Yes/No confirmation with optional Textual dialog."""
+    use_tui = os.environ.get("USE_TUI_CONFIRM", "").lower() in {"1", "true", "yes"} or os.environ.get("USE_TUI_WEEK_PLANNER", "").lower() in {"1", "true", "yes"}
+    if use_tui:
+        try:
+            res = run_tui_confirm(prompt)
+            if res is not None:
+                return bool(res)
+        except Exception:
+            pass
+    ans = (_resolve_prompt(prompt, io=io, context=context, session=session, state=state, default=default) or default).strip().lower()
+    return ans.startswith("y")
+
 def get_slot_choice(current_action: Optional[str], *, context=None, session=None, state=None, io: Optional[IOInterface] = None) -> Optional[str]:
     """Prompts the user for an action selection, defaulting to the current value."""
     log = io.log if io else print
+
+    # Optional Textual picker
+    use_tui = os.environ.get("USE_TUI_TRAINING", "").lower() in {"1", "true", "yes"}
+    if use_tui:
+        try:
+            from ui.tui_training_menu import run_tui_training_menu
+
+            day_label = f"Week {getattr(state, 'current_week', '')}" if state else ""
+            slot_label = f"Day {getattr(state, 'day_idx', '')} Slot {getattr(state, 'slot_idx', '')}" if state else ""
+            choice = run_tui_training_menu(day_label=day_label, slot_label=slot_label)
+            if choice:
+                return choice
+        except Exception:
+            pass
 
     log("\nSelect Action (Enter = keep current plan):")
     if current_action:
@@ -952,6 +982,18 @@ def plan_week_ui(
     coach_requirement = _describe_order_requirement(coach_order) if coach_order else None
     coach_rewards = _effective_order_rewards(coach_order, school)
 
+    # Optional Textual week planner
+    use_tui = os.environ.get("USE_TUI_WEEK_PLANNER", "").lower() in {"1", "true", "yes"}
+    if use_tui:
+        tui_res = run_tui_week_planner(
+            schedule_grid,
+            mandatory_schedule,
+            coach_order=coach_order,
+            coach_order_requirement=coach_requirement,
+        )
+        if tui_res is not None:
+            return tui_res
+
     while day_idx < 7:
         progress_snapshot = _calculate_schedule_order_progress(coach_order, schedule_grid)
         render_planning_ui(
@@ -999,15 +1041,7 @@ def plan_week_ui(
             log(
                 f"Skipping {mandatory_action.replace('_', ' ').title()} will significantly lower Coach Trust."
             )
-            confirm = (_resolve_prompt(
-                "Are you sure you want to skip? (y/n): ",
-                io=io,
-                context=context,
-                session=session,
-                state=state,
-                default="n",
-            ) or "").strip().lower()
-            if confirm != 'y':
+            if not _confirm_bool("Are you sure you want to skip? (y/n): ", io=io, context=context, session=session, state=state, default="n"):
                 continue
             skipped_mandatory.append(
                 {
@@ -1022,15 +1056,7 @@ def plan_week_ui(
         new_fatigue = max(0, current_fatigue + cost)
         if new_fatigue > 90:
             log(f"WARNING: Fatigue will reach {new_fatigue}. High injury risk!", level="warning")
-            confirm = (_resolve_prompt(
-                "Confirm? (y/n): ",
-                io=io,
-                context=context,
-                session=session,
-                state=state,
-                default="n",
-            ) or "").strip().lower()
-            if confirm != 'y':
+            if not _confirm_bool("Confirm? (y/n): ", io=io, context=context, session=session, state=state, default="n"):
                 continue
 
         grid_snapshot = [row[:] for row in schedule_grid]
@@ -1197,19 +1223,8 @@ def start_week(context: GameContext, current_week: int, state: Optional[GameStat
 
     render_weekly_dashboard(summary)
     if ability_points_gained > 0:
-        prompt = (
-            f"You earned {ability_points_gained} Ability Point(s). Open the Pitch Lab now? [Y/N]: "
-        )
-        nav_raw = _resolve_prompt(
-            prompt,
-            io=io,
-            context=context,
-            session=context.session if context else None,
-            state=state,
-            default="n",
-            options=["y", "n", ""]
-        )
-        if nav_raw and nav_raw.strip().lower().startswith("y"):
+        prompt = f"You earned {ability_points_gained} Ability Point(s). Open the Pitch Lab now? [Y/N]: "
+        if _confirm_bool(prompt, io=io, context=context, session=context.session if context else None, state=state, default="n"):
             open_pitch_lab(context.session, refreshed_player, io=io)
 
     _resolve_prompt("Press Enter to continue...", io=io, context=context, session=context.session if context else None, state=state)

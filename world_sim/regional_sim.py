@@ -109,8 +109,8 @@ def _pick_prefecture_reps(
     strength_cache: Dict[int, int],
     *,
     cache: Optional[StrengthCache] = None,
-) -> List[School]:
-    """Select top two teams per prefecture by strength/prestige."""
+) -> List[tuple[School, bool]]:
+    """Select seeded/unseeded reps per prefecture by strength/prestige."""
 
     by_pref: Dict[str, List[Tuple[School, int]]] = defaultdict(list)
     for school in schools:
@@ -124,10 +124,22 @@ def _pick_prefecture_reps(
         score = (strength * 0.7) + (prestige * 0.3)
         by_pref[pref].append((school, int(score)))
 
-    entrants: List[School] = []
+    def _seed_slots(pref: str, count: int) -> int:
+        dense_pref = {"Tokyo", "Osaka", "Kanagawa", "Hyogo", "Hokkaido", "Hokkaido North", "Hokkaido South"}
+        if pref in dense_pref and count >= 40:
+            return 8
+        if count >= 26:
+            return 6
+        return 4
+
+    entrants: List[tuple[School, bool]] = []
     for bucket in by_pref.values():
         bucket.sort(key=lambda row: row[1], reverse=True)
-        entrants.extend([row[0] for row in bucket[:2]])
+        seed_cap = _seed_slots(getattr(bucket[0][0], "prefecture", ""), len(bucket))
+        seeds = bucket[:seed_cap]
+        rest = bucket[seed_cap:]
+        entrants.extend([(row[0], True) for row in seeds])
+        entrants.extend([(row[0], False) for row in rest])
 
     rng.shuffle(entrants)
     return entrants
@@ -135,7 +147,7 @@ def _pick_prefecture_reps(
 
 def _simulate_block(
     session,
-    entrants: List[School],
+    entrants: List[School] | List[tuple[School, bool]],
     region_name: str,
     user_school_id: int,
     *,
@@ -149,8 +161,35 @@ def _simulate_block(
 ) -> Tuple[Optional[School], Optional[School]]:
     """Run a single-elimination block; returns (champion, runner_up)."""
 
-    bracket = list(entrants)
-    rng.shuffle(bracket)
+    norm: List[tuple[School, bool]] = []
+    for entry in entrants:
+        if isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[1], bool):
+            norm.append(entry)
+        else:
+            norm.append((entry, False))
+
+    seeds = [e for e in norm if e[1]]
+    others = [e for e in norm if not e[1]]
+    rng.shuffle(others)
+
+    bracket: List[tuple[School, bool]] = [None] * len(norm)  # type: ignore
+    if seeds:
+        step = max(2, len(norm) // len(seeds))
+        idx = 0
+        for seed in sorted(seeds, key=lambda e: getattr(e[0], "prestige", 0), reverse=True):
+            while idx < len(bracket) and bracket[idx] is not None:
+                idx += 1
+            if idx < len(bracket):
+                bracket[idx] = seed
+            idx += step
+    for entry in others + [s for s in seeds if s not in bracket]:
+        try:
+            slot = bracket.index(None)  # type: ignore
+            bracket[slot] = entry
+        except ValueError:
+            bracket.append(entry)
+
+    bracket = [b for b in bracket if b is not None]
     runner_up: Optional[School] = None
     round_num = 1
 
@@ -159,8 +198,8 @@ def _simulate_block(
 
     while len(bracket) > 1:
         if verbose:
-            logger(f"\n{region_name} Block — Round {round_num} ({len(bracket)} teams)")
-        next_round: List[School] = []
+            logger(f"\n{region_name} Block - Round {round_num} ({len(bracket)} teams)")
+        next_round: List[tuple[School, bool]] = []
         # If odd, give a bye to the strongest remaining team to mirror seeding.
         if len(bracket) % 2 == 1:
             def _strength(school: School) -> int:
@@ -171,16 +210,17 @@ def _simulate_block(
                     strengths[sid] = val
                 return val or 0
 
-            bracket.sort(key=_strength, reverse=True)
+            bracket.sort(key=lambda e: _strength(e[0]), reverse=True)
             bye_team = bracket.pop(0)
             next_round.append(bye_team)
             if verbose:
-                logger(f"   Bye: {bye_team.name}")
+                logger(f"   Bye: {bye_team[0].name}")
 
         for idx in range(0, len(bracket), 2):
-            home = bracket[idx]
-            away = bracket[idx + 1]
+            home, home_seed = bracket[idx]
+            away, away_seed = bracket[idx + 1]
             is_user = allow_user_control and user_school_id in {home.id, away.id}
+            upset = False
 
             if is_user:
                 rival_ctx = context.get_temp_effect("rival_match_context") if context else None
@@ -220,7 +260,16 @@ def _simulate_block(
                 if verbose:
                     logger(f"   Result: {winner.name} wins ({score})")
             else:
+                h_id, a_id = getattr(home, "id", None), getattr(away, "id", None)
+                str_home = strengths.get(h_id) or calculate_team_strength(session, h_id, strength_map=strengths, cache=cache)
+                strengths[h_id] = str_home
+                str_away = strengths.get(a_id) or calculate_team_strength(session, a_id, strength_map=strengths, cache=cache)
+                strengths[a_id] = str_away
                 winner, score, upset, *_ids = quick_resolve_match(session, home, away, strength_map=strengths, cache=cache)
+                gap = abs(str_home - str_away)
+                if not upset and gap > 15 and rng.random() < 0.08:
+                    winner = away if winner is home else home
+                    upset = True
                 loser = away if winner is home else home
                 if verbose:
                     note = " (UPSET)" if upset else ""
@@ -249,17 +298,17 @@ def _simulate_block(
                         "score": score,
                     }
                 )
-            next_round.append(winner)
+            next_round.append((winner, home_seed if winner is home else away_seed))
             if len(bracket) == 2:
                 runner_up = loser
 
         bracket = next_round
         strengths = refresh_strength_map(
             session,
-            school_ids=[sid for s in bracket if (sid := getattr(s, "id", None)) is not None],
+            school_ids=[sid for s in bracket if (sid := getattr(s[0], "id", None)) is not None],
             cache=cache,
         ) or strengths
         round_num += 1
 
-    champion = bracket[0] if bracket else None
+    champion = bracket[0][0] if bracket else None
     return champion, runner_up

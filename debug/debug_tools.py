@@ -5,6 +5,7 @@ This is intended for testing and skips normal progression (creative mode).
 """
 from __future__ import annotations
 
+import os
 import time
 from types import SimpleNamespace
 from typing import Optional
@@ -215,19 +216,36 @@ def open_debug_menu(*, context=None, session=None, state=None):
     if session is None and context is not None:
         session = getattr(context, "session", None)
 
+    use_tui = os.environ.get("USE_TUI_DEBUG", "").lower() in {"1", "true", "yes"}
+
     while True:
-        clear_screen()
-        print(f"{Colour.MAGENTA}{Colour.BOLD}=== DEBUG MASTER MODE (30062004) ==={Colour.RESET}")
-        print("1) Set date (year/month/week)")
-        print("2) Fast set all player stats (value)")
-        print("3) Add ability points / trust / morale / fatigue")
-        print("4) Jump to key weeks (15 qualifiers / 48 spring)")
-        print("5) Quick exhibition vs school id")
-        print("6) Give max stats (99) + full stamina")
-        print("7) Play full match vs school id (turn-based)")
-        print("8) Edit pitch shape / release / extension (pitchers)")
-        print("0) Exit debug menu")
-        choice = input(">> ").strip().lower()
+        choice = None
+        if use_tui:
+            try:
+                from ui.tui_debug_menu import run_tui_debug_menu
+
+                subtitle = ""
+                if state:
+                    subtitle = f"Week {getattr(state, 'current_week', '?')} | Year {getattr(state, 'current_year', '?')}"
+                choice = run_tui_debug_menu(subtitle=subtitle)
+                if choice is None:
+                    choice = None
+            except Exception:
+                choice = None
+
+        if choice is None:
+            clear_screen()
+            print(f"{Colour.MAGENTA}{Colour.BOLD}=== DEBUG MASTER MODE (30062004) ==={Colour.RESET}")
+            print("1) Set date (year/month/week)")
+            print("2) Fast set all player stats (value)")
+            print("3) Add ability points / trust / morale / fatigue")
+            print("4) Jump to key weeks (15 qualifiers / 48 spring)")
+            print("5) Quick exhibition vs school id")
+            print("6) Give max stats (99) + full stamina")
+            print("7) Play full match vs school id (turn-based)")
+            print("8) Edit pitch shape / release / extension (pitchers)")
+            print("0) Exit debug menu")
+            choice = input(">> ").strip().lower()
 
         if choice == "0":
             return

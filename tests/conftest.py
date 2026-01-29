@@ -21,15 +21,10 @@ if world_path not in sys.path:
 from core.rng import seed_global_rng
 from database import setup_db
 
-SKIP_DB_FIXTURES = os.environ.get("SKIP_DB_FIXTURES") == "1"
-
 
 @pytest.fixture(scope="function", autouse=True)
 def isolate_database(tmp_path, monkeypatch):
     """Force each test to use an isolated SQLite file to avoid cross-test locks."""
-    if SKIP_DB_FIXTURES:
-        yield
-        return
     test_db_path = tmp_path / "test_koshien.db"
     test_db_url = f"sqlite:///{test_db_path}"
 
@@ -80,10 +75,6 @@ def stub_pykakasi(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def stub_battery_negotiation(monkeypatch):
-    if SKIP_DB_FIXTURES:
-        yield
-        return
-
     from battery_system import battery_negotiation
 
     def _fake_call(*args, **kwargs):
@@ -98,7 +89,6 @@ def stub_battery_negotiation(monkeypatch):
         )
 
     monkeypatch.setattr(battery_negotiation, "run_battery_negotiation", _fake_call)
-    yield
 
 
 @pytest.fixture(autouse=True)

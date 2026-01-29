@@ -1,13 +1,11 @@
 # battery_system/battery_negotiation.py
+import importlib
 import logging
-from dataclasses import dataclass
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from match_engine.pitch_logic import describe_batter_tells
 from match_engine.states import EventType
-
-from game.catcher_ai import generate_catcher_sign, get_or_create_catcher_memory
+from battery_system.negotiation_types import NegotiatedPitchCall
 
 from .battery_trust import (
     adjust_battery_sync,
@@ -65,16 +63,22 @@ def _maybe_flag_synchronized_pitch(state, pitcher, catcher, trust_snapshot: int)
     return True
 
 
-@dataclass
-class NegotiatedPitchCall:
-    pitch: object
-    location: str
-    intent: str = "Normal"
-    shakes: int = 0
-    trust: int = 50
-    forced: bool = False
-    sync: float = 0.0
-    perfect_location: bool = False  # Synchronized Pitch: guarantees paint once per game
+def _describe_batter_tells(state, batter):
+    """Lazy-load batter intel to avoid import cycles."""
+    try:
+        mod = importlib.import_module("match_engine.pitch_logic")
+        return mod.describe_batter_tells(state, batter)
+    except Exception:
+        return []
+
+
+def _get_catcher_ai():
+    """Lazy-load catcher AI helpers."""
+    try:
+        mod = importlib.import_module("game.catcher_ai")
+        return mod.generate_catcher_sign, mod.get_or_create_catcher_memory
+    except Exception:
+        return None, None
 
 def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_override=None, sign_override=None):
     """
@@ -97,9 +101,11 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
 
     # Interactive branch (manual games): fall back to full negotiation.
     try:
-        from game.catcher_ai import generate_catcher_sign, get_or_create_catcher_memory
-        memory = get_or_create_catcher_memory(state)
-        pitch_call = generate_catcher_sign(catcher, pitcher, batter, state, memory=memory)
+        sign_func, memory_func = _get_catcher_ai()
+        if not sign_func or not memory_func:
+            raise ImportError("catcher AI unavailable")
+        memory = memory_func(state)
+        pitch_call = sign_func(catcher, pitcher, batter, state, memory=memory)
         suggestion, location, intent = pitch_call.pitch, pitch_call.location, pitch_call.intent
     except (ImportError, AttributeError, RuntimeError, SQLAlchemyError) as exc:
         pitch = type("_P", (), {"pitch_name": "Auto", "break_level": 50})()
@@ -128,11 +134,17 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
 
     presence_map = getattr(state, 'pitcher_presence', {}) or {}
     dominance = presence_map.get(pitcher_id, 0.0)
-    memory = get_or_create_catcher_memory(state)
-    sign_func = sign_override or generate_catcher_sign
 
-    pitch_call = sign_func(catcher, pitcher, batter, state, memory=memory)
-    suggestion, location, intent = pitch_call.pitch, pitch_call.location, pitch_call.intent
+    sign_func, memory_func = _get_catcher_ai()
+    if sign_override:
+        sign_func = sign_override
+
+    if sign_func:
+        memory = memory_func(state) if memory_func else None
+        pitch_call = sign_func(catcher, pitcher, batter, state, memory=memory)
+        suggestion, location, intent = pitch_call.pitch, pitch_call.location, pitch_call.intent
+    else:
+        pitch_call = type("_Call", (), {"pitch": suggestion, "location": location, "intent": intent, "confidence": 0.0, "reason": ""})()
 
     bus = getattr(state, "event_bus", None)
     sync = 0.0 if getattr(state, "fast_sim", False) else get_battery_sync(state, pitcher_id, catcher_id)
@@ -216,7 +228,7 @@ def run_battery_negotiation(pitcher, catcher, batter, state, *, decision_overrid
                 print(f"\n[Catcher Sign] {suggestion.pitch_name} ({location})")
                 print(f"   (Trust: {trust} | Dominance: {dominance:+.1f} | Shakes left: {max_shake_offs - shakes})")
             
-            intel = describe_batter_tells(state, batter)
+            intel = _describe_batter_tells(state, batter)
             if intel:
                 if io:
                     io.log(f"   Intel: {' | '.join(intel)}")

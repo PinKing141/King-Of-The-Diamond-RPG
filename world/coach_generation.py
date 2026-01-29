@@ -2,7 +2,6 @@ import random
 import json
 import sqlite3
 import os
-import pykakasi
 import sys
 
 # Add root to path to find setup_db
@@ -12,8 +11,17 @@ from config import NAME_DB_PATH
 from game.personnel.personality import roll_coach_personality
 from game.personnel.coach_personalities import get_random_personality
 
-# Initialize converter
-kks = pykakasi.kakasi()
+kks = None
+
+def _get_kakasi():
+    global kks
+    if kks is None:
+        try:
+            import pykakasi
+            kks = pykakasi.kakasi()
+        except Exception:
+            kks = False
+    return kks
 
 ARCHETYPE_BY_STYLE = {
     "spirit": "MOTIVATOR",
@@ -188,10 +196,13 @@ def generate_coach_name_from_db():
         
         if result:
             name_text = result[0]
-            # Convert to Romaji
-            converted = kks.convert(name_text)
-            name_romaji = "".join([item['hepburn'] for item in converted]).capitalize()
-            return f"Coach {name_romaji}"
+            # Convert to Romaji lazily
+            converter = _get_kakasi()
+            if converter:
+                converted = converter.convert(name_text)
+                name_romaji = "".join([item['hepburn'] for item in converted]).capitalize()
+                return f"Coach {name_romaji}"
+            return f"Coach {name_text}"
         else:
             return f"Coach {generate_fallback_name()}"
             

@@ -1,9 +1,11 @@
 """
 Team scouting renderer using ui_core primitives.
 Supports knowledge levels 0-3 with simple, themeable output.
+Adds optional Textual panel rendering (USE_TUI_SCOUTING_PANEL=1).
 """
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional
 
 from database.setup_db import School, Player
@@ -17,6 +19,85 @@ from ui.ui_display import Colour
 
 def _team_overview_lines(name: str, prefecture: str, style: str, rank_text: str) -> List[str]:
     return [f"{name} — Prefecture: {prefecture}", f"Style: {style}    Rank: {rank_text}"]
+
+
+def _report_lines_level0(school: School) -> List[str]:
+    return [
+        f"SCOUT REPORT — {school.name}",
+        "Prefecture: ???",
+        "",
+        "No intel available. Purchase scouting to begin.",
+        "Fog of War: TOTAL BLACKOUT",
+    ]
+
+
+def _report_lines_level1(school: School, est: Dict[str, int]) -> List[str]:
+    lines = [
+        f"SCOUT REPORT — {school.name}",
+        f"Prefecture: {school.prefecture or '??'}",
+        "",
+        "TEAM OVERVIEW (Basic)",
+    ]
+    for k, v in est.items():
+        lines.append(f"{k.title():<12} ~{v}")
+    lines.append("")
+    lines.append("Roster: Locked. Purchase more intel to unlock names and stats.")
+    return lines
+
+
+def _report_lines_level2(school: School, est: Dict[str, int], partial_roster: List[Dict], tendencies_hint: List[str]) -> List[str]:
+    lines = [
+        f"SCOUT REPORT — {school.name} (PARTIAL)",
+        f"Prefecture: {school.prefecture or '??'}    Style: {getattr(school, 'philosophy', '???')}",
+        "",
+        "TEAM RATINGS (Partial)",
+    ]
+    for k, v in est.items():
+        lines.append(f"{k.title():<12} ~{(v//10)*10}-{(v//10)*10 + 20}")
+    lines.append("")
+    lines.append("PARTIAL ROSTER (Names visible, stats fuzzy)")
+    lines.append(" # | POS | NAME")
+    for p in partial_roster:
+        lines.append(f" {p.get('jersey','--'):>2} | {p.get('position','?'):<3} | {p.get('name','?')}")
+    lines.append("")
+    lines.append("KNOWN TENDENCIES (Hints)")
+    for t in tendencies_hint:
+        lines.append(f" - {t}")
+    return lines
+
+
+def _report_lines_level3(school: School, full_ratings: Dict[str, int], roster: List[Dict], tendencies: Dict[str, List[str]]) -> List[str]:
+    lines = [
+        f"SCOUT REPORT — {school.name} (FULL)",
+        f"Prefecture: {school.prefecture or '??'}    Style: {getattr(school, 'philosophy', '???')}",
+        "",
+        "TEAM RATINGS (Full)",
+    ]
+    for k, v in full_ratings.items():
+        lines.append(f"{k.title():<12} {v}")
+    lines.append("")
+    lines.append("ROSTER (Full)")
+    lines.append(" # | POS | NAME                   | KEY ATTRS")
+    for p in roster:
+        pos = p.get("position", "?")
+        nm = p.get("name", "?")
+        jersey = p.get("jersey", "--")
+        if pos == "Pitcher":
+            attrs = f"VEL {p.get('velocity','--')} | CTRL {p.get('control','--')} | MOV {p.get('movement','--')}"
+        else:
+            attrs = f"CON {p.get('contact','--')} | POW {p.get('power','--')} | SPD {p.get('speed','--')}"
+        lines.append(f" {jersey:<2} | {pos:<3} | {nm:<22} | {attrs}")
+    if tendencies:
+        lines.append("")
+        if tendencies.get("strengths"):
+            lines.append("STRENGTHS")
+            for t in tendencies.get("strengths", []):
+                lines.append(f" - {t}")
+        if tendencies.get("weaknesses"):
+            lines.append("WEAKNESSES")
+            for t in tendencies.get("weaknesses", []):
+                lines.append(f" - {t}")
+    return lines
 
 
 def render_level_0(school: School, theme_name: Optional[str] = None) -> None:
@@ -53,11 +134,11 @@ def render_level_2(school: School, est: Dict[str, int], partial_roster: List[Dic
         pos = p.get("position","?")
         nm = p.get("name","?")
         jersey = p.get("jersey", "--")
-        attrs = "VEL/CON: C–A? | CTRL/PWR: C–A?"
+        attrs = "VEL/CON: C~A | CTRL/PWR: C~A"
         print(f" {jersey:<2} | {pos:<3} | {nm:<22} | {attrs}")
     print("\nKNOWN TENDENCIES (Hints)")
     for t in tendencies_hint:
-        print(f"  • {t}")
+        print(f"  - {t}")
     input("Press Enter...")
 
 
@@ -112,10 +193,10 @@ def render_level_3(school: School, full_ratings: Dict[str, int], roster: List[Di
             print(f"  Sync: {label} | Trust {int(trust)} | Wall {int(wall)} | Sync {sync:+.2f}")
     print("\nMATCHUP STRENGTHS")
     for s in tendencies.get("strengths", []):
-        print(f"  • {s}")
+        print(f"  - {s}")
     print("\nMATCHUP WEAKNESSES")
     for s in tendencies.get("weaknesses", []):
-        print(f"  • {s}")
+        print(f"  - {s}")
     input("Press Enter...")
 
 
@@ -129,10 +210,15 @@ def render_team_report(session, school_id: int, knowledge_level: int = 0, theme_
     players = get_roster(session, school.id)
     players.sort(key=lambda p: getattr(p, "jersey_number", 0) or 0)
 
-    if knowledge_level == 0:
-        return render_level_0(school, theme_name)
+    use_tui = os.environ.get("USE_TUI_SCOUTING_PANEL", "").lower() in {"1", "true", "yes"}
+    lines_for_tui: Optional[List[str]] = None
 
-    if knowledge_level == 1:
+    if knowledge_level == 0:
+        if use_tui:
+            lines_for_tui = _report_lines_level0(school)
+        else:
+            return render_level_0(school, theme_name)
+    elif knowledge_level == 1:
         est = {
             "offense": 55,
             "pitching": 52,
@@ -141,11 +227,15 @@ def render_team_report(session, school_id: int, knowledge_level: int = 0, theme_
             "coach": getattr(school, "prestige", 50),
         }
         if players:
-            est["pitching"] = int(sum((p.velocity or 50) for p in players if p.position == "Pitcher") / max(1, len([p for p in players if p.position == "Pitcher"])))
-            est["offense"] = int(sum(((p.contact or 50) + (p.power or 50)) // 2 for p in players if p.position != "Pitcher") / max(1, len([p for p in players if p.position != "Pitcher"])))
-        return render_level_1(school, est, theme_name)
-
-    if knowledge_level == 2:
+            pitch_count = len([p for p in players if p.position == "Pitcher"])
+            hitter_count = len([p for p in players if p.position != "Pitcher"])
+            est["pitching"] = int(sum((p.velocity or 50) for p in players if p.position == "Pitcher") / max(1, pitch_count))
+            est["offense"] = int(sum(((p.contact or 50) + (p.power or 50)) // 2 for p in players if p.position != "Pitcher") / max(1, hitter_count))
+        if use_tui:
+            lines_for_tui = _report_lines_level1(school, est)
+        else:
+            return render_level_1(school, est, theme_name)
+    elif knowledge_level == 2:
         est = {
             "offense": 60,
             "pitching": 62,
@@ -158,35 +248,51 @@ def render_team_report(session, school_id: int, knowledge_level: int = 0, theme_
             for p in players[:12]
         ]
         tendencies_hint = ["Aggressive batting approach", "Fastball heavy pitching", "Moderate base-stealing"]
-        return render_level_2(school, est, partial, tendencies_hint, theme_name)
-
-    # knowledge_level == 3
-    full_ratings = {
-        "offense": 68,
-        "pitching": 72,
-        "defense": 63,
-        "speed": 64,
-        "coach": getattr(school, "prestige", 60),
-    }
-    roster = [
-        {
-            "name": p.name,
-            "position": p.position,
-            "jersey": p.jersey_number or "--",
-            "velocity": getattr(p, "velocity", "--"),
-            "control": getattr(p, "control", "--"),
-            "movement": getattr(p, "movement", "--"),
-            "contact": getattr(p, "contact", "--"),
-            "power": getattr(p, "power", "--"),
-            "speed": getattr(p, "speed", "--"),
+        if use_tui:
+            lines_for_tui = _report_lines_level2(school, est, partial, tendencies_hint)
+        else:
+            return render_level_2(school, est, partial, tendencies_hint, theme_name)
+    else:
+        full_ratings = {
+            "offense": 68,
+            "pitching": 72,
+            "defense": 63,
+            "speed": 64,
+            "coach": getattr(school, "prestige", 60),
         }
-        for p in players
-    ]
-    tendencies = {
-        "strengths": ["Strong starting rotation", "Above-average base-running"],
-        "weaknesses": ["Inconsistent defense", "Bullpen depth issues"],
-    }
-    return render_level_3(school, full_ratings, roster, tendencies, theme_name)
+        roster = [
+            {
+                "name": p.name,
+                "position": p.position,
+                "jersey": p.jersey_number or "--",
+                "velocity": getattr(p, "velocity", "--"),
+                "control": getattr(p, "control", "--"),
+                "movement": getattr(p, "movement", "--"),
+                "contact": getattr(p, "contact", "--"),
+                "power": getattr(p, "power", "--"),
+                "speed": getattr(p, "speed", "--"),
+            }
+            for p in players
+        ]
+        tendencies = {
+            "strengths": ["Strong starting rotation", "Above-average base-running"],
+            "weaknesses": ["Inconsistent defense", "Bullpen depth issues"],
+        }
+        if use_tui:
+            lines_for_tui = _report_lines_level3(school, full_ratings, roster, tendencies)
+        else:
+            return render_level_3(school, full_ratings, roster, tendencies, theme_name)
+
+    if use_tui and lines_for_tui is not None:
+        try:
+            from ui.tui_panels import run_tui_panel
+            run_tui_panel(title="Scouting Report", lines=lines_for_tui)
+            return
+        except Exception:
+            pass
+
+    # Fallback if TUI failed mid-way
+    return render_level_0(school, theme_name)
 
 
 __all__ = [

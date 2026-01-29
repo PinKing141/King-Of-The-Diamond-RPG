@@ -54,7 +54,13 @@ def _rebind_db_engine():
     except SQLAlchemyError as exc:
         LOGGER.warning("Engine dispose failed during rebind: %s", exc)
 
-    setup_db.engine = create_engine(f"sqlite:///{DB_PATH}")
+    setup_db.engine = create_engine(
+        f"sqlite:///{DB_PATH}",
+        connect_args={
+            "timeout": 10,
+            "check_same_thread": False,
+        },
+    )
     setup_db.SessionLocal.configure(bind=setup_db.engine)
 
 
@@ -283,6 +289,18 @@ def show_save_menu(mode="SAVE", *, io: Optional[IOInterface] = None):
     Interactive menu for Saving/Loading using pointer navigation (no numeric entry).
     mode: "SAVE" or "LOAD"
     """
+    # Optional Textual TUI
+    if os.environ.get("USE_TUI_SAVE_MENU", "").lower() in {"1", "true", "yes"}:
+        try:
+            import importlib
+            run_tui_save_menu = importlib.import_module("ui.tui_save_menu").run_tui_save_menu
+        except Exception:
+            pass
+        else:
+            res = run_tui_save_menu(mode)
+            if res is not None:
+                return bool(res)
+
     log = io.log if io else print
     clear_fn = io.clear if io else clear_screen
     wait_fn = io.wait if io else (lambda s: __import__("time").sleep(s))

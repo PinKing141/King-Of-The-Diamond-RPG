@@ -30,7 +30,13 @@ if not os.path.exists(db_dir):
     os.makedirs(db_dir)
 
 # Create engine globally but we might need to dispose it for deletion
-engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"timeout": 10})
+engine = create_engine(
+    f"sqlite:///{DB_PATH}",
+    connect_args={
+        "timeout": 10,
+        "check_same_thread": False,  # Allow background threads (TUI spinners) to drive population safely.
+    },
+)
 Base = declarative_base()
 
 SessionLocal = sessionmaker(bind=engine)
@@ -868,6 +874,7 @@ def create_database():
     ensure_player_skill_schema()
     ensure_player_milestone_schema()
     ensure_game_stats_schema()
+    ensure_pitch_repertoire_schema()
 
     # Ensure tables exist for the currently bound engine (useful in tests that
     # monkeypatch the engine/session to an isolated SQLite file).

@@ -43,10 +43,17 @@ class ConsoleIO(IOInterface):
 
     def log(self, message: str, *, level: str = "info") -> None:
         if level == "story":
-            print(self.renderer.colorize(f"[Story] {message}", style="story"))
-            return
-        style = level if level in {"error", "fail", "warning", "warn"} else "info"
-        print(self.renderer.colorize(message, style=style))
+            payload = self.renderer.colorize(f"[Story] {message}", style="story")
+        else:
+            style = level if level in {"error", "fail", "warning", "warn"} else "info"
+            payload = self.renderer.colorize(message, style=style)
+        try:
+            print(payload)
+        except UnicodeEncodeError:
+            # Fallback for Windows consoles that can't render heavy block/banner chars.
+            enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+            safe = payload.encode(enc, errors="ignore").decode(enc, errors="ignore")
+            print(safe)
 
     def prompt(self, prompt: str, *, options: Optional[List[str]] = None) -> str:
         while True:
@@ -141,6 +148,20 @@ class ConsoleView(SeasonView):
 
     def _prompt_yes_no_menu(self, question: str) -> bool:
         """Arrow-based yes/no prompt with inline pointer."""
+        use_tui = os.environ.get("USE_TUI_CONFIRM", "").lower() in {"1", "true", "yes"}
+        use_tui |= os.environ.get("USE_TUI_REBUILD", "").lower() in {"1", "true", "yes"}
+        use_tui |= os.environ.get("USE_TUI_WORLD_LOADING", "").lower() in {"1", "true", "yes"}
+        use_tui |= os.environ.get("USE_TUI_MAIN_MENU", "").lower() in {"1", "true", "yes"}
+        if use_tui:
+            try:
+                from ui.tui_confirm import run_tui_confirm
+
+                res = run_tui_confirm(question)
+                if res is not None:
+                    return bool(res)
+            except Exception:
+                pass
+
         options = ["YES", "NO"]
 
         def render(idx: int) -> None:
@@ -269,21 +290,36 @@ class ConsoleView(SeasonView):
             )
             self.ui.log("\nOptions:")
 
-            options = [
-                MenuChoice("", "Next Week", value="NEXT_WEEK", hint="Enter"),
-                MenuChoice("s", "Scouting / Roster", value="SCOUT"),
-                MenuChoice("d", "Save Game", value="SAVE"),
-                MenuChoice("a", "Smart Sim (Delegate Weeks)", value="SMART_SIM"),
-                MenuChoice("q", "Quit to Menu", value="QUIT"),
-            ]
+            use_tui = os.environ.get("USE_TUI_WEEKLY_MENU", "").lower() in {"1", "true", "yes"}
+            cmd = None
+            if use_tui:
+                try:
+                    from ui.tui_weekly_menu import run_tui_weekly_menu
 
-            cmd = self.ui.menu(
-                "Command Menu",
-                options,
-                prompt_text=">> ",
-                clear_first=False,
-                input_fn=lambda prompt: input_with_debug(prompt, context=context, session=session, state=state),
-            )
+                    cmd = run_tui_weekly_menu(
+                        year=getattr(state, "current_year", 0),
+                        week=getattr(state, "current_week", 0),
+                        month=getattr(state, "current_month", 0),
+                    )
+                except Exception:
+                    cmd = None
+
+            if cmd is None:
+                options = [
+                    MenuChoice("", "Next Week", value="NEXT_WEEK", hint="Enter"),
+                    MenuChoice("s", "Scouting / Roster", value="SCOUT"),
+                    MenuChoice("d", "Save Game", value="SAVE"),
+                    MenuChoice("a", "Smart Sim (Delegate Weeks)", value="SMART_SIM"),
+                    MenuChoice("q", "Quit to Menu", value="QUIT"),
+                ]
+
+                cmd = self.ui.menu(
+                    "Command Menu",
+                    options,
+                    prompt_text=">> ",
+                    clear_first=False,
+                    input_fn=lambda prompt: input_with_debug(prompt, context=context, session=session, state=state),
+                )
             if cmd is None:
                 continue
             return cmd
@@ -303,6 +339,21 @@ class ConsoleView(SeasonView):
 
     # ---------- screens ----------
     def show_character_sheet(self, session: Any, snapshot: dict) -> None:
+        # Optional Textual overlay
+        use_tui = os.environ.get("USE_TUI_CHAR_SHEET", "").lower() in {"1", "true", "yes"}
+        if use_tui:
+            try:
+                from ui.player_profile_renderer import render_player_profile_modern
+                from ui.tui_panels import run_tui_panel
+
+                pid = snapshot.get("player_id") or snapshot.get("id")
+                if pid:
+                    lines = render_player_profile_modern(session, pid, theme_name=self.theme, fast=True) or []
+                    if run_tui_panel(title="Character Sheet", lines=lines) is not None:
+                        return
+            except Exception:
+                pass
+
         show_page(render_screen, session, snapshot)
         _safe_input("Press Enter to return...", ui=self.ui)
 

@@ -9,7 +9,6 @@ modes used by tests).
 from __future__ import annotations
 
 import logging
-import random
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Protocol, Sequence
 
@@ -17,7 +16,6 @@ from core.event_bus import EventBus
 from match_engine.states import EventType, HitType, InningHalf, MatchState, PlayMode
 from match_engine.input_system import BatterInputSource, FixedBatterInput, HumanBatterInput, CpuBatterInput
 from match_engine.batter_logic import AtBatStateMachine
-from match_engine.interfaces import BatterLike, PitcherLike
 from game.save_manager import autosave_match_state
 
 
@@ -38,8 +36,8 @@ class BatterChoice:
 class MatchupContext:
     inning: int
     half: InningHalf
-    pitcher: "PitcherLike"
-    batter: "BatterLike"
+    pitcher: Any
+    batter: Any
     lineup_attr: str
     balls: int
     strikes: int
@@ -89,13 +87,13 @@ class MatchSimulation:
         bus: Optional[EventBus] = None,
         human_team_ids: Optional[Sequence[int]] = None,
         input_strategy: Optional["InputStrategy"] = None,
-        rng: Optional[random.Random] = None,
+        agency_adapter: Optional[callable] = None,
     ) -> None:
         self.state = state
         self.bus: EventBus = bus if isinstance(bus, EventBus) else EventBus()
         self.human_team_ids = set(human_team_ids or [])
-        self.input_strategy = input_strategy
-        self.rng: random.Random = rng or getattr(state, "rng", random.Random())
+        # input_strategy supersedes the legacy agency_adapter callable; we keep both for compatibility.
+        self.input_strategy = input_strategy or _AdapterWrapper(agency_adapter) if agency_adapter else None
         self.loop_state = MatchState.WAITING_FOR_PITCH
         self.awaiting_player_choice = False
         self._pending_choice_options: list[Dict[str, str]] = []
@@ -103,7 +101,6 @@ class MatchSimulation:
         self._pending_cut_in = False
         self._current_matchup: Optional[MatchupContext] = None
         self._trust_buffer: Dict[tuple[int, int], float] = {}
-        self._active_input_source: Optional[BatterInputSource] = None
 
     def step(self) -> Optional[PlayOutcome]:
         """Advance the simulation by one plate appearance or pause for cut-ins."""
@@ -137,26 +134,16 @@ class MatchSimulation:
             return None
 
         # Phase 2: Execute the matchup built on the previous call.
-        try:
-            # If an earlier error cleared the input source, fall back to CPU to avoid deadlock.
-            if self._active_input_source is None:
-                self._active_input_source = self._select_input_source(self._current_matchup)
-
-            outcome = self._execute_matchup()
-            outcome = self._summarize_outcome(outcome)
-            if getattr(outcome, "drama_level", 0) >= 4:
-                try:
-                    autosave_match_state(state=self.state, reason="high_drama_play")
-                except Exception:
-                    pass
-            return outcome
-        finally:
-            # Always reset internal phase markers to avoid zombie matchups on errors.
-            self.loop_state = MatchState.WAITING_FOR_PITCH
-            self._current_matchup = None
-            self._pending_cut_in = False
-            self._pending_choice = None
-            self.awaiting_player_choice = False
+        outcome = self._execute_matchup()
+        outcome = self._summarize_outcome(outcome)
+        if getattr(outcome, "drama_level", 0) >= 4:
+            try:
+                autosave_match_state(state=self.state, reason="high_drama_play")
+            except Exception:
+                pass
+        self.loop_state = MatchState.WAITING_FOR_PITCH
+        self._current_matchup = None
+        return outcome
 
     def submit_player_choice(self, choice_key: str) -> None:
         if choice_key not in self._CHOICE_LIBRARY:
@@ -177,16 +164,12 @@ class MatchSimulation:
             raise ValueError("MatchSimulation requires state.top_bottom to be set before stepping.")
         if isinstance(half, InningHalf):
             return half
-
-        candidate = getattr(half, "value", half)
-        if isinstance(candidate, str):
-            label = candidate.strip().lower()
-            if label in {"top", "t"}:
-                return InningHalf.TOP
-            if label in {"bot", "bottom", "b"}:
-                return InningHalf.BOT
-
-        raise ValueError(f"Invalid inning half '{half}'. Expected Top/Bot or InningHalf enum.")
+        label = str(half).lower()
+        if label.startswith("t"):
+            return InningHalf.TOP
+        if label.startswith("b"):
+            return InningHalf.BOT
+        raise ValueError(f"Invalid inning half '{half}'. Expected Top/Bot.")
 
     def _validate_state(self) -> InningHalf:
         half = self._normalize_half(getattr(self.state, "top_bottom", None))
@@ -210,6 +193,8 @@ class MatchSimulation:
         pitcher = self.state.home_pitcher if half == InningHalf.TOP else self.state.away_pitcher
         batter_id = getattr(batter, "id", None)
         pitcher_id = getattr(pitcher, "id", None)
+        play_mode = getattr(self.state, "play_mode", PlayMode.SIM.value)
+        self.state.fast_sim = str(play_mode).upper() == PlayMode.SIM.value
         return MatchupContext(
             inning=self.state.inning,
             half=half,
@@ -233,10 +218,7 @@ class MatchSimulation:
 
         # Human-controlled batter gets human input strategy if available
         if matchup.is_human:
-            io = getattr(self.state, "io", None)
-            handler = getattr(io, "batter_handler", None) if io else None
-            handler = handler or (getattr(io, "player_bat_turn", None) if io else None)
-            return HumanBatterInput(io=io, handler=handler)
+            return HumanBatterInput()
 
         # CPU fallback
         return CpuBatterInput()
@@ -247,23 +229,20 @@ class MatchSimulation:
 
         # Allow patched/mock state machines to observe PITCH_FLIGHT state.
         try:
-            machine = AtBatStateMachine(self.state, input_source=self._active_input_source)
-            while not machine.finished:
-                machine.advance()
+            AtBatStateMachine(self.state, input_source=self._active_input_source).run()
         except Exception as exc:
             logger.exception("AtBatStateMachine crashed during matchup execution")
             raise RuntimeError("AtBatStateMachine crashed during matchup execution") from exc
 
         self.loop_state = MatchState.PLAY_RESOLUTION
+        self.state.outs = getattr(self.state, "outs", 0) + 1
 
         batter_id = getattr(self._current_matchup.batter, "id", None)
         pitcher_id = getattr(self._current_matchup.pitcher, "id", None)
         batting_side = self._batting_side(self._current_matchup.half)
         fielding_side = self._fielding_side(self._current_matchup.half)
 
-        outs_before = self._current_matchup.outs_before
-        home_before = self._current_matchup.home_score
-        away_before = self._current_matchup.away_score
+        runs_scored = 0
 
         payload = {
             "inning": self._current_matchup.inning,
@@ -273,24 +252,17 @@ class MatchSimulation:
         }
         self.bus.publish(EventType.PITCH_THROWN.value, payload)
 
-        outs_after = getattr(self.state, "outs", outs_before)
-        outs_recorded = max(0, outs_after - outs_before)
-        home_after = getattr(self.state, "home_score", home_before)
-        away_after = getattr(self.state, "away_score", away_before)
-
-        runs_scored = (away_after - away_before) if batting_side == "away" else (home_after - home_before)
-
-        half_complete = outs_after >= 3 or self._home_walkoff_ready()
-        result_type = "run_scored" if runs_scored > 0 else ("out_recorded" if outs_recorded > 0 else "in_play")
+        half_complete = self.state.outs >= 3 or self._home_walkoff_ready()
+        result_type = "run_scored" if runs_scored else "out_in_play"
 
         outcome = PlayOutcome(
             inning=self.state.inning,
             half=self.state.top_bottom,
             batter_id=batter_id,
             pitcher_id=pitcher_id,
-            outs_recorded=outs_recorded,
+            outs_recorded=1,
             runs_scored=runs_scored,
-            description="Plate appearance resolved",
+            description="Auto-resolved plate appearance",
             result_type=result_type,
             half_complete=half_complete,
             drama_level=0,
@@ -382,4 +354,63 @@ MatchSimulation._CHOICE_LIBRARY = {
 }
 
 
+class _AdapterWrapper:
+    """Wrapper to keep legacy callables behaving like an InputStrategy."""
+
+    def __init__(self, fn: Optional[callable]):
+        self.fn = fn
+
+    def select_batter_choice(self, matchup: MatchupContext, choices: Dict[str, BatterChoice]) -> Optional[str]:
+        if not self.fn:
+            return None
+        return self.fn(matchup)
+
+
 __all__ = ["MatchSimulation", "MatchupContext", "PlayOutcome", "InputStrategy"]
+_RESOLVE_MODE_PRESETS: Dict[str, Dict[str, bool]] = {
+    "standard": {"fast": False, "silent": False},
+    "interactive": {"fast": False, "silent": False},
+    "fast": {"fast": True, "silent": False},
+    "silent": {"fast": False, "silent": True},
+}
+
+
+def resolve_match(
+    home_team,
+    away_team,
+    tournament_name: str = "Practice Match",
+    *,
+    mode: str = "standard",
+    silent: Optional[bool] = None,
+    clutch_pitch: Optional[Dict[str, Any]] = None,
+    persist_results: bool = True,
+):
+    """Unified entry point for orchestrating a simulated match.
+
+    Parameters
+    ----------
+    mode: str
+        "standard" (default) runs the full engine with commentary on.
+        "fast" mirrors the previous sim_match_fast helper.
+        "silent" suppresses commentary without altering pace.
+    silent: Optional[bool]
+        Override the mode's default commentary setting when provided.
+    """
+
+    preset = _RESOLVE_MODE_PRESETS.get(mode)
+    if preset is None:
+        raise ValueError(f"Unknown resolve mode '{mode}'.")
+    fast = preset["fast"]
+    effective_silent = preset["silent"] if silent is None else silent
+    return _simulate_match(
+        home_team,
+        away_team,
+        tournament_name,
+        silent=effective_silent,
+        fast=fast,
+        clutch_pitch=clutch_pitch,
+        persist_results=persist_results,
+    )
+
+
+__all__ = ["MatchSimulation", "MatchupContext", "PlayOutcome"]

@@ -49,10 +49,11 @@ def generate_player_theme(player):
 def assign_theme_if_eligible(player):
     """Assign a walk-up song to upperclassmen standouts if they don't have one."""
 
-    is_senior = getattr(player, "year", 1) >= 2
+    year = getattr(player, "year", 1) or 1
+    is_eligible_year = 1 <= year <= 3  # allow rare freshmen prodigies
     is_good = (getattr(player, "overall", 0) or 0) >= 65
     has_theme = getattr(player, "theme_song", None)
-    if is_senior and is_good and not has_theme:
+    if is_eligible_year and is_good and not has_theme:
         player.theme_song = generate_player_theme(player)
         return True
     return False

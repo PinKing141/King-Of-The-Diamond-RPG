@@ -49,7 +49,11 @@ def _emit(message: str = "", *, io=None, end: str = "\n", flush: bool = False) -
         logger.info(message)
     except Exception:
         pass
-    sys.stdout.write(message + end)
+    try:
+        sys.stdout.write(message + end)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        sys.stdout.buffer.write((message + end).encode(enc, errors="ignore"))
     if flush:
         sys.stdout.flush()
 
